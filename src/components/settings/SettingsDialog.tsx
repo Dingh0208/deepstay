@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { Capacitor, registerPlugin } from '@capacitor/core'
 import { useRef, useState, type ReactNode } from 'react'
 import {
   IconDarkOutline16,
@@ -33,6 +34,7 @@ import { Modal } from '../base/Modal.js'
 import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
+import { UpdateSetting } from './UpdateSetting.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
@@ -100,6 +102,7 @@ const SettingsContent = () => {
               <LocaleSetting />
               <TtsVoiceSetting />
               <LocationSetting />
+              <UpdateSetting />
             </>
           ) : (
             <>
@@ -524,6 +527,19 @@ const ExportHistory = ({ disabled }: { disabled: boolean }) => {
     setStatus(null)
     try {
       const { name, blob } = await exportHistory()
+      if (Capacitor.getPlatform() === 'android') {
+        const data = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result).split(',')[1])
+          reader.onerror = () => reject(reader.error)
+          reader.readAsDataURL(blob)
+        })
+        const files = registerPlugin<{
+          save(options: { name: string; data: string; mimeType: string }): Promise<{ cancelled: boolean }>
+        }>('LocalFiles')
+        await files.save({ name, data, mimeType: 'application/zip' })
+        return
+      }
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url

@@ -22,16 +22,8 @@
   flex-shrink: 0;
 }
 
-.appName {
-  min-width: 0;
-  padding-left: 4px;
-  overflow: hidden;
-  font-size: 20px;
-  line-height: 22px;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: var(--dsw-alias-brand-primary);
+.brand {
+  margin-left: 4px;
 }
 
 .newChat {
@@ -119,8 +111,10 @@
 
 .bottom {
   display: flex;
+  flex-direction: column;
   flex-shrink: 0;
-  height: 64px;
+  gap: 2px;
+  padding-bottom: 8px;
 }
 
 .settings {
@@ -204,6 +198,8 @@
   position: absolute;
   inset: 0;
   z-index: 799;
+  background: rgba(25, 34, 58, 0.22);
+  backdrop-filter: blur(3px);
 }
 
 .mobile {

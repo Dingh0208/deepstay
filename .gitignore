@@ -9,3 +9,7 @@ build/
 .env.*
 !.env.example
 tmp/
+release/
+*.jks
+*.keystore
+signing.properties

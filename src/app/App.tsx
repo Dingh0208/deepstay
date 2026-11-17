@@ -14,8 +14,9 @@ import { closeSearchPanel } from '../components/search/searchPanelState.js'
 import { SessionView } from '../components/session/SessionView.js'
 import { MobileHeader } from '../components/session/MobileHeader.js'
 import { Welcome } from '../components/session/Welcome.js'
-import { ensureApiKey } from '../components/settings/settingsDialogState.js'
+import { PlatformDialog } from '../components/platform/Platform.js'
 import { SettingsDialog } from '../components/settings/SettingsDialog.js'
+import { FirstRunGuide } from '../components/settings/FirstRunGuide.js'
 import { Toast } from '../components/base/Toast.js'
 import { showToast } from '../components/base/toastState.js'
 import { onUploadNotice } from '../services/attachments.js'
@@ -67,11 +68,7 @@ export const App = () => {
   // 移动端选中会话、切换布局后收起抽屉
   useEffect(closeMobileSider, [activeId, isMobile])
 
-  useEffect(() => {
-    void initChat()
-    // 首次打开先在设置里输入 API Key
-    ensureApiKey()
-  }, [])
+  useEffect(() => { void initChat() }, [])
 
   return (
     <>
@@ -133,6 +130,8 @@ export const App = () => {
         <SearchPanel />
       </div>
       <SettingsDialog />
+      <PlatformDialog />
+      <FirstRunGuide />
       <Toast />
     </>
   )

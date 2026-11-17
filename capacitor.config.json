@@ -1,0 +1,10 @@
+{
+  "appId": "xyz.infralyx.deepstay",
+  "appName": "deepstay",
+  "webDir": "dist",
+  "backgroundColor": "#ffffff",
+  "android": {
+    "allowMixedContent": false,
+    "adjustMarginsForEdgeToEdge": "auto"
+  }
+}

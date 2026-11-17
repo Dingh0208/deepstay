@@ -1,0 +1,25 @@
+.dialog {
+  width: 420px;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 0 8px;
+  text-align: center;
+
+  h2 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0;
+    color: var(--dsw-alias-label-secondary);
+    font-size: 14px;
+    line-height: 24px;
+  }
+}

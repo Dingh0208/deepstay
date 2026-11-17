@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">deepstay</string>
+    <string name="title_activity_main">deepstay</string>
+    <string name="package_name">xyz.infralyx.deepstay</string>
+    <string name="custom_url_scheme">xyz.infralyx.deepstay</string>
+</resources>

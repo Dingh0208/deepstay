@@ -1,7 +1,7 @@
 import type { zh } from './zh.js'
 
 export const en = {
-  welcomeMessageChat250808: 'How can I help you?',
+  welcomeMessageChat250808: 'Welcome back. Start whenever you like.',
   contentCaveat: 'AI-generated, for reference only',
   expandSiderbarButton: 'Open sidebar',
   collapseSiderbarButton: 'Close sidebar',
@@ -14,7 +14,23 @@ export const en = {
     'Chats or attachments have not been saved locally. Retry before closing this page.',
   sessionDeleteFailed: 'Unable to delete this chat. Please try again.',
   settings: 'Settings',
-  appName: 'API usage demo',
+  appName: 'deepstay',
+  keyGuideTitle: 'Add your API Key',
+  keyGuideDescription: 'Add your DeepSeek API Key in Settings to start chatting. Your key stays on this device.',
+  keyGuideOpenSettings: 'Open Settings',
+  keyGuideLater: 'Set up later',
+  checkForUpdates: 'Check for updates',
+  updateCurrentVersion: 'Current version {version}',
+  updateLatestVersion: 'Latest version {version}',
+  updateVersionUnknown: 'Unknown',
+  updateChecking: 'Checking…',
+  updateNotPublished: 'No release has been published yet. Check again later.',
+  updateFailed: 'Unable to check for updates. Check your connection and retry.',
+  updateAvailable: 'A new version is available.',
+  updateCurrent: 'You are up to date.',
+  updateDownloadApk: 'Download APK',
+  updateOpenRelease: 'Open release page',
+  updateInstallHint: 'After downloading, follow the system prompts to install the update.',
   deleteSessionModalContentTitle: 'Delete chat?',
   deleteSessionWithFilesDescription:
     'This chat and its uploaded files will be permanently deleted and cannot be recovered. Delete this chat?',

@@ -70,13 +70,14 @@ export const createConfig = ({
         },
         type: 'javascript/auto',
       },
-      { test: /\.(woff2?|ttf)$/, type: 'asset/resource' },
+      { test: /\.(woff2?|ttf|png)$/, type: 'asset/resource' },
     ],
   },
   plugins: [
     // 经典 defer 脚本支持 file:// 页面的资源加载
     new rspack.HtmlRspackPlugin({
       template: './src/index.html',
+      favicon: './src/assets/deepstay-logo.png',
       scriptLoading: 'defer',
       meta: { 'application-version': version },
     }),
@@ -86,7 +87,10 @@ export const createConfig = ({
     }),
   ],
   performance: { hints: false },
-  devServer: { port: 8090, ...devServer },
+  devServer: {
+    port: 8090,
+    ...devServer,
+  },
 })
 
 // eslint-disable-next-line import/no-default-export

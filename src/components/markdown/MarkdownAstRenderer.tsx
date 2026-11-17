@@ -1,4 +1,4 @@
-import { createElement, memo, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import { createElement, memo, useMemo, type ReactNode } from 'react'
 import clsx from 'clsx'
 import type {
   BlockContent,
@@ -34,7 +34,10 @@ const List = memo(function List({ node, loading }: { node: ListNode; loading: bo
               // □ U+25A1 / ☑ U+2611
               <span className="ds-markdown-task-checkbox">{checked ? '☑  ' : '□  '}</span>
             ) : null}
-            <MarkdownBlockContentOrDefinitionContent nodes={child.children} loading={loading} />
+            <MarkdownBlockContentOrDefinitionContent
+              nodes={child.children}
+              loading={loading && index === node.children.length - 1}
+            />
           </li>
         )
       })}
@@ -164,6 +167,7 @@ const MarkdownBlockContentOrDefinitionContent = memo(
     loading: boolean
   }) {
     return nodes.map((node, index) => {
+      const blockLoading = loading && index === nodes.length - 1
       switch (node.type) {
         case 'math':
           return <MathBlock key={index} value={node.value} />
@@ -172,7 +176,10 @@ const MarkdownBlockContentOrDefinitionContent = memo(
         case 'blockquote':
           return (
             <blockquote key={index}>
-              <MarkdownBlockContentOrDefinitionContent nodes={node.children} loading={loading} />
+              <MarkdownBlockContentOrDefinitionContent
+                nodes={node.children}
+                loading={blockLoading}
+              />
             </blockquote>
           )
         case 'html':
@@ -197,13 +204,13 @@ const MarkdownBlockContentOrDefinitionContent = memo(
               key={index}
               code={node.value}
               infostring={node.lang || 'text'}
-              loading={loading}
+              loading={blockLoading}
             />
           )
         case 'table':
           return <Table node={node} key={index} />
         case 'list':
-          return <List key={index} node={node} loading={loading} />
+          return <List key={index} node={node} loading={blockLoading} />
         default:
           // 脚注与定义已在解析时换成段落
           return null
@@ -214,24 +221,13 @@ const MarkdownBlockContentOrDefinitionContent = memo(
 
 export const MarkdownAstRenderer = memo(function MarkdownAstRenderer({
   ast,
-  onUpdate,
   className,
   loading = false,
 }: {
   ast: Root
   className?: string
   loading?: boolean
-  /**
-   * layoutEffect 之后触发 -> 进行页面滚动
-   */
-  onUpdate: () => void
 }) {
-  const onUpdateRef = useRef<() => void>(() => 0)
-  onUpdateRef.current = onUpdate
-  useLayoutEffect(() => {
-    onUpdateRef.current()
-  }, [ast.children])
-
   return useMemo(
     () => (
       <div className={clsx('ds-markdown', className)}>

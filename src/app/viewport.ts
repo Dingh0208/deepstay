@@ -12,6 +12,7 @@ export const useIsMobile = () => useSyncExternalStore(subscribe, () => query.mat
 
 const preventPageScroll = (event: TouchEvent) => {
   if (event.touches.length !== 1) {
+    event.preventDefault()
     return
   }
   for (
@@ -31,7 +32,7 @@ const preventPageScroll = (event: TouchEvent) => {
   event.preventDefault()
 }
 
-/** 阻止移动端整页滚动，保留内部可滚动区域的滚动和双指缩放。 */
+/** 阻止移动端整页滚动和缩放，保留内部可滚动区域的滚动。 */
 export const usePreventPageScroll = (enabled: boolean) => {
   useEffect(() => {
     if (!enabled) {
@@ -59,13 +60,12 @@ export const useMobileViewport = (enabled: boolean) => {
       frame.style.removeProperty('--app-viewport-top')
     }
     const update = () => {
-      // 双指缩放由浏览器处理，保持当前布局尺寸。
-      if (viewport && viewport.scale !== 1) {
-        return
-      }
       // 失焦后直接恢复 CSS 的全高布局，不等 Safari 收键盘后的 resize。
       if (!document.activeElement?.matches(inputSelector)) {
         reset()
+        return
+      }
+      if (viewport && viewport.scale !== 1) {
         return
       }
       frame.style.setProperty(

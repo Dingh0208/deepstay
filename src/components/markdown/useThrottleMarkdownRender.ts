@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
-/** 两次更新的最长间隔 */
-const MAX_WAIT = 2000
+/** 自适应节流的额外等待上限，慢设备也不额外积压数秒文本。 */
+const MAX_WAIT = 100
 /** 上次渲染耗时的倍数，过了这段时间才允许下次更新 */
 const TIME_CONSUMING_RATE = 2
 

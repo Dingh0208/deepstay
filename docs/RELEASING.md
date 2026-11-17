@@ -1,6 +1,6 @@
 # deepstay Android 发布
 
-首版版本：`v0.1.0`。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版只支持用户自行添加 DeepSeek API Key，不依赖 Sub2API 后端。
+当前版本：`v0.1.1`。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版只支持用户自行添加 DeepSeek API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 本地构建
 
@@ -14,7 +14,7 @@ pnpm android:keystore
 pnpm android:release
 ```
 
-`pnpm android:keystore` 仅首次运行，生成固定发布签名。`pnpm android:release` 构建 Web、同步 Capacitor 资源并构建 release APK，产物为 `release/deepstay-0.1.0.apk`。`pnpm android:sync` 可单独执行 Web 构建与 `cap sync android`。
+`pnpm android:keystore` 仅首次运行，生成固定发布签名。`pnpm android:release` 构建 Web、同步 Capacitor 资源并构建 release APK，产物为 `release/deepstay-<package.json 版本>.apk`。`pnpm android:sync` 可单独执行 Web 构建与 `cap sync android`。
 
 Android 6.0+ 安装包内置本次静态资源，不需要连接开发服务器。
 
@@ -46,7 +46,7 @@ Android 6.0+ 安装包内置本次静态资源，不需要连接开发服务器�
 1. 完成本地检查及浏览器验收；真实 API、Android 真机或模拟器测试以实际记录为准。
 2. 将本轮前端和 Android 源码提交到 `Dingh0208/deepstay`，保留上游 MIT 许可证。不混入旧的后端、支付文档、运行数据或历史交付包。
 3. 用固定 release 签名构建 APK，验证产物并记录 SHA-256。
-4. 为对应提交创建 `v0.1.0` 标签与 GitHub Release，附 APK、校验和及简洁版本说明。
+4. 为对应提交创建 `v<package.json 版本>` 标签与 GitHub Release，附 APK、校验和及简洁版本说明。核对标签目标，避免误用继承自上游的同名标签。
 5. 检查 Release 可访问且附件可以下载。后续版本继续使用同一应用 ID、同一签名和递增的版本号。
 
-本轮类型检查、lint（124 个文件，0 错误、0 警告）及生产构建通过；BYOK 本机七项回归均未产生网络请求，更新服务四组回归通过。APK 签名和包名版本已有首编验证，最终打包及实际 Release 发布结果另行记录。真实 DeepSeek 请求和 Android 真机运行尚不在上述验证范围内。
+v0.1.1 类型检查、lint、生产构建及固定签名 APK 校验通过。流式回归使用本机模拟数据，核对完整内容、最终高亮与用户上滑阅读位置，不代表上游生成速度或真实手机帧率。Android 15 模拟器已复现旧版键盘遮挡，并验证新版输入框位于真实 IME 上方、收起键盘恢复高度、双指触摸不缩放及覆盖安装保留原设置；未进行实体手机测试。

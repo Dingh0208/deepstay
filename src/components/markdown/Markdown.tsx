@@ -1,7 +1,7 @@
-import { memo, useMemo } from 'react'
+import { memo, useMemo, useRef } from 'react'
+import type { Root } from 'mdast'
 import type { Source } from '../../services/chat/view.js'
 import { toMdAst } from '../../services/markdown/parse.js'
-import { useScrollToBottom } from '../messages/scrollContext.js'
 import { MarkdownAstRenderer } from './MarkdownAstRenderer.js'
 import { useThrottleMarkdownRender } from './useThrottleMarkdownRender.js'
 import './markdown.css'
@@ -26,19 +26,16 @@ export const Markdown = memo(function Markdown({
   disableLink: boolean
   sources?: Source[]
 }) {
-  const scrollToBottom = useScrollToBottom()
   const throttledMarkdown = useThrottleMarkdownRender(content, loading)
-  const ast = useMemo(
-    () => (throttledMarkdown ? toMdAst(throttledMarkdown, { sources, disableLink }) : null),
-    [throttledMarkdown, sources, disableLink]
-  )
+  const previousAst = useRef<Root | null>(null)
+  const ast = useMemo(() => {
+    const next = throttledMarkdown
+      ? toMdAst(throttledMarkdown, { sources, disableLink }, previousAst.current)
+      : null
+    previousAst.current = next
+    return next
+  }, [throttledMarkdown, sources, disableLink])
   return ast ? (
-    <MarkdownAstRenderer
-      key={cacheKey}
-      className={className}
-      ast={ast}
-      loading={loading}
-      onUpdate={scrollToBottom}
-    />
+    <MarkdownAstRenderer key={cacheKey} className={className} ast={ast} loading={loading} />
   ) : null
 })

@@ -25,6 +25,29 @@ declare module 'mdast' {
 
 const text = (value: string): Text => ({ type: 'text', value })
 
+// 比较完整节点（含引用来源），不能只按原文或位置复用：后置定义也会改变前文 AST。
+const equalNode = (left: unknown, right: unknown): boolean => {
+  if (left === right) {
+    return true
+  }
+  if (
+    !left ||
+    !right ||
+    typeof left !== 'object' ||
+    typeof right !== 'object' ||
+    Array.isArray(left) !== Array.isArray(right)
+  ) {
+    return false
+  }
+  const previous = left as Record<string, unknown>
+  const next = right as Record<string, unknown>
+  const keys = Object.keys(previous)
+  return (
+    keys.length === Object.keys(next).length &&
+    keys.every((key) => Object.hasOwn(next, key) && equalNode(previous[key], next[key]))
+  )
+}
+
 /**
  * 解析正文，并把渲染器不单独处理的节点提前换掉，渲染时无需再读原文：
  * - 传入 sources 时，[citation:N] 换成角标节点，找不到来源的直接去掉
@@ -33,7 +56,8 @@ const text = (value: string): Text => ({ type: 'text', value })
  */
 export function toMdAst(
   input: string,
-  { sources, disableLink }: { sources: Source[] | undefined; disableLink: boolean }
+  { sources, disableLink }: { sources: Source[] | undefined; disableLink: boolean },
+  previous?: Root | null
 ): Root {
   const ast = fromMarkdown(input, {
     extensions: [
@@ -83,5 +107,11 @@ export function toMdAst(
     }
   }
   simplify(ast)
+  if (previous) {
+    ast.children = ast.children.map((node, index) => {
+      const cached = previous.children[index]
+      return cached && equalNode(cached, node) ? cached : node
+    })
+  }
   return ast
 }

@@ -53,6 +53,12 @@
   }
 }
 
+@media (max-width: 767px) and (max-height: 480px) {
+  .intro {
+    display: none;
+  }
+}
+
 @media not all and (min-width: 768px) {
   .container {
     flex-direction: column;
@@ -68,7 +74,9 @@
   }
 
   .intro {
-    flex-shrink: 0;
+    flex-shrink: 1;
+    min-height: 0;
+    overflow: hidden;
     margin: auto 0;
   }
 }

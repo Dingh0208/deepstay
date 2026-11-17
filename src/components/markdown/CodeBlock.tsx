@@ -69,7 +69,7 @@ const CodeInfoRow = ({
   )
 }
 
-/** 代码块：语言包按需加载，不支持或尚未加载的语言按纯文本显示 */
+/** 流式代码先显示原文，完成后加载语言包并高亮，避免每个增量重算整段代码。 */
 export const CodeBlock = memo(function CodeBlock({
   code,
   infostring,
@@ -85,8 +85,9 @@ export const CodeBlock = memo(function CodeBlock({
   const rerender = useReducer((n: number) => n + 1, 0)[1]
   const lang = getHighlightLang(infostring)
   const loaded = lang !== null && isHighlightLoaded(lang)
+  const diagramVisible = isMermaid && showDiagram
   useEffect(() => {
-    if (lang === null || loaded) {
+    if (loading || diagramVisible || lang === null || loaded) {
       return
     }
     let unmounted = false
@@ -98,11 +99,13 @@ export const CodeBlock = memo(function CodeBlock({
     return () => {
       unmounted = true
     }
-  }, [lang, loaded, rerender])
+  }, [loading, diagramVisible, lang, loaded, rerender])
   const renderedHtml = useMemo(() => {
-    const name = lang !== null && loaded ? lang : 'plaintext'
-    return Prism.highlight(code, Prism.languages[name], name)
-  }, [code, lang, loaded])
+    if (loading || diagramVisible || lang === null || !loaded) {
+      return null
+    }
+    return Prism.highlight(code, Prism.languages[lang], lang)
+  }, [code, loading, diagramVisible, lang, loaded])
   return (
     <div className="md-code-block">
       <div className="md-code-block-banner">
@@ -113,8 +116,10 @@ export const CodeBlock = memo(function CodeBlock({
           onToggleDiagram={isMermaid ? () => setShowDiagram((show) => !show) : undefined}
         />
       </div>
-      {isMermaid && showDiagram ? (
+      {diagramVisible ? (
         <MermaidDiagram code={code} loading={loading} />
+      ) : renderedHtml === null ? (
+        <pre>{code}</pre>
       ) : (
         <pre dangerouslySetInnerHTML={{ __html: renderedHtml }}></pre>
       )}

@@ -255,7 +255,8 @@ export const toSessionFile = (original: Session, exportImage: ExportImage): Sess
         message.role === 'user' ? userFragments(message, exportImage) : assistantFragments(message),
     }
   })
-  const current = getVisibleMessages(session).at(-1)
+  const visibleMessages = getVisibleMessages(session)
+  const current = visibleMessages[visibleMessages.length - 1]
   return {
     id: session.id,
     title: session.title || null,

@@ -5,7 +5,7 @@ import { defineConfig } from '@rspack/cli'
 import { rspack, type Configuration } from '@rspack/core'
 
 const dev = process.env.NODE_ENV !== 'production'
-const targets = ['chrome >= 105', 'edge >= 105', 'safari >= 16', 'firefox >= 110']
+const targets = ['chrome >= 83', 'edge >= 83', 'safari >= 14', 'firefox >= 83']
 const root = path.dirname(fileURLToPath(import.meta.url))
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
@@ -81,7 +81,10 @@ export const createConfig = ({
       scriptLoading: 'defer',
       meta: { 'application-version': version },
     }),
-    new rspack.DefinePlugin({ __API_ORIGIN__: JSON.stringify(apiOrigin) }),
+    new rspack.DefinePlugin({
+      __API_ORIGIN__: JSON.stringify(apiOrigin),
+      __UPDATE_MANIFEST_URL__: JSON.stringify(process.env.DEEPSTAY_UPDATE_MANIFEST_URL ?? ''),
+    }),
     new rspack.CopyRspackPlugin({
       patterns: [{ from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' }],
     }),

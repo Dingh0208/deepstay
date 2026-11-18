@@ -6,6 +6,7 @@ import { mathFromMarkdown } from 'mdast-util-math'
 import { gfm } from 'micromark-extension-gfm'
 import { math } from 'micromark-extension-llm-math'
 import type { Source } from '../chat/view.js'
+import { hasOwn } from '../../utils/object.js'
 
 /** 正文里的 [citation:N]，已换成对应来源 */
 export interface CitationNode extends MdAstNode {
@@ -44,7 +45,7 @@ const equalNode = (left: unknown, right: unknown): boolean => {
   const keys = Object.keys(previous)
   return (
     keys.length === Object.keys(next).length &&
-    keys.every((key) => Object.hasOwn(next, key) && equalNode(previous[key], next[key]))
+    keys.every((key) => hasOwn(next, key) && equalNode(previous[key], next[key]))
   )
 }
 

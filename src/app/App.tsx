@@ -25,6 +25,7 @@ import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
+import { hasOwn } from '../utils/object.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -38,7 +39,7 @@ export const App = () => {
   const saveError = useChatStore((state) => Object.values(state.sessionSaveErrors).some(Boolean))
   const importingHistory = useChatStore((state) => state.importingHistory)
   const session = useChatStore((state) =>
-    state.activeId !== null && Object.hasOwn(state.sessionCache, state.activeId)
+    state.activeId !== null && hasOwn(state.sessionCache, state.activeId)
       ? state.sessionCache[state.activeId]
       : undefined
   )
@@ -47,7 +48,7 @@ export const App = () => {
   )
   const frameRef = useMobileViewport(isMobile)
   const streaming = useChatStore((state) =>
-    state.activeId === null ? false : Object.hasOwn(state.streaming, state.activeId)
+    state.activeId === null ? false : hasOwn(state.streaming, state.activeId)
   )
   const activeId = useChatStore((state) => state.activeId)
 

@@ -1,10 +1,12 @@
 const RELEASES_URL = 'https://github.com/Dingh0208/deepstay/releases/'
 const LATEST_RELEASE_API = 'https://api.github.com/repos/Dingh0208/deepstay/releases/latest'
+const UPDATE_MANIFEST_URL = typeof __UPDATE_MANIFEST_URL__ === 'string' ? __UPDATE_MANIFEST_URL__ : ''
 
 export type AppRelease = {
   version: string
   releaseUrl: string
   apkUrl: string | null
+  apkSha256: string | null
 }
 
 const parseVersion = (value: string) => {
@@ -52,6 +54,38 @@ export const compareVersions = (left: string, right: string): number | null => {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null
 
+/** 国内更新源的 APK 必须来自版本清单同目录，且提供 SHA-256。 */
+export const readUpdateManifest = (value: unknown, manifestUrl: string): AppRelease | null => {
+  if (
+    !isObject(value) || typeof value.version !== 'string' ||
+    !parseVersion(value.version) || parseVersion(value.version)?.prerelease ||
+    typeof value.apkUrl !== 'string' || typeof value.sha256 !== 'string' ||
+    !/^[\da-f]{64}$/i.test(value.sha256)
+  ) {
+    return null
+  }
+  try {
+    const base = new URL('.', manifestUrl)
+    const apk = new URL(value.apkUrl)
+    if (
+      base.protocol !== 'https:' || apk.protocol !== 'https:' ||
+      apk.username || apk.password || apk.hash ||
+      apk.origin !== base.origin || new URL('.', apk).pathname !== base.pathname ||
+      apk.pathname.includes('%') || !apk.pathname.endsWith('.apk')
+    ) {
+      return null
+    }
+    return {
+      version: value.version.replace(/^v/i, ''),
+      releaseUrl: `${RELEASES_URL}tag/v${value.version.replace(/^v/i, '')}`,
+      apkUrl: apk.href,
+      apkSha256: value.sha256.toLowerCase(),
+    }
+  } catch {
+    return null
+  }
+}
+
 /** 只接受本仓库正式 Release 和其中的 APK 下载地址。 */
 export const readAppRelease = (value: unknown): AppRelease | null => {
   if (
@@ -68,10 +102,14 @@ export const readAppRelease = (value: unknown): AppRelease | null => {
     asset.browser_download_url.startsWith(`${RELEASES_URL}download/`) &&
     /\.apk$/i.test(asset.browser_download_url)
   ) as Record<string, unknown> | undefined
+  const digest = apk && typeof apk.digest === 'string' && /^sha256:[\da-f]{64}$/i.test(apk.digest)
+    ? apk.digest.slice('sha256:'.length)
+    : null
   return {
     version: value.tag_name.replace(/^v/i, ''),
     releaseUrl: value.html_url,
     apkUrl: apk ? String(apk.browser_download_url) : null,
+    apkSha256: digest,
   }
 }
 
@@ -85,7 +123,7 @@ export const fetchLatestRelease = async (signal: AbortSignal): Promise<AppReleas
   }
   const timeout = setTimeout(abort, 10_000)
   try {
-    const response = await fetch(LATEST_RELEASE_API, {
+    const response = await fetch(UPDATE_MANIFEST_URL || LATEST_RELEASE_API, {
       headers: { Accept: 'application/vnd.github+json' },
       credentials: 'omit',
       cache: 'no-store',
@@ -97,7 +135,10 @@ export const fetchLatestRelease = async (signal: AbortSignal): Promise<AppReleas
     if (!response.ok) {
       throw new Error('Update check failed')
     }
-    const release = readAppRelease(await response.json())
+    const value: unknown = await response.json()
+    const release = UPDATE_MANIFEST_URL
+      ? readUpdateManifest(value, UPDATE_MANIFEST_URL)
+      : readAppRelease(value)
     if (!release) {
       throw new Error('Invalid release response')
     }

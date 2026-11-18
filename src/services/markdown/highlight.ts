@@ -1,4 +1,5 @@
 import Prism from 'prismjs'
+import { hasOwn } from '../../utils/object.js'
 
 type Loader = () => Promise<unknown>
 
@@ -97,12 +98,12 @@ const aliases: Record<string, string> = {
 
 /** 支持高亮时返回 Prism 语言名，否则返回 null */
 export function getHighlightLang(infostring: string): string | null {
-  const lang = Object.hasOwn(aliases, infostring) ? aliases[infostring] : infostring
-  return Object.hasOwn(loaders, lang) ? lang : null
+  const lang = hasOwn(aliases, infostring) ? aliases[infostring] : infostring
+  return hasOwn(loaders, lang) ? lang : null
 }
 
 export function isHighlightLoaded(lang: string): boolean {
-  return Object.hasOwn(Prism.languages, lang)
+  return hasOwn(Prism.languages, lang)
 }
 
 export function loadHighlight(lang: string): Promise<unknown> {

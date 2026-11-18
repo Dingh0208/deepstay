@@ -12,6 +12,8 @@ jobs:
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DEEPSTAY_UPDATE_MANIFEST_URL: ${{ vars.DEEPSTAY_UPDATE_MANIFEST_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -58,6 +60,11 @@ jobs:
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs release/deepstay-*.apk
           cd release
           sha256sum deepstay-*.apk > SHA256SUMS.txt
+      - name: Generate domestic update manifest
+        if: env.DEEPSTAY_UPDATE_MANIFEST_URL != ''
+        run: |
+          UPDATE_DIRECTORY=$(node -e 'process.stdout.write(new URL(".", process.env.DEEPSTAY_UPDATE_MANIFEST_URL).href)')
+          pnpm updates:manifest "$UPDATE_DIRECTORY"
       - uses: actions/upload-artifact@v4
         with:
           name: deepstay-android

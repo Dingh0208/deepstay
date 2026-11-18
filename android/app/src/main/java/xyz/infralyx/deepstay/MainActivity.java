@@ -15,6 +15,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LocalFilesPlugin.class);
+        registerPlugin(ApkUpdatePlugin.class);
         super.onCreate(savedInstanceState);
         WebView webView = bridge.getWebView();
         WebSettings settings = webView.getSettings();

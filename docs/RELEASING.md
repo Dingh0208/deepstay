@@ -1,6 +1,6 @@
 # deepstay Android 发布
 
-当前版本：`v0.1.1`。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版只支持用户自行添加 DeepSeek API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
+当前版本：`v0.1.2`。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版只支持用户自行添加 DeepSeek API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 本地构建
 
@@ -17,6 +17,8 @@ pnpm android:release
 `pnpm android:keystore` 仅首次运行，生成固定发布签名。`pnpm android:release` 构建 Web、同步 Capacitor 资源并构建 release APK，产物为 `release/deepstay-<package.json 版本>.apk`。`pnpm android:sync` 可单独执行 Web 构建与 `cap sync android`。
 
 Android 6.0+ 安装包内置本次静态资源，不需要连接开发服务器。
+
+Web 资源按 Chromium/WebView 83+ 编译。浏览器/WebView 可独立于 Android 系统版本更新；若应用仍无法打开，请收集机型系统版本与 Android System WebView 版本。
 
 ## 签名与升级
 
@@ -39,7 +41,7 @@ Android 6.0+ 安装包内置本次静态资源，不需要连接开发服务器�
 
 推送 `v版本号` 标签触发 Android CI，使用上述固定签名构建并直接发布为最新 GitHub Release；若同名 Release 已存在，则更新附件。推送标签前应完成版本、签名和产物检查。
 
-设置内的「检查更新」只在用户点击后请求 GitHub 公开的 latest Release API，10 秒超时并比较版本号。有新版时提供 APK 链接，由外部浏览器下载、系统安装器覆盖安装；没有自动下载或静默安装。检查失败不会阻止使用本机聊天。
+设置内的「检查更新」由用户点击触发，10 秒超时并比较版本号。Android 有新版时可在应用内下载，校验 SHA-256、包名和发布签名，再打开系统安装器确认更新。关闭设置保留当前下载状态。默认使用 GitHub，国内 COS／OSS 源的配置与发布顺序见 [UPDATES.md](UPDATES.md)。检查失败不影响本机聊天。
 
 ## 发布流程
 
@@ -50,3 +52,5 @@ Android 6.0+ 安装包内置本次静态资源，不需要连接开发服务器�
 5. 检查 Release 可访问且附件可以下载。后续版本继续使用同一应用 ID、同一签名和递增的版本号。
 
 v0.1.1 类型检查、lint、生产构建及固定签名 APK 校验通过。流式回归使用本机模拟数据，核对完整内容、最终高亮与用户上滑阅读位置，不代表上游生成速度或真实手机帧率。Android 15 模拟器已复现旧版键盘遮挡，并验证新版输入框位于真实 IME 上方、收起键盘恢复高度、双指触摸不缩放及覆盖安装保留原设置；未进行实体手机测试。
+
+v0.1.2 在 Android 11 / WebView 83 模拟器复现旧版启动白屏，并验证修复后冷启动、保存测试 Key 后关闭设置、DeepSeek ZIP 导入后的会话切换和新建对话。Key 校验使用本地模拟响应，没有调用真实模型；另有缺失现代内置方法时的历史与消息回归。未进行 OPPO 实体机测试。

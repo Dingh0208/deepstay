@@ -1,4 +1,5 @@
 import { formatDate } from '../../utils/format.js'
+import { hasOwn } from '../../utils/object.js'
 import * as db from './db.js'
 import { replaceHistory, useChatStore } from './store.js'
 import type { Session } from './types.js'
@@ -23,7 +24,7 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
     const { sessions, sessionCache } = useChatStore.getState()
     async function* readSessions(): AsyncGenerator<Session> {
       for (const summary of sessions) {
-        const session = Object.hasOwn(sessionCache, summary.id)
+        const session = hasOwn(sessionCache, summary.id)
           ? sessionCache[summary.id]
           : await db.loadSession(summary.id)
         if (!session) {

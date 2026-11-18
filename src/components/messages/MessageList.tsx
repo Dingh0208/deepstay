@@ -17,7 +17,7 @@ import type { Message } from '../../services/chat/types.js'
  * 点击后按失败的回答重新补传附件并请求。
  */
 const getUploadRetryId = (messages: Message[], streaming: boolean) => {
-  const last = messages.at(-1)
+  const last = messages[messages.length - 1]
   return !streaming &&
     last?.role === 'assistant' &&
     last.status === 'error' &&
@@ -59,7 +59,7 @@ export const MessageList = ({
   if (versions !== previousVersions) {
     setPreviousVersions(versions)
   }
-  const lastMessageId = messages.at(-1)?.id
+  const lastMessageId = messages[messages.length - 1]?.id
   const scrollToBottom = useCallback(() => {
     if (scrollFrameRef.current || !stickyRef.current) {
       return

@@ -417,7 +417,7 @@
 }
 
 .deleteConfirm {
-  max-height: calc(100dvh - 32px);
+  max-height: calc(var(--app-screen-height) - 32px);
   overflow-y: auto;
 }
 

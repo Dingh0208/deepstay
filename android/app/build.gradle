@@ -8,16 +8,21 @@ if (file(signingPath).exists()) {
 def signingValue = { name, env -> System.getenv(env) ?: signingProperties.getProperty(name) }
 def releaseStore = signingValue('storeFile', 'DEEPSTAY_KEYSTORE_FILE')
 def appVersion = new groovy.json.JsonSlurper().parse(file('../../package.json')).version
+def updateManifestUrl = System.getenv('DEEPSTAY_UPDATE_MANIFEST_URL') ?: ''
 
 android {
     namespace "xyz.infralyx.deepstay"
     compileSdk rootProject.ext.compileSdkVersion
+    buildFeatures {
+        buildConfig true
+    }
     defaultConfig {
         applicationId "xyz.infralyx.deepstay"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
+        versionCode 3
         versionName appVersion
+        buildConfigField 'String', 'DEEPSTAY_UPDATE_MANIFEST_URL', groovy.json.JsonOutput.toJson(updateManifestUrl)
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

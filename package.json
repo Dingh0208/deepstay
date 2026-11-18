@@ -1,6 +1,6 @@
 {
   "name": "deepstay",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "deepstay",
   "license": "MIT",
   "private": true,
@@ -13,7 +13,8 @@
     "format": "oxfmt --write .",
     "android:sync": "node scripts/android.mjs sync",
     "android:release": "node scripts/android.mjs release",
-    "android:keystore": "node scripts/android-keystore.mjs"
+    "android:keystore": "node scripts/android-keystore.mjs",
+    "updates:manifest": "node scripts/update-manifest.mjs"
   },
   "dependencies": {
     "@capacitor/android": "7.6.10",

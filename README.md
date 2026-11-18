@@ -12,7 +12,7 @@ An empty conversation shows the image logo with a transparent background and a w
 
 For updates, download the latest APK from the same repository and install it over the existing app. **Do not uninstall the app or clear its storage first.** Updates must retain the same application ID and release signing key. Export important conversations before updating.
 
-Settings → General includes **Check for updates**. Only clicking this button queries GitHub's latest public release, with a 10-second timeout. When a newer version is available, open its APK link in an external browser and use the system installer to update. The app does not check, download, or install updates automatically.
+Settings → General includes **Check for updates**, with a 10-second timeout. On Android, download a newer APK within the app, verify its SHA-256, package ID and signing certificate, then confirm the update in the system installer. The first update requires permission to install apps. Closing and reopening Settings preserves download progress and the install action. GitHub is the default source; a Tencent COS / Alibaba OSS source can be configured at build time. See [update distribution](docs/UPDATES.md).
 
 ## Features
 

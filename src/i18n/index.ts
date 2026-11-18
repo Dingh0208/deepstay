@@ -1,4 +1,5 @@
 import { useSettings } from '../services/settings.js'
+import { hasOwn } from '../utils/object.js'
 import { en } from './en.js'
 import { zh } from './zh.js'
 
@@ -12,7 +13,7 @@ export type LinkedMessage = TranslationMessage & {
 }
 
 export const isTranslationKey = (key: unknown): key is TranslationKey =>
-  typeof key === 'string' && Object.hasOwn(zh, key)
+  typeof key === 'string' && hasOwn(zh, key)
 
 const createTranslate =
   (messages: Record<TranslationKey, string>) =>

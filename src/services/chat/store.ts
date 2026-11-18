@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
+import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { ChatModel, CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
@@ -94,12 +95,12 @@ const sortSessions = (sessions: SessionSummary[]) =>
 
 const getSession = (id: string) => {
   const cache = get().sessionCache
-  return Object.hasOwn(cache, id) ? cache[id] : undefined
+  return hasOwn(cache, id) ? cache[id] : undefined
 }
 
 const getStreamController = (id: string) => {
   const streams = get().streaming
-  return Object.hasOwn(streams, id) ? streams[id] : undefined
+  return hasOwn(streams, id) ? streams[id] : undefined
 }
 
 const sameSummary = (a: SessionSummary, b: SessionSummary) =>
@@ -129,7 +130,7 @@ const trimSessionCache = () => {
     .filter(
       (id) =>
         id !== state.activeId &&
-        !Object.hasOwn(state.streaming, id) &&
+        !hasOwn(state.streaming, id) &&
         !unsavedSessions.has(id) &&
         !deletingSessions.has(id)
     )
@@ -149,7 +150,7 @@ const trimSessionCache = () => {
 
 const updateSession = (id: string, update: (session: Session) => Session) =>
   set((state) => {
-    const previous = Object.hasOwn(state.sessionCache, id) ? state.sessionCache[id] : undefined
+    const previous = hasOwn(state.sessionCache, id) ? state.sessionCache[id] : undefined
     if (!previous) {
       return state
     }
@@ -372,7 +373,7 @@ const waitForIdle = (sessionId?: string) =>
     const isIdle = (state: ChatState) =>
       sessionId === undefined
         ? Object.keys(state.streaming).length === 0
-        : !Object.hasOwn(state.streaming, sessionId)
+        : !hasOwn(state.streaming, sessionId)
     if (isIdle(get())) {
       resolve()
       return
@@ -600,7 +601,7 @@ export const sendMessage = (targetSessionId: string | null) => {
   }
   const reply = createReply()
   updateSession(sessionId, (session) => ({
-    ...appendBranch(session, history.at(-1)?.id ?? null, [question, reply]),
+    ...appendBranch(session, history[history.length - 1]?.id ?? null, [question, reply]),
     updatedAt: now,
   }))
   if (files.length > 0) {
@@ -695,8 +696,8 @@ export const continueReply = (sessionId: string, messageId: string) => {
     return
   }
   const path = getVisibleMessages(session)
-  const question = path.at(-2)
-  const previous = path.at(-1)
+  const question = path[path.length - 2]
+  const previous = path[path.length - 1]
   if (
     question?.role !== 'user' ||
     previous?.role !== 'assistant' ||
@@ -844,7 +845,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   }
 
   const pending = new Map<string, FileAttachment>()
-  for (const [user] of getContextRounds(request.history).toReversed()) {
+  for (const [user] of getContextRounds(request.history).slice().reverse()) {
     for (const file of user.files) {
       if (!file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
         pending.set(file.id, file)
@@ -852,7 +853,9 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
     }
   }
   for (const file of pending.values()) {
-    signal.throwIfAborted()
+    if (signal.aborted) {
+      throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+    }
     try {
       const serverId = await Promise.race([ensureServerId(apiKey, file), aborted])
       if (serverId) {
@@ -860,7 +863,9 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
         saveServerIds(sessionId, new Map([[file.id, serverId]]))
       }
     } catch {
-      signal.throwIfAborted()
+      if (signal.aborted) {
+        throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+      }
     }
   }
 

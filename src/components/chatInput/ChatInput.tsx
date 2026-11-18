@@ -10,6 +10,7 @@ import {
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
+import { hasOwn } from '../../utils/object.js'
 import {
   addDraftFiles,
   EMPTY_DRAFT,
@@ -47,7 +48,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const setText = (value: string) => setDraftText(sessionId, value)
   const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks) !== null)
   const streaming = useChatStore(
-    (state) => sessionId !== null && Object.hasOwn(state.streaming, sessionId)
+    (state) => sessionId !== null && hasOwn(state.streaming, sessionId)
   )
   const thinking = useSettings((state) => state.thinking)
   const importingHistory = useChatStore((state) => state.importingHistory)

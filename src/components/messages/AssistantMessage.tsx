@@ -6,7 +6,7 @@ import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
-import { continueReply, regenerateReply } from '../../services/chat/store.js'
+import { continueReply, regenerateReply, useChatStore } from '../../services/chat/store.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import type { AssistantMessage as AssistantMessageType } from '../../services/chat/types.js'
 import { openSettings } from '../settings/settingsDialogState.js'
@@ -49,6 +49,9 @@ export const AssistantMessage = memo(function AssistantMessage({
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const apiProtocol = useSettings((state) => state.apiProtocol)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
+  const contextProgress = useChatStore((state) =>
+    streaming ? state.contextProgress[sessionId] : undefined
+  )
   const view = useReplyView(message, streaming)
   const panelEntry = useSearchPanel((state) => state.entry)
   const notice = streaming ? null : describeReply(message)
@@ -59,15 +62,22 @@ export const AssistantMessage = memo(function AssistantMessage({
     .filter(Boolean)
     .join('\n\n')
   const copyText = responseText || notice?.text
-  const waiting = streaming && view.steps.length === 0 && !view.answer && !message.thinking
+  const waiting = streaming && !contextProgress && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
   return (
     <div data-chat-message={message.id} className={styles.message}>
+      {contextProgress ? (
+        <div className={clsx(styles.waiting, styles.compressionStatus)} role="status">
+          {contextProgress.total > 0
+            ? t('contextMemoryProgress', contextProgress)
+            : t('contextMemoryCompressing')}
+        </div>
+      ) : null}
       {refused ? null : (
         <ReplyArea
           message={message}
           view={view}
-          streaming={streaming}
+          streaming={streaming && !contextProgress}
           hasResponse={!!responseText}
         />
       )}

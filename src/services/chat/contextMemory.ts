@@ -254,6 +254,7 @@ export const prepareContextMemory = async (
     return { history, systemMemory: fixed ? `${fixed}\n\n${NOTICE}` : '' }
   }
 
+  options.onProgress?.({ completed: 0, total: 0 })
   let recentCount = 0
   while (recentCount < Math.min(8, rounds.length)) {
     const size =
@@ -461,7 +462,9 @@ export const prepareContextMemory = async (
     rawRecords.push(...result.records)
     records = filterMemoryRecords(rawRecords, sessionId, orderedSources())
   }
-  options.onProgress?.({ completed: selected.length, total: selected.length })
+  if (selected.length > 0) {
+    options.onProgress?.({ completed: selected.length, total: selected.length })
+  }
   const complete = batchCount <= selected.length
   const recordPosition = (record: MemoryRecord) =>
     Math.max(...record.sources.map((source) => sourceOrder.get(source.messageId) ?? -1))

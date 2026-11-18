@@ -62,7 +62,9 @@ try {
   settings.setContextMemoryEnabled(true)
   const cold = await import(new URL('services/settings.ts?memory-cold', root))
   assert.equal(cold.useSettings.getState().contextMemoryEnabled, true)
-  const short = await prepareContextMemory(optionsFor({ history: round(0, '你好', '我在'), memory: { fixed: '称呼：小鹿。' } }))
+  const shortProgress = []
+  const short = await prepareContextMemory(optionsFor({ history: round(0, '你好', '我在'), memory: { fixed: '称呼：小鹿。' }, onProgress: value => shortProgress.push(value) }))
+  assert.deepEqual(shortProgress, [], 'A chat that fits must never show compression status')
   assert.equal(requests.length, 0)
   assert.ok(short.systemMemory.includes('称呼：小鹿'))
   assert.deepEqual(short.history, round(0, '你好', '我在'))
@@ -88,6 +90,7 @@ try {
   assert.ok(first.history.length > 0 && first.history.length % 2 === 0)
   assert.deepEqual(first.history, history.slice(-first.history.length))
   assert.equal(JSON.stringify(history), original)
+  assert.deepEqual(progress[0], { completed: 0, total: 0 }, 'Report compression before selecting extraction batches')
   assert.ok(progress.some(value => value.completed === value.total && value.total > 0))
   for (const { url, init, body } of requests) {
     assert.equal(url, 'https://qa-memory.example.test/v1/chat/completions')

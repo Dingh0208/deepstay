@@ -54,7 +54,6 @@ export const App = () => {
     state.activeId === null ? false : hasOwn(state.streaming, state.activeId)
   )
   const activeId = useChatStore((state) => state.activeId)
-  const contextProgress = useChatStore((state) => state.activeId ? state.contextProgress[state.activeId] : undefined)
 
   usePreventPageScroll(isMobile)
 
@@ -81,9 +80,6 @@ export const App = () => {
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main} {...siderSwipe}>
-          {contextProgress ? <div className={styles.saveError} role="status">
-            {t('contextMemoryProgress', contextProgress)}
-          </div> : null}
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>

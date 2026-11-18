@@ -18,6 +18,11 @@
   height: 34px;
 }
 
+.compressionStatus {
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-markdown-base);
+}
+
 .waitingDot {
   width: 6px;
   height: 6px;

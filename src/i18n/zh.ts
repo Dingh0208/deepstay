@@ -245,6 +245,7 @@ export const zh = {
   contextMemoryLabel: '上下文压缩',
   contextMemoryFailed: '整理对话失败，本次消息未发送。可重试或在设置中关闭上下文压缩；关闭后会发送完整上下文。',
   contextMemoryTooLarge: '最近完整轮次、当前消息或固定记忆过长，暂无法在压缩预算内发送。请缩短本轮消息或固定记忆，或关闭上下文压缩后自行确认完整上下文费用。',
-  contextMemoryProgress: '正在整理对话 {completed}/{total}，可点击停止取消',
+  contextMemoryCompressing: '正在进行上下文压缩，请稍等',
+  contextMemoryProgress: '正在进行上下文压缩，请稍等（{completed}/{total}）',
   contextMemorySourceTooLarge: '待整理历史超过单次自动预算（16 批），本次未调用模型。可选择较短分支，或关闭压缩后自行确认完整上下文费用。',
 } as const

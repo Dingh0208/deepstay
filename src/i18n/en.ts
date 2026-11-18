@@ -253,6 +253,7 @@ export const en = {
   contextMemoryLabel: 'Context compression',
   contextMemoryFailed: 'Could not summarize this chat. The message was not sent. Retry or turn off context compression to send the full context.',
   contextMemoryTooLarge: 'Recent full turns, the current message or pinned memory exceed the compression budget. Shorten your message or memory, or disable compression after considering full-context costs.',
-  contextMemoryProgress: 'Summarizing chat {completed}/{total}. Use Stop to cancel.',
+  contextMemoryCompressing: 'Compressing chat context. Please wait.',
+  contextMemoryProgress: 'Compressing chat context ({completed}/{total}). Please wait.',
   contextMemorySourceTooLarge: 'Older history exceeds the automatic budget of 16 batches. No model call was made. Choose a shorter branch, or disable compression after considering full-context costs.',
 } satisfies Record<keyof typeof zh, string>

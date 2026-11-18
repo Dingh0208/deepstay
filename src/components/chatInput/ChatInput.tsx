@@ -8,6 +8,7 @@ import {
   IconThinkOutline14,
 } from '../base/icons.js'
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import { hasOwn } from '../../utils/object.js'
@@ -54,6 +55,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
+  const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
+  const apiProtocol = useSettings((state) => state.apiProtocol)
+  const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -76,6 +80,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }, [t])
 
   const acceptFiles = (files: File[]) => {
+    if (!extras && files.length > 0) {
+      showToast({ key: 'apiTextOnly' })
+      return
+    }
     if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
       return
     }
@@ -86,11 +94,15 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   }
   const retryFile = useCallback(
     (id: string) => {
+      if (!extras) {
+        showToast({ key: 'apiTextOnly' })
+        return
+      }
       if (!useChatStore.getState().importingHistory && ensureApiKey()) {
         retryDraftAttachment(sessionId, id, useSettings.getState().apiKey ?? '')
       }
     },
-    [sessionId]
+    [sessionId, extras]
   )
   const removeFile = useCallback(
     (id: string) => {
@@ -134,6 +146,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
 
   const send = () => {
+    if (!extras && attachments.length > 0) {
+      showToast({ key: 'apiTextOnly' })
+      return
+    }
     if (
       useChatStore.getState().importingHistory ||
       voice.status !== 'idle' ||
@@ -181,12 +197,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               event.currentTarget.focus({ preventScroll: true })
             }
           }}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault()
-              send()
-            }
-          }}
           onPaste={(event) => {
             const files = Array.from(event.clipboardData.files)
             if (files.length > 0) {
@@ -215,7 +225,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
             </button>
           </Tooltip>
-          <Tooltip content={t('deactivatedSearchTooltip')}>
+          {extras ? <Tooltip content={t('deactivatedSearchTooltip')}>
             <button
               type="button"
               className={clsx(styles.toggle, search && styles.selected)}
@@ -226,10 +236,10 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               <IconGlobeLanguageOutline14 />
               <span className={styles.toggleLabel}>{t('search')}</span>
             </button>
-          </Tooltip>
+          </Tooltip> : null}
         </div>
         <div className={styles.right}>
-          <VoiceButton
+          {extras ? <VoiceButton
             status={voice.status}
             disabled={!voice.available}
             seconds={voice.seconds}
@@ -241,15 +251,15 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
                 void voice.toggle()
               }
             }}
-          />
-          <IconButton
+          /> : null}
+          {extras ? <IconButton
             size="m"
             tone="primary"
             icon={<IconPaperclipOutline16 />}
             tooltip={t('uploadFile')}
             disabled={importingHistory}
             onClick={() => ensureApiKey() && fileInputRef.current?.click()}
-          />
+          /> : null}
           <input
             ref={fileInputRef}
             type="file"

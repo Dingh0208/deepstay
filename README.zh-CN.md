@@ -2,11 +2,11 @@
 
 [English](README.md) | 简体中文
 
-使用自己的 DeepSeek API Key 聊天，无需注册、登录或应用后端。支持 Web 和 Android。
+使用自己的 DeepSeek 或 OpenAI 兼容接口 API Key 聊天，无需注册、登录或应用后端。支持 Web 和 Android。
 
 ## 安装与开始
 
-从 [GitHub Releases](https://github.com/Dingh0208/deepstay/releases/latest) 下载 APK 安装。首次启动按引导进入「设置 → 数据管理」，添加自己的 DeepSeek API Key 后开始聊天。
+从 [GitHub Releases](https://github.com/Dingh0208/deepstay/releases/latest) 下载 APK 安装。首次启动按引导进入「设置 → 数据管理」，填写 API 地址、接口类型与 Key，拉取并选择模型后保存。默认配置连接 DeepSeek；第三方服务可选择 OpenAI 兼容接口，也可手动填写模型 ID。
 
 空白会话显示透明背景图片 Logo 和「欢迎回来，随时开始吧」。侧栏的「方案」目前仅显示开发中提示，不提供充值、订阅或登录，也不调用平台接口。
 
@@ -21,16 +21,27 @@
 - 附件、语音输入与回复朗读。
 - Markdown、代码高亮、KaTeX 公式和 Mermaid 图表。
 - 中英文、深浅主题、移动端布局与本机历史导入导出。
+- 深度思考默认展开，可在通用设置开启默认折叠；手动展开不受流式更新影响。
+- 自定义本机聊天背景图片、恢复默认；图片压缩后保存在本机。
+- 自定义 API 地址、Key、模型，支持测试连接、拉取模型与手动填写模型 ID。
+- 可从侧栏搜索本机聊天记录；在 API 设置的「拉取模型」右侧查询 DeepSeek 账户余额。
+- 手机输入框按 Enter 换行，仅点击发送按钮才会发送消息。
+- 可选长对话上下文记忆压缩，只影响发送给模型的上下文，不改写原始聊天记录，默认关闭。
+- 历史 ZIP 在后台 Worker 中解析并显示进度，期间仍可聊天；用户确认后新增会话，保留本机原有历史。
 
-实际能力取决于上游接口和账号权限。当前默认连接 `https://api.deepseek.com`，聊天通过 Anthropic 兼容的 Messages / Files API，语音使用 ASR / TTS；搜索、链接阅读和标题等也依赖 DeepSeek 扩展。**不承诺支持任意第三方 OpenAI 兼容接口。**
+实际能力取决于上游接口和账号权限。默认连接 `https://api.deepseek.com`，聊天通过 Anthropic 兼容的 Messages / Files API，语音使用 ASR / TTS；搜索、链接阅读和标题等依赖默认 DeepSeek 扩展。OpenAI 兼容模式通过 `/v1/chat/completions` 支持文本聊天与 `reasoning_content` 思考流，隐藏不支持的附件、搜索和语音入口；切换服务后只发送旧历史中的文字，本机原始记录保留。不同服务的额外参数和能力不保证通用。
+
+API 地址可填根地址或带 `/v1` 的地址。「测试连接」和「拉取模型」均请求该地址的 `/v1/models`，不发起模型生成，不验证余额或生成权限。服务未提供模型列表时，可手动填写模型 ID 并保存。Web 端还需要上游允许跨域请求。
 
 ## 数据
 
-API Key 和设置保存在当前浏览器或应用 WebView 的 localStorage，会话与附件原件保存在 IndexedDB。Key 不上传至 deepstay 平台；使用聊天、附件和语音时，相应数据会提交给 DeepSeek。localStorage 不等同于加密密钥库。
+API Key 和设置保存在当前浏览器或应用 WebView 的 localStorage，会话与附件原件保存在 IndexedDB。Key 不上传至 deepstay 平台；模型列表、聊天等请求直接发送至用户配置的服务，默认扩展功能发送至 DeepSeek。localStorage 不等同于加密密钥库。
+
+聊天背景独立保存在本机 IndexedDB，不包含在历史导出中；导入或清空历史不会修改背景，需在通用设置中单独恢复默认。
 
 本版没有账号、云同步或跨设备同步。浏览器和 APK 的本地数据相互独立；卸载、清除应用存储或更换浏览器配置可能丢失记录。
 
-「设置 → 数据管理」可导出、导入或清空历史。导入经确认后**替换全部本机历史**；导出包含对话及本机可用的图片原件，不含 API Key、设置或非图片附件原件。详见[归档格式说明](src/services/chat/history/README.md)。清空本机记录不会删除已经提交给上游的文件。
+「设置 → 数据管理」可导出、导入或清空历史。导入经确认后**新增独立会话，保留全部现有历史**，重复导入也会新增一份；导出包含对话及本机可用的图片原件，不含 API Key、设置或非图片附件原件。详见[归档格式说明](src/services/chat/history/README.md)。清空本机记录不会删除已经提交给上游的文件。
 
 ## 本地开发
 
@@ -48,6 +59,7 @@ pnpm dev
 ```sh
 pnpm type
 pnpm lint
+pnpm test # Node.js 24+
 pnpm build
 ```
 

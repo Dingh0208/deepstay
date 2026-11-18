@@ -22,6 +22,17 @@
   position: relative;
   flex: 1;
   min-height: 0;
+  isolation: isolate;
+}
+
+.chatBackground {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0.18;
+  background-size: cover;
+  background-position: center;
+  pointer-events: none;
 }
 
 .saveError {

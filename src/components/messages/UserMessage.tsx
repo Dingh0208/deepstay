@@ -61,7 +61,7 @@ export const UserMessage = memo(function UserMessage({
   }
 
   return (
-    <div className={clsx(styles.container, isFirst && styles.isFirst)}>
+    <div data-chat-message={message.id} className={clsx(styles.container, isFirst && styles.isFirst)}>
       {message.files.length > 0 ? (
         <div
           className={clsx(

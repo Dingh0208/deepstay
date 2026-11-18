@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
-import type { ChatModel, CreateMessageRequest } from '../api/types.js'
+import type { CreateMessageRequest } from '../api/types.js'
+import { getApiConnection, supportsDeepSeekExtras } from '../api/connection.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
@@ -16,6 +17,8 @@ import {
   prepareDraftMessage,
 } from './drafts.js'
 import { createLatestReminder } from './latestReminder.js'
+import { useHistoryTarget } from './historySearch.js'
+import { prepareContextMemory } from './contextMemory.js'
 import {
   applyEvent,
   canContinueReply,
@@ -33,8 +36,6 @@ import {
   type UserMessage,
 } from './types.js'
 
-/** deepseek-flash 同时支持深度思考与图片输入 */
-const MODEL: ChatModel = 'deepseek-flash'
 /** 所有生成请求统一携带的助手身份说明 */
 const SYSTEM_PROMPT = '你是 deepstay 的 AI 助手。认真理解用户的语境，以自然、温和的方式回应。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
@@ -74,12 +75,14 @@ type ChatState = {
   activeId: string | null
   /** 正在生成回复的会话 */
   streaming: Record<string, AbortController>
+  contextProgress: Record<string, { completed: number; total: number }>
 }
 
 export const useChatStore = create<ChatState>(() => ({
   ready: false,
   initError: false,
   importingHistory: false,
+  contextProgress: {},
   sessions: [],
   sessionCache: {},
   sessionLoadErrors: {},
@@ -256,15 +259,15 @@ export const bindChatPersistence = () => {
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
 const createReply = (): AssistantMessage => {
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, model, apiProtocol } = useSettings.getState()
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
-    model: MODEL,
+    model,
     thinking,
-    search,
-    prefix: true,
+    search: supportsDeepSeekExtras() && search,
+    prefix: apiProtocol === 'deepseek',
     status: 'pending',
     blocks: [],
   }
@@ -390,7 +393,7 @@ const waitForIdle = (sessionId?: string) =>
  * 替换历史对话：先写入暂存，成功后原子替换旧记录；写入为空即删除全部会话与附件。
  * 期间停止生成并禁止修改会话；失败时清除暂存，保留原有记录。
  */
-export const replaceHistory = async (write: () => Promise<void>): Promise<number> => {
+export const replaceHistory = async (write: () => Promise<void>, staged = false): Promise<number> => {
   if (get().importingHistory) {
     throw new Error('History replacement is already in progress')
   }
@@ -405,11 +408,13 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     initTask = undefined
     sessionLoads.clear()
     await waitForIdle()
-    await db.clearStaging()
+    if (!staged) {
+      await db.clearStaging()
+    }
     let summaries: SessionSummary[]
     try {
       await write()
-      summaries = await db.commitStaging()
+      summaries = await db.commitStaging(true)
     } catch (error) {
       await db.clearStaging().catch(db.reportStorageError('clear unfinished history replacement'))
       throw error
@@ -446,6 +451,21 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
   }
 }
 
+/** 导入作为独立会话新增；保留现有缓存、草稿和正在生成的回复。 */
+export const appendStagedHistory = async (): Promise<number> => {
+  await initChat()
+  const summaries = await db.commitStaging()
+  const activeId = sortSessions(summaries)[0]?.id
+  set((state) => ({
+    sessions: sortSessions([...state.sessions, ...summaries]),
+    ...(activeId ? { activeId } : {}),
+  }))
+  if (activeId) {
+    await ensureSessionLoaded(activeId)
+  }
+  return summaries.length
+}
+
 export const newChat = () => {
   if (!get().importingHistory) {
     set({ activeId: null })
@@ -460,6 +480,42 @@ export const selectSession = (id: string) => {
     void ensureSessionLoaded(id)
     trimSessionCache()
   }
+}
+
+export const openHistoryMatch = async (id: string, messageId: string | null) => {
+  selectSession(id)
+  await ensureSessionLoaded(id)
+  const original = getSession(id)
+  if (!original || get().activeId !== id || get().importingHistory || !messageId) {
+    return
+  }
+  const session = normalizeSession(original)
+  const byId = new Map(session.messages.map((message) => [message.id, message]))
+  let child = byId.get(messageId)
+  const choices = new Map<string, string>()
+  const visited = new Set<string>()
+  while (child?.parentId && !visited.has(child.id)) {
+    visited.add(child.id)
+    choices.set(child.parentId, child.id)
+    child = byId.get(child.parentId)
+  }
+  if (!child) {
+    return
+  }
+  updateSession(id, (current) => ({ ...current, rootMessageId: child.id,
+    messages: current.messages.map((message) => choices.has(message.id)
+      ? { ...message, selectedChildId: choices.get(message.id) } : message) }))
+  useHistoryTarget.setState({ sessionId: id, messageId })
+  persist(id)
+}
+
+export const setSessionContextMemory = (sessionId: string, fixed: string) => {
+  if (get().importingHistory || get().streaming[sessionId] || !getSession(sessionId)) {
+    return
+  }
+  updateSession(sessionId, (session) => ({ ...session,
+    contextMemory: { ...session.contextMemory, fixed: fixed.slice(0, 10_000) } }))
+  persist(sessionId)
 }
 
 export const renameSession = (id: string, title: string) => {
@@ -560,6 +616,9 @@ export const sendMessage = (targetSessionId: string | null) => {
     return false
   }
   const { text, files } = prepared
+  if (files.length > 0 && !supportsDeepSeekExtras()) {
+    return false
+  }
   const now = Date.now()
   let sessionId = targetSessionId
   if (
@@ -693,7 +752,7 @@ export const selectMessageVersion = (sessionId: string, messageId: string) => {
 
 /** 继续最后一条未完成的回答：保留原消息与开关，仅将新流的内容追加到原块之后。 */
 export const continueReply = (sessionId: string, messageId: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || deletingSessions.has(sessionId) || useSettings.getState().apiProtocol !== 'deepseek') {
     return
   }
   const session = getSession(sessionId)
@@ -711,11 +770,11 @@ export const continueReply = (sessionId: string, messageId: string) => {
   ) {
     return
   }
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, model } = useSettings.getState()
   const reply: AssistantMessage = {
     ...previous,
     // 未记录请求配置的回复，续写时使用默认模型和当前开关。
-    model: previous.model ?? MODEL,
+    model: previous.model ?? model,
     thinking: previous.thinking ?? thinking,
     search: previous.search ?? search,
     status: 'pending',
@@ -970,6 +1029,11 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  * 服务端判定 file_id 失效时重新补传后重发，退避重试且次数有上限，超过则按原始报错收尾。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
+  const settings = useSettings.getState()
+  const connection = getApiConnection()
+  const apiKey = settings.apiKey ?? ''
+  const model = initial.model ?? settings.model
+  const extras = supportsDeepSeekExtras(connection)
   const controller = new AbortController()
   if (!getSession(sessionId)?.title) {
     titleRequests.add(controller)
@@ -983,14 +1047,33 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     updateReply(sessionId, reply)
   }
   streamFlushes.set(sessionId, flush)
+  let contextPrepared = false
+  let systemMemory = ''
 
   try {
     for (let attempt = 0; ; attempt += 1) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
-      let preparing = true
+      let preparing = false
       let receivedContent = false
       try {
-        const prepared = await prepareFiles(sessionId, request, controller.signal)
+        if (!contextPrepared && settings.contextMemoryEnabled) {
+          const context = await prepareContextMemory({
+            history: request.history, question: request.question, prefix: request.prefix,
+            memory: getSession(sessionId)?.contextMemory,
+            apiKey, connection, model, signal: controller.signal,
+            onProgress: (progress) => set((state) => ({ contextProgress: { ...state.contextProgress, [sessionId]: progress } })),
+          })
+          request = { ...request, history: context.history }
+          systemMemory = context.systemMemory
+          if (context.memoryPatch) {
+            updateSession(sessionId, (session) => ({ ...session, contextMemory: context.memoryPatch }))
+            persist(sessionId)
+          }
+          set((state) => ({ contextProgress: Object.fromEntries(Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)) }))
+        }
+        contextPrepared = true
+        preparing = true
+        const prepared = extras ? await prepareFiles(sessionId, request, controller.signal) : request
         preparing = false
         // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
         const latestReminder = prepared.prefix
@@ -1004,20 +1087,22 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
-          latestReminder
+          latestReminder,
+          !extras
         )
         const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
+          apiKey,
           {
-            model: initial.model ?? MODEL,
-            system: SYSTEM_PROMPT,
+            model,
+            system: [SYSTEM_PROMPT, systemMemory].filter(Boolean).join('\n\n'),
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
             safety_check: SAFETY_CHECK,
-            tools: serverTools(initial.search ?? false),
-            ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+            tools: extras ? serverTools(initial.search ?? false) : [],
+            ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
           },
-          controller.signal
+          controller.signal,
+          connection
         )
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
@@ -1059,7 +1144,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
-          attempt < FILE_RETRY_LIMIT &&
+          extras && attempt < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
         ) {
@@ -1090,6 +1175,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       }
     }
   } finally {
+    set((state) => ({ contextProgress: Object.fromEntries(Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)) }))
     titleRequests.delete(controller)
     streamFlushes.delete(sessionId)
     cancelAnimationFrame(frame)

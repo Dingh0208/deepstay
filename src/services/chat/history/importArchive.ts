@@ -1,4 +1,5 @@
 import * as db from '../db.js'
+import type { Session } from '../types.js'
 import { BackupError, fail } from './errors.js'
 import type { SessionIndexEntry } from './format.js'
 import { INDEX_PATH, MANIFEST_PATH, USER_PATH, parseSessionPath, sessionFilesDir } from './paths.js'
@@ -75,10 +76,10 @@ export const checkArchiveFormat = async (file: File): Promise<void> => {
 /**
  * 流式导入：manifest → user（不导入）→ 全部会话 JSON → index → 全部图片。
  * 也支持会话与图片交错排列、index 位于末尾的条目顺序。
- * 会话读完立即暂存，只保留图片路径映射；图片全部读完后逐会话回填 MIME，不改变图片身份。
+ * 会话按至多 32 条 / 4 MiB 的批次暂存；图片全部读完后逐会话回填 MIME，不改变图片身份。
  * 写入导入暂存存储；调用方负责先清空暂存，成功后替换正式数据，失败时清理暂存。
  */
-export const importArchive = async (file: File): Promise<void> => {
+export const importArchive = async (file: File, onProgress?: (bytes: number, sessions: number) => void): Promise<void> => {
   if (!(await isZipFile(file))) {
     fail('backupUnrecognized')
   }
@@ -89,6 +90,15 @@ export const importArchive = async (file: File): Promise<void> => {
   let manifest = false
   let index: SessionIndexEntry[] | undefined
   let currentSessionId: string | undefined
+  let batch: Session[] = []
+  let batchBytes = 0
+  const flushSessions = async () => {
+    if (batch.length) {
+      await db.addStagingSessions(batch)
+      batch = []
+      batchBytes = 0
+    }
+  }
 
   const saveImage = async (entry: ArchiveEntry, id: string) => {
     if (stored.has(id)) {
@@ -102,7 +112,7 @@ export const importArchive = async (file: File): Promise<void> => {
   }
 
   try {
-    for await (const entry of readArchive(file)) {
+    for await (const entry of readArchive(file, (bytes) => onProgress?.(bytes, imported.size))) {
       const { path } = entry
       const sessionId = parseSessionPath(path)
       if (!manifest) {
@@ -124,7 +134,11 @@ export const importArchive = async (file: File): Promise<void> => {
         for (const [imagePath, id] of local.images) {
           images.set(imagePath, id)
         }
-        await db.addStagingSession(local.session)
+        batch.push(local.session)
+        batchBytes += entry.size
+        if (batch.length >= 32 || batchBytes >= 4 * 1024 * 1024) {
+          await flushSessions()
+        }
       } else if (path === INDEX_PATH && !index) {
         index = readSessionIndex(await readJson(entry))
       } else if (
@@ -142,6 +156,7 @@ export const importArchive = async (file: File): Promise<void> => {
   } catch (error) {
     throw error instanceof ArchiveError ? new BackupError('backupIncomplete') : error
   }
+  await flushSessions()
   if (!manifest) {
     fail('backupUnrecognized')
   }
@@ -155,5 +170,7 @@ export const importArchive = async (file: File): Promise<void> => {
   ) {
     fail('backupIncomplete')
   }
-  await db.updateStagingFileTypes(stored)
+  if (stored.size) {
+    await db.updateStagingFileTypes(stored)
+  }
 }

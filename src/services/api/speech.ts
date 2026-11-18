@@ -1,4 +1,5 @@
-import { ApiError, API_ORIGIN, request } from './client.js'
+import { ApiError, request } from './client.js'
+import { apiEndpoint, getApiConnection, supportsDeepSeekExtras } from './connection.js'
 
 /**
  * 语音接口：
@@ -6,7 +7,13 @@ import { ApiError, API_ORIGIN, request } from './client.js'
  * - TTS：POST /v1/tools/tts，返回音频字节流（产出首帧后即返回 200）
  * 鉴权都用 Authorization: Bearer。
  */
-const TOOLS_BASE_URL = `${API_ORIGIN}/v1/tools`
+const toolsUrl = (path: string) => {
+  const connection = getApiConnection()
+  if (!supportsDeepSeekExtras(connection)) {
+    throw new ApiError('protocol', { key: 'apiTextOnly' })
+  }
+  return apiEndpoint(connection.baseUrl, `v1/tools/${path}`)
+}
 
 export type TtsVoice = 'stella' | 'tide'
 
@@ -21,9 +28,10 @@ export const transcribe = async (
 ): Promise<string> => {
   const form = new FormData()
   form.append('file', audio, 'recording.wav')
-  const response = await request(`${TOOLS_BASE_URL}/asr`, {
+  const response = await request(toolsUrl('asr'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
+    credentials: 'omit',
     body: form,
     signal,
   })
@@ -52,9 +60,10 @@ export const synthesize = async (
   voice: TtsVoice,
   signal: AbortSignal
 ): Promise<ReadableStream<Uint8Array>> => {
-  const response = await request(`${TOOLS_BASE_URL}/tts`, {
+  const response = await request(toolsUrl('tts'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    credentials: 'omit',
     body: JSON.stringify({ text, voice_id: voice, format: 'pcm', filter_markdown: true }),
     signal,
   })

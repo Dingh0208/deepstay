@@ -258,7 +258,7 @@ export const en = {
   settingsLocaleZhCN: 'Simplified Chinese',
   settingsLocaleEnUS: 'English',
   contextMemoryLabel: 'Context compression',
-  contextMemoryDescription: 'Summarizes older messages separately in each chat. Memories are never shared across chats. Summary calls use your current model and cost extra; original history is kept.',
+  contextMemoryDescription: 'Compress earlier messages while keeping the original chat. Each chat has its own memory; summarizing it costs extra.',
   contextMemoryEdit: 'Current chat memory',
   contextMemoryCurrentChat: 'Applies only to this chat: {title}',
   contextMemorySelectChat: 'Open a chat to edit its memory.',

@@ -250,7 +250,7 @@ export const zh = {
   settingsLocaleZhCN: '简体中文',
   settingsLocaleEnUS: 'English',
   contextMemoryLabel: '上下文压缩',
-  contextMemoryDescription: '开启后，各会话独立整理早期内容，记忆不会互通。摘要调用当前模型并产生额外费用，原始聊天保留。',
+  contextMemoryDescription: '压缩早期对话，保留原始记录。各会话记忆独立，整理时会产生额外费用。',
   contextMemoryEdit: '当前会话记忆',
   contextMemoryCurrentChat: '仅用于当前会话：{title}',
   contextMemorySelectChat: '先打开一个对话后编辑记忆。',

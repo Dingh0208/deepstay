@@ -1,4 +1,10 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
+import {
+  looksLikeEventStream,
+  readServerSentEvents,
+  ServerSentEventDecoder,
+  type ServerSentEvent,
+} from './sse.js'
 import type { ApiErrorBody } from './types.js'
 
 export type ApiErrorKind = 'http' | 'stream' | 'network' | 'interrupted' | 'protocol'
@@ -23,22 +29,61 @@ export const isErrorBody = (value: unknown): value is ApiErrorBody =>
   'error' in value &&
   typeof (value as ApiErrorBody).error?.message === 'string'
 
-export const readErrorResponse = async (
-  response: Response,
-  kind: 'http' | 'protocol' = 'http',
-  fallback = response.statusText
-): Promise<ApiError> => {
-  const text = await response.text().catch(() => '')
-  let message = text || fallback
+const INVALID_STREAM = { key: 'replyInvalidStream' } as const
+
+const isEventStreamResponse = (response: Response): boolean =>
+  response.headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream'
+
+const jsonErrorMessage = (text: string): string | undefined => {
   try {
     const body: unknown = JSON.parse(text)
-    if (isErrorBody(body)) {
-      message = body.error.message
-    }
+    return isErrorBody(body) ? body.error.message : undefined
   } catch {
-    // 非 JSON 响应体直接展示原文
+    return undefined
   }
-  return new ApiError(kind, message, response.status)
+}
+
+const readableErrorMessage = (message: string | undefined): string | TranslationMessage =>
+  message?.trim() && !looksLikeEventStream(message) ? message : INVALID_STREAM
+
+export const streamError = (message?: string): ApiError =>
+  new ApiError('stream', readableErrorMessage(message))
+
+export const readMessageEventStream = (
+  response: Response,
+  signal: AbortSignal
+): AsyncGenerator<ServerSentEvent> => {
+  if (!response.body) {
+    throw new ApiError('protocol', INVALID_STREAM, response.status)
+  }
+  return readServerSentEvents(
+    response.body,
+    signal,
+    isEventStreamResponse(response)
+      ? undefined
+      : (preview) => {
+          throw new ApiError(
+            'protocol',
+            readableErrorMessage(jsonErrorMessage(preview)),
+            response.status
+          )
+        }
+  )
+}
+
+const readErrorResponse = async (response: Response): Promise<ApiError> => {
+  const text = await response.text().catch(() => '')
+  if (isEventStreamResponse(response) || looksLikeEventStream(text)) {
+    const events = new ServerSentEventDecoder().push(`${text}\n\n`)
+    const message = events.map(({ data }) => jsonErrorMessage(data)).find(Boolean)
+    return new ApiError('http', readableErrorMessage(message), response.status)
+  }
+  const message = jsonErrorMessage(text) ?? (text || response.statusText)
+  return new ApiError(
+    'http',
+    looksLikeEventStream(message) ? INVALID_STREAM : message,
+    response.status
+  )
 }
 
 export const request = async (url: string, init: RequestInit): Promise<Response> => {

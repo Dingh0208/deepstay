@@ -228,6 +228,61 @@ assert.equal(getReplyText(original), '原协议完整回答')
 assert.equal(original.stopReason, 'end_turn')
 checks.push('Existing DeepSeek Anthropic endpoint, x-api-key authentication, selected model and event-driven answer rendering continue to work')
 
+const deepseek = { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }
+const namedFrame = frame => `event: ${frame.type}\r\ndata: ${JSON.stringify(frame)}\r\n\r\n`
+const screenshotFrame = namedFrame({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '逐段回复' } })
+const fixtures = [
+  [
+    deepseek,
+    'text/plain',
+    namedFrame({ type: 'message_start', message: { id: 'mislabeled', model: body.model } }) +
+      namedFrame({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }) +
+      screenshotFrame,
+    namedFrame({ type: 'content_block_stop', index: 0 }) +
+      namedFrame({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } }) +
+      namedFrame({ type: 'message_stop' }),
+  ],
+  [
+    getApiConnection(),
+    'application/octet-stream',
+    asSse([{ id: 'mislabeled', choices: [{ delta: { content: '逐段回复' } }] }]),
+    asSse([{ choices: [{ delta: {}, finish_reason: 'stop' }] }, '[DONE]']),
+  ],
+]
+for (const [connection, contentType, firstChunk, lastChunk] of fixtures) {
+  let input
+  responder = () => new Response(new ReadableStream({ start(controller) { input = controller } }), { headers: { 'Content-Type': contentType } })
+  const reader = streamMessage(configured.apiKey, body, new AbortController().signal, connection)
+  input = undefined
+  const firstEvent = reader.next()
+  // Let the async request create the stream before enqueueing the first chunk.
+  await new Promise(resolve => realSetTimeout(resolve, 0))
+  input.enqueue(encoder.encode(firstChunk))
+  const events = [(await firstEvent).value, (await reader.next()).value, (await reader.next()).value]
+  assert.equal(getReplyText(renderEvents(events)), '逐段回复', 'Text must arrive before the response ends')
+  input.enqueue(encoder.encode(lastChunk))
+  input.close()
+  assert.equal(renderEvents([...events, ...await collect(reader)]).stopReason, 'end_turn')
+
+  responder = () => new Response(screenshotFrame, { status: 400, headers: { 'Content-Type': contentType } })
+  await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, connection)), error =>
+    error instanceof ApiError && error.kind === 'http' && error.status === 400 &&
+    error.localMessage?.key === 'replyInvalidStream' && !error.message.includes('content_block_delta'))
+
+  responder = () => new Response(asSse([{ error: { message: screenshotFrame } }]), { headers: { 'Content-Type': 'text/event-stream' } })
+  await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, connection)), error =>
+    error instanceof ApiError && error.kind === 'stream' && error.localMessage?.key === 'replyInvalidStream')
+}
+responder = () => Response.json({ error: { message: 'Specific provider failure' } })
+await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, deepseek)), error =>
+  error instanceof ApiError && error.kind === 'protocol' && error.message === 'Specific provider failure')
+responder = () => new Response(namedFrame({ type: 'error', error: { message: 'Specific HTTP stream failure' } }), {
+  status: 400, headers: { 'Content-Type': 'text/event-stream' },
+})
+await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, deepseek)), error =>
+  error instanceof ApiError && error.kind === 'http' && error.status === 400 && error.message === 'Specific HTTP stream failure')
+checks.push('Valid responses mislabeled by the provider stream incrementally on DeepSeek and OpenAI; nested and HTTP error frames stay out of user notices while specific provider errors remain readable')
+
 const { supportsDeepSeekExtras } = await import(new URL('services/api/connection.ts', sourceRoot))
 assert.equal(supportsDeepSeekExtras({ baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }), true)
 assert.equal(supportsDeepSeekExtras({ baseUrl: configured.apiBaseUrl, protocol: 'openai' }), false)

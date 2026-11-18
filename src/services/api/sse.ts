@@ -17,6 +17,16 @@ export type ServerSentEvent = {
 
 const LINE_BREAK = /\r\n|\r|\n/g
 
+const EVENT_FIELD = /^[ \t]*event:[ \t]*[\w.-]+[ \t]*$/m
+const DATA_FIELD = /^[ \t]*data:/m
+const JSON_FRAME = /^[ \t]*data:[ \t]*(?:\{[ \t]*"|\[DONE\][ \t]*$)/m
+
+/** 判断接口错误中是否含有 SSE 帧，避免把协议字段当作错误文案。 */
+export const looksLikeEventStream = (text: string): boolean => {
+  const value = text.trimStart()
+  return JSON_FRAME.test(value) || (EVENT_FIELD.test(value) && DATA_FIELD.test(value))
+}
+
 export class ServerSentEventDecoder {
   private buffer = ''
   private data = ''
@@ -101,11 +111,16 @@ export class ServerSentEventDecoder {
 /**
  * 逐个产出字节流中的 SSE 事件；流读完即结束。
  * 中止或调用方提前退出时取消读取以释放连接，不依赖底层网络把中止传到响应体。
+ * 错标响应类型且未解析出事件时，可用开头一小段文本提取 JSON 错误。
  */
 export async function* readServerSentEvents(
   stream: ReadableStream<Uint8Array>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onEmpty?: (preview: string) => void
 ): AsyncGenerator<ServerSentEvent> {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+  }
   const reader = stream.getReader()
   const onAbort = () => {
     reader.cancel(signal?.reason).catch(() => {})
@@ -114,17 +129,30 @@ export async function* readServerSentEvents(
   // TextDecoder 默认会去掉开头的 BOM；stream: true 保证多字节字符跨分片时不被截断
   const textDecoder = new TextDecoder()
   const decoder = new ServerSentEventDecoder()
+  let preview = onEmpty ? '' : undefined
   let finished = false
   try {
     for (;;) {
       const { done, value } = await reader.read()
+      if (signal?.aborted) {
+        throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+      }
+      const text = textDecoder.decode(value, { stream: !done })
+      const events = decoder.push(text)
       if (done) {
         finished = true
-        yield* decoder.push(textDecoder.decode())
-        yield* decoder.end()
+        events.push(...decoder.end())
+      }
+      if (preview !== undefined) {
+        preview = events.length > 0 ? undefined : preview + text.slice(0, 8192 - preview.length)
+      }
+      yield* events
+      if (done) {
+        if (preview !== undefined) {
+          onEmpty?.(preview)
+        }
         return
       }
-      yield* decoder.push(textDecoder.decode(value, { stream: true }))
     }
   } finally {
     signal?.removeEventListener('abort', onAbort)

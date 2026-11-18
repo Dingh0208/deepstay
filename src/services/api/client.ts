@@ -1,5 +1,4 @@
 import { readMessageEvent } from './parseEvent.js'
-import { readServerSentEvents } from './sse.js'
 import {
   apiEndpoint,
   getApiConnection,
@@ -7,7 +6,7 @@ import {
   type ApiConnection,
 } from './connection.js'
 import { streamOpenAiMessage } from './openai.js'
-import { ApiError, isErrorBody, readErrorResponse, request } from './http.js'
+import { ApiError, isErrorBody, readMessageEventStream, request, streamError } from './http.js'
 export { ApiError, request, type ApiErrorKind } from './http.js'
 import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent } from './types.js'
 
@@ -153,11 +152,7 @@ export async function* streamMessage(
     credentials: 'omit',
     signal,
   })
-  const contentType = response.headers.get('Content-Type') ?? ''
-  if (!response.body || !contentType.includes('text/event-stream')) {
-    throw await readErrorResponse(response, 'protocol', '')
-  }
-  for await (const { event: eventName, data } of readServerSentEvents(response.body, signal)) {
+  for await (const { event: eventName, data } of readMessageEventStream(response, signal)) {
     let payload: unknown
     try {
       payload = JSON.parse(data)
@@ -167,10 +162,10 @@ export async function* streamMessage(
       }
     }
     if (isErrorBody(payload)) {
-      throw new ApiError('stream', payload.error.message)
+      throw streamError(payload.error.message)
     }
     if (eventName === 'error') {
-      throw new ApiError('stream', data)
+      throw streamError(payload === undefined ? data : undefined)
     }
     const event = readMessageEvent(payload)
     if (!event) {

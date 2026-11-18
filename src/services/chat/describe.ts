@@ -1,5 +1,6 @@
 import { isTranslationKey, translate } from '../../i18n/index.js'
 import { classifyStatus } from '../api/errors.js'
+import { looksLikeEventStream } from '../api/sse.js'
 import type { AssistantMessage } from './types.js'
 
 export type Notice = {
@@ -15,6 +16,9 @@ const getTemplateText = (reply: AssistantMessage) =>
     .map((block) => (block.type === 'text' && block.isTemplate ? block.text : ''))
     .join('')
 
+const readableReplyError = (text: string) =>
+  looksLikeEventStream(text) ? translate('replyInvalidStream') : text
+
 /** 回复出错或未正常结束时展示的提示 */
 export const describeReply = (reply: AssistantMessage): Notice | null => {
   if (reply.status === 'error' && reply.error) {
@@ -23,7 +27,7 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
     const message =
       localMessage && isTranslationKey(localMessage.key)
         ? translate(localMessage.key, localMessage.params)
-        : reply.error.message
+        : readableReplyError(reply.error.message)
     // 历史补传错误刷新后仍需说明原因，恢复沿用附件卡片或重新生成。
     if (kind === 'upload') {
       return { text: message || translate('uploadFileStatusFailed') }
@@ -47,7 +51,7 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
   const template = getTemplateText(reply)
   // 归档不带结构化错误，错误文案保存在模板中，仍按错误提示展示。
   if (reply.status === 'error' && template) {
-    return { text: template }
+    return { text: readableReplyError(template) }
   }
   if (reply.stopReason === 'refusal') {
     // 导入的拒绝回复优先展示归档中的模板，普通正文仍不可展示。

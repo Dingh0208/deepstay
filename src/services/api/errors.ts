@@ -80,6 +80,24 @@ export const extractFileIds = (message: string): string[] => [
   ...new Set(message.match(/file-api-[\w-]+/g) ?? []),
 ]
 
+/** 图片内容不受支持与 file_id 失效不同，重新上传原件不会修复内容。 */
+export const getUnsupportedImageError = (
+  error: unknown
+): { location?: { messageIndex: number; blockIndex: number } } | null => {
+  if (!(error instanceof ApiError) || (error.status !== 400 && error.kind !== 'stream')) {
+    return null
+  }
+  const match = /^(?:messages\.(\d+)\.content\.(\d+):\s*)?You have uploaded an (?:unsupported|invalid) image(?:\.\s|\.?$)/i.exec(
+    error.message.trim()
+  )
+  if (!match) {
+    return null
+  }
+  return match[1] === undefined
+    ? {}
+    : { location: { messageIndex: Number(match[1]), blockIndex: Number(match[2]) } }
+}
+
 /** 上传失败里能识别出具体原因的情况；其余统一按「上传失败」处理 */
 export type UploadErrorCode = 'fileCountLimit' | 'storageLimit' | 'parseFailed'
 

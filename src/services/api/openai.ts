@@ -1,6 +1,5 @@
-import { ApiError, request } from './http.js'
+import { ApiError, readMessageEventStream, request, streamError } from './http.js'
 import { apiEndpoint, type ApiConnection } from './connection.js'
-import { readServerSentEvents } from './sse.js'
 import type { CreateMessageRequest, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -81,16 +80,13 @@ export async function* streamOpenAiMessage(
     }),
     signal,
   })
-  if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
-    throw new ApiError('protocol', 'Expected an OpenAI event stream')
-  }
   let started = false
   let index = -1
   let channel: 'text' | 'thinking' | null = null
   let stopReason: StopReason | undefined
   let usage: MessageUsage | undefined
   let done = false
-  for await (const { data, event } of readServerSentEvents(response.body, signal)) {
+  for await (const { data, event } of readMessageEventStream(response, signal)) {
     if (signal.aborted) {
       throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     }
@@ -103,7 +99,7 @@ export async function* streamOpenAiMessage(
       value = JSON.parse(data)
     } catch {
       if (event === 'error') {
-        throw new ApiError('stream', data)
+        throw streamError(data)
       }
       throw new ApiError('protocol', 'Invalid OpenAI stream event')
     }
@@ -111,13 +107,10 @@ export async function* streamOpenAiMessage(
       throw new ApiError('protocol', 'Invalid OpenAI stream event')
     }
     if (isRecord(value.error)) {
-      throw new ApiError(
-        'stream',
-        typeof value.error.message === 'string' ? value.error.message : 'OpenAI stream failed'
-      )
+      throw streamError(typeof value.error.message === 'string' ? value.error.message : undefined)
     }
     if (event === 'error') {
-      throw new ApiError('stream', data)
+      throw streamError()
     }
     if (!started) {
       yield {

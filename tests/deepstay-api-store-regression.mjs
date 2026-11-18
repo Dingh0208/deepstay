@@ -158,10 +158,7 @@ settings.setApiConnection({
   model: 'deepseek-v4-pro',
   models: ['deepseek-v4-pro'],
 })
-const officialRequests = []
-globalThis.fetch = async (url, init) => {
-  const body = JSON.parse(init.body)
-  officialRequests.push({ url: String(url), body })
+const officialReply = (body) => {
   const frames = [
     { type: 'message_start', message: { id: 'fixture', model: body.model } },
     { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '新回答' } },
@@ -171,6 +168,12 @@ globalThis.fetch = async (url, init) => {
   ]
   return new Response(frames.map(payload => `data: ${JSON.stringify(payload)}\n\n`).join(''),
     { headers: { 'Content-Type': 'text/event-stream' } })
+}
+const officialRequests = []
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body)
+  officialRequests.push({ url: String(url), body })
+  return officialReply(body)
 }
 drafts.setDraftText(longId, '续聊')
 assert.equal(store.sendMessage(longId), true)
@@ -189,6 +192,110 @@ const longSaved = await db.loadMemorySnapshot(longId)
 assert.equal(longSaved.state.sourceRevision - originalRevision, 4) // One acceptance and one completion save per turn.
 assert.equal(longSaved.session.messages.length, rounds * 2 + 3) // The first reply and the regenerated version are retained.
 checks.push('A 1200-turn official history keeps its attachment reference and full protocol context on send and regenerate, with one acceptance and one completion save each')
+
+const image = id => ({ id, serverId: `file-api-${id}`, name: `${id}.png`, size: 4, isImage: true, mimeType: 'image/png' })
+const badImage = image('unsupported')
+const goodImage = image('supported')
+const badOnly = image('unsupported-only')
+const openImageHistory = async (id, questions) => {
+  const summary = { id, title: id, createdAt: 1, updatedAt: questions.length * 2 }
+  const messages = questions.flatMap(({ content, files }, i) => [
+    { id: `q${i}`, parentId: i ? `a${i - 1}` : null, selectedChildId: `a${i}`, createdAt: i * 2 + 1,
+      role: 'user', content, files },
+    { id: `a${i}`, parentId: `q${i}`, selectedChildId: i + 1 < questions.length ? `q${i + 1}` : undefined,
+      createdAt: i * 2 + 2, role: 'assistant', status: 'done',
+      latestReminder: '旧提醒', blocks: [{ type: 'text', text: `旧回答${i}` }] },
+  ])
+  await db.saveSession({ ...summary, messages, rootMessageId: 'q0' },
+    questions.flatMap(({ files }) => files.map(({ id }) => ({ id, blob: new Blob(['test'], { type: 'image/png' }) }))))
+  store.useChatStore.setState(state => ({ sessions: [...state.sessions, summary] }))
+  await store.openHistoryMatch(id, null)
+}
+const imageRequests = []
+const rejected = [badImage.serverId, badOnly.serverId]
+let invalidIndex = false
+let errorAfterContent = false
+globalThis.fetch = async (_url, init) => {
+  const body = JSON.parse(init.body)
+  imageRequests.push(body.messages)
+  for (const [i, message] of body.messages.entries()) {
+    if (message.role !== 'user' || !Array.isArray(message.content)) continue
+    const block = message.content.findIndex(item => item.type === 'image' && rejected.includes(item.source.file_id))
+    if (block !== -1) {
+      const error = {
+        message: `messages.${i}.content.${invalidIndex ? message.content.length - 1 : block}: You have uploaded an unsupported image. ` +
+          'Please make sure your image is valid and in a supported image format.',
+      }
+      if (errorAfterContent) {
+        const frames = [
+          { type: 'message_start', message: { id: 'partial-reply', model: body.model } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '已收到的部分' } },
+          { type: 'error', error },
+        ]
+        return new Response(frames.map(payload => `data: ${JSON.stringify(payload)}\n\n`).join(''),
+          { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      return Response.json({ error }, { status: 400 })
+    }
+  }
+  return officialReply(body)
+}
+const imageHistory = 'image-errors-in-history'
+await openImageHistory(imageHistory, [
+  { content: '旧问题', files: [badImage, goodImage] },
+  { content: '', files: [badOnly] },
+])
+drafts.setDraftText(imageHistory, '好')
+assert.equal(store.sendMessage(imageHistory), true)
+await waitIdle()
+assert.equal(imageRequests.length, 3)
+assert.equal(imageRequests[0][0].role, 'latest_reminder')
+assert.equal(imageRequests[0][1].content[0].source.file_id, badImage.serverId)
+assert.equal(imageRequests[1][1].content[0].source.file_id, goodImage.serverId)
+assert.equal(imageRequests[1].some(message => message.content[0]?.source?.file_id === badOnly.serverId), true)
+assert.deepEqual(imageRequests[2][1].content,
+  [{ type: 'image', source: { type: 'file', file_id: goodImage.serverId } }, { type: 'text', text: '旧问题' }])
+assert.equal(imageRequests[2].some(message => message.content[0]?.text === '旧回答1'), false)
+assert.equal(imageRequests[2].at(-1).content, '好')
+const repaired = await db.loadSession(imageHistory)
+assert.deepEqual(repaired.messages[0].files, [badImage, goodImage])
+assert.deepEqual(repaired.messages[2].files, [badOnly])
+assert.equal((await db.loadFile(badImage.id)).size, 4)
+assert.equal(repaired.messages.at(-1).status, 'done')
+assert.equal(repaired.messages.at(-1).blocks[0].text, '新回答')
+checks.push('A text-only send with rejected historical images retries only the offending references and preserves the original files, valid image and question in IndexedDB')
+
+const currentImage = 'image-error-in-current-turn'
+await openImageHistory(currentImage, [{ content: '当前问题', files: [badImage] }])
+store.regenerateReply(currentImage)
+await waitIdle()
+assert.equal(imageRequests.length, 4)
+const currentRejected = (await db.loadSession(currentImage)).messages.at(-1)
+assert.equal(currentRejected.status, 'error')
+assert.equal(currentRejected.error.localMessage.key, 'replyUnsupportedImage')
+checks.push('An image attached to the current question is never retried without the attachment')
+
+invalidIndex = true
+const unknownSource = 'image-error-with-nonimage-index'
+await openImageHistory(unknownSource, [{ content: '这是真实的文字块索引', files: [badImage] }])
+drafts.setDraftText(unknownSource, '好')
+assert.equal(store.sendMessage(unknownSource), true)
+await waitIdle()
+assert.equal(imageRequests.length, 5)
+assert.equal((await db.loadSession(unknownSource)).messages.at(-1).error.localMessage.key, 'replyUnsupportedImage')
+checks.push('A validation path pointing at a text block cannot remove an image from the request')
+
+invalidIndex = false
+errorAfterContent = true
+drafts.setDraftText(unknownSource, '继续')
+assert.equal(store.sendMessage(unknownSource), true)
+await waitIdle()
+assert.equal(imageRequests.length, 6)
+const partial = (await db.loadSession(unknownSource)).messages.at(-1)
+assert.equal(partial.status, 'error')
+assert.equal(partial.blocks[0].text, '已收到的部分')
+assert.equal(partial.error.localMessage.key, 'replyUnsupportedImage')
+checks.push('An image error after the response begins preserves the partial reply and cannot start a new request')
 
 const evidence = { passed: true, runtime: process.version, checks,
   requests: requests.map(({ url, body }) => ({ url, model: body.model, messages: body.messages.length })),

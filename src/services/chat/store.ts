@@ -4,7 +4,12 @@ import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest } from '../api/types.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
-import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
+import {
+  extractFileIds,
+  getFileErrorCode,
+  getUnsupportedImageError,
+  isRetryableApiError,
+} from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { clearPinnedSessions, setPinnedSession, useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
@@ -48,7 +53,7 @@ const SYSTEM_PROMPT = '你是 deepstay 的 AI 助手。认真理解用户的语�
 const SESSION_CACHE_LIMIT = 5
 /** 安全审核固定开启，所有请求都走扩展模式 */
 const SAFETY_CHECK = { level: 'high' } as const
-/** 服务端判定 file_id 失效后，重新补传并重发的最多次数（不含首次请求） */
+/** 附件错误后自动重发的最多次数（不含首次请求） */
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
@@ -1103,6 +1108,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   let systemMemory = ''
   let sourceConflict = false
   let sourceState: MemoryState | undefined
+  // 接口拒绝的历史图片只在本次生成的请求中省略。
+  const excludedHistoryImageIds = new Set<string>()
   const initialSave = pendingSaves.get(sessionId)
   if (settings.contextMemoryEnabled) {
     contextPreparations.add(sessionId)
@@ -1114,6 +1121,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
       let preparing = false
       let receivedContent = false
+      let messages: CreateMessageRequest['messages'] = []
       try {
         if (controller.signal.aborted) {
           throw controller.signal.reason
@@ -1239,8 +1247,20 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         if (controller.signal.aborted) {
           throw controller.signal.reason
         }
-        const messages = toRequestMessages(
-          prepared.history,
+        const history =
+          excludedHistoryImageIds.size > 0
+            ? prepared.history.map((message) => {
+                if (message.role !== 'user' || message.files.length === 0) {
+                  return message
+                }
+                const files = message.files.filter(
+                  (file) => !file.isImage || !file.serverId || !excludedHistoryImageIds.has(file.serverId)
+                )
+                return files.length === message.files.length ? message : { ...message, files }
+              })
+            : prepared.history
+        messages = toRequestMessages(
+          history,
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
@@ -1319,6 +1339,26 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           })
           break
         }
+        const unsupportedImage = extras ? getUnsupportedImageError(error) : null
+        if (attempt < FILE_RETRY_LIMIT && !receivedContent && unsupportedImage?.location) {
+          // 以实际发送的消息为准，提醒和续写前缀也可能占用索引。
+          const { messageIndex, blockIndex } = unsupportedImage.location
+          const message = messages[messageIndex]
+          if (message?.role === 'user' && Array.isArray(message.content)) {
+            const block = message.content[blockIndex]
+            // 请求在本轮提问之后最多附带一条用于续写的 assistant。
+            const hasPrefix = messages[messages.length - 1]?.role === 'assistant'
+            const currentQuestionIndex = messages.length - (hasPrefix ? 2 : 1)
+            if (
+              block?.type === 'image' &&
+              messageIndex < currentQuestionIndex &&
+              !excludedHistoryImageIds.has(block.source.file_id)
+            ) {
+              excludedHistoryImageIds.add(block.source.file_id)
+              continue
+            }
+          }
+        }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
           extras &&
@@ -1341,7 +1381,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             kind: error.kind,
             message: error.message,
             status: error.status,
-            localMessage: error.localMessage,
+            localMessage: unsupportedImage ? { key: 'replyUnsupportedImage' } : error.localMessage,
           })
         } else {
           reply = settleReply(reply, 'error', Date.now(), {

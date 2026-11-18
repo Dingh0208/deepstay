@@ -49,6 +49,17 @@ try {
   const backup = await import(new URL('services/chat/backup.ts', sourceRoot))
   const branches = await import(new URL('services/chat/branches.ts', sourceRoot))
   const settings = await import(new URL('services/settings.ts', sourceRoot))
+  const { describeReply } = await import(new URL('services/chat/describe.ts', sourceRoot))
+  const { translate } = await import(new URL('i18n/index.ts', sourceRoot))
+  const rawStream = 'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"测试"}}\n\n'
+  const plainError = { status: 'error', blocks: [] }
+  const importedError = { ...plainError, blocks: [{ type: 'text', isTemplate: true, text: rawStream }] }
+  const expected = { text: translate('replyInvalidStream') }
+  assert.deepEqual(describeReply({ ...plainError, error: { kind: 'protocol', status: 200, message: rawStream } }), expected)
+  assert.deepEqual(describeReply(importedError), expected)
+  assert.deepEqual(describeReply({ ...importedError, status: 'done' }), { text: rawStream, presentation: 'response' })
+  assert.deepEqual(describeReply({ ...plainError, error: { kind: 'http', status: 400, message: 'Model is unavailable' } }), { text: 'Model is unavailable' })
+  checks.push('Saved raw protocol errors and imported raw error templates show a localized notice while valid response templates and readable errors retain their text')
   const now = 1_700_000_000_000
   const sessions = Array.from({ length: 15 }, (_, index) => {
     const messages = Array.from({ length: 36 }, (_, round) => [

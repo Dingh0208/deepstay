@@ -22,8 +22,51 @@
   flex-shrink: 0;
 }
 
-.brand {
-  margin-left: 4px;
+.historySearch {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 24px;
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.historySearch:focus {
+  outline: 1px solid var(--dsw-alias-button-primary-fill);
+}
+
+.searchResult {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 12px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.searchResult:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.searchResult span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+
+.searchResults {
+  padding-bottom: 12px;
 }
 
 .newChat {

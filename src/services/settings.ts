@@ -1,31 +1,41 @@
 import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
-import { normalizeLocation, type UserLocation } from './location.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
+export type ApiProtocol = 'deepseek' | 'openai'
 
-/** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
+/** 本机设置，存 localStorage：API Key、语言、主题、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
   apiKey: string | null
+  apiBaseUrl: string
+  apiProtocol: ApiProtocol
+  model: string
+  models: string[]
   locale: Locale
   themePreference: ThemePreference
-  location: UserLocation | null
   ttsVoice: TtsVoice
   thinking: boolean
+  thinkingCollapsed: boolean
+  contextMemoryEnabled: boolean
   search: boolean
   siderCollapsed: boolean
 }
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
+  apiBaseUrl: 'deepstay:api-base-url',
+  apiProtocol: 'deepstay:api-protocol',
+  model: 'deepstay:model',
+  models: 'deepstay:models',
   locale: 'chat-demo:locale',
-  location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
   ttsVoice: 'chat-demo:tts-voice',
   thinking: 'chat-demo:thinking',
+  thinkingCollapsed: 'deepstay:thinking-collapsed',
+  contextMemoryEnabled: 'deepstay:context-memory-enabled',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
 } as const
@@ -50,7 +60,7 @@ const write = (key: string, value: string | null) => {
   }
 }
 
-/** 位置选择模式跟随浏览器语言，与应用内选择的界面语言无关。 */
+/** 初始界面语言跟随浏览器语言。 */
 export const isChineseBrowser = (): boolean =>
   (typeof navigator === 'undefined' ? 'zh' : navigator.language).toLowerCase().startsWith('zh')
 
@@ -62,22 +72,6 @@ const initialLocale = (): Locale => {
   return isChineseBrowser() ? 'zh-CN' : 'en-US'
 }
 
-const initialLocation = (): UserLocation | null => {
-  try {
-    const location = normalizeLocation(JSON.parse(read(KEYS.location) ?? 'null'))
-    if (!location) {
-      return null
-    }
-    return isChineseBrowser()
-      ? location.region === 'CN' && location.province
-        ? location
-        : null
-      : { region: location.region }
-  } catch {
-    return null
-  }
-}
-
 /** 未保存过时跟随系统 */
 const initialThemePreference = (): ThemePreference => {
   const saved = read(KEYS.themePreference)
@@ -87,13 +81,27 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
+const initialModels = (): string[] => {
+  try {
+    const value: unknown = JSON.parse(read(KEYS.models) ?? '[]')
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item.trim()) : []
+  } catch {
+    return []
+  }
+}
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
+  apiBaseUrl: read(KEYS.apiBaseUrl) || __API_ORIGIN__,
+  apiProtocol: read(KEYS.apiProtocol) === 'openai' ? 'openai' : 'deepseek',
+  model: read(KEYS.model) || 'deepseek-flash',
+  models: initialModels(),
   locale: initialLocale(),
-  location: initialLocation(),
   themePreference: initialThemePreference(),
   ttsVoice: initialTtsVoice(),
   thinking: read(KEYS.thinking) === 'true',
+  thinkingCollapsed: read(KEYS.thinkingCollapsed) === 'true',
+  contextMemoryEnabled: read(KEYS.contextMemoryEnabled) === 'true',
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
 }))
@@ -101,12 +109,6 @@ export const useSettings = create<Settings>(() => ({
 export const setLocale = (locale: Locale) => {
   write(KEYS.locale, locale)
   useSettings.setState({ locale })
-}
-
-export const setLocation = (value: UserLocation | null) => {
-  const location = normalizeLocation(value)
-  write(KEYS.location, location ? JSON.stringify(location) : null)
-  useSettings.setState({ location })
 }
 
 export const setThemePreference = (themePreference: ThemePreference) => {
@@ -122,6 +124,25 @@ export const setTtsVoice = (ttsVoice: TtsVoice) => {
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+export const setApiConnection = (connection: Pick<Settings, 'apiKey' | 'apiBaseUrl' | 'apiProtocol' | 'model' | 'models'>) => {
+  write(KEYS.apiKey, connection.apiKey)
+  write(KEYS.apiBaseUrl, connection.apiBaseUrl)
+  write(KEYS.apiProtocol, connection.apiProtocol)
+  write(KEYS.model, connection.model)
+  write(KEYS.models, JSON.stringify(connection.models))
+  useSettings.setState(connection)
+}
+
+export const setThinkingCollapsed = (thinkingCollapsed: boolean) => {
+  write(KEYS.thinkingCollapsed, String(thinkingCollapsed))
+  useSettings.setState({ thinkingCollapsed })
+}
+
+export const setContextMemoryEnabled = (contextMemoryEnabled: boolean) => {
+  write(KEYS.contextMemoryEnabled, String(contextMemoryEnabled))
+  useSettings.setState({ contextMemoryEnabled })
 }
 
 export const setThinking = (thinking: boolean) => {

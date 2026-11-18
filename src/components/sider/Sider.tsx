@@ -4,10 +4,10 @@ import { useTranslate } from '../../i18n/index.js'
 import { IconDataOutline16, IconPanelLeftOutline16, IconSettingsOutline16, NewChatIcon } from '../base/icons.js'
 import { setSiderCollapsed } from '../../services/settings.js'
 import { groupSessions } from '../../services/chat/sessionGroups.js'
-import { newChat, removeSession, useChatStore } from '../../services/chat/store.js'
+import { newChat, openHistoryMatch, removeSession, useChatStore } from '../../services/chat/store.js'
+import { searchHistory, type HistoryMatch } from '../../services/chat/historySearch.js'
 import type { SessionSummary } from '../../services/chat/types.js'
 import { Button } from '../base/Button.js'
-import { Logo } from '../base/Logo.js'
 import { IconButton } from '../base/IconButton.js'
 import { Modal } from '../base/Modal.js'
 import { showToast } from '../base/toastState.js'
@@ -26,6 +26,37 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const groups = useMemo(() => groupSessions(sessions, now, t), [sessions, now, t])
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
   const [deletePending, setDeletePending] = useState(false)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<HistoryMatch[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState(false)
+  useEffect(() => {
+    const controller = new AbortController()
+    setResults([])
+    setSearchError(false)
+    setSearching(!!query.trim())
+    if (!query.trim()) {
+      return () => controller.abort()
+    }
+    const timer = setTimeout(() => {
+      void searchHistory(query, useChatStore.getState().sessionCache,
+        new Set(sessions.map((session) => session.id)), controller.signal)
+        .then((matches) => {
+          if (!controller.signal.aborted) {
+            setResults(matches)
+          }
+        }).catch(() => {
+          if (!controller.signal.aborted) {
+            setSearchError(true)
+          }
+        }).finally(() => {
+          if (!controller.signal.aborted) {
+            setSearching(false)
+          }
+        })
+    }, 250)
+    return () => { clearTimeout(timer); controller.abort() }
+  }, [query, sessions])
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>
@@ -54,7 +85,9 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   return (
     <div className={clsx(styles.sider, mobile && styles.mobile)}>
       <div className={styles.top}>
-        <Logo size={36} className={styles.brand} />
+        <input type="search" className={styles.historySearch} value={query}
+          aria-label={t('historySearchPlaceholder')} placeholder={t('historySearchPlaceholder')}
+          onChange={(event) => setQuery(event.target.value)} />
         <IconButton
           size="m"
           icon={<IconPanelLeftOutline16 />}
@@ -78,7 +111,22 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
       </button>
       <div className={styles.listWrap}>
         <div className={styles.list}>
-          {groups.map((group) => (
+          {query.trim() ? (
+            <div className={styles.searchResults}>
+              <div role="status" className={styles.sectionHeader}>
+                {t(searching ? 'historySearching' : searchError ? 'historySearchFailed' : 'historySearchCount', { count: results.length })}
+              </div>
+              {results.map((match) => (
+                <button key={match.sessionId} className={styles.searchResult} onClick={() => {
+                  void openHistoryMatch(match.sessionId, match.messageId)
+                  closeMobileSider()
+                }}>
+                  <strong>{match.title || t('untitledChat')}</strong>
+                  <span>{match.excerpt}</span>
+                </button>
+              ))}
+            </div>
+          ) : groups.map((group) => (
             <div key={group.key} className={styles.section}>
               <div className={styles.sectionHeader}>{group.label}</div>
               {group.sessions.map((session) => (

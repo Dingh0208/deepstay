@@ -13,3 +13,7 @@ release/
 *.jks
 *.keystore
 signing.properties
+
+# Regression evidence and generated large archive fixture
+tests/*-evidence.json
+tests/*.zip

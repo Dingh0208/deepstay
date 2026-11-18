@@ -1,0 +1,64 @@
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.28fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.fieldRow > span {
+  min-width: 0;
+}
+
+.fieldRow > :last-child {
+  width: 100%;
+  min-width: 0;
+}
+
+.readOnly {
+  border-color: transparent;
+  background-color: var(--dsw-alias-interactive-bg-hover);
+
+  input {
+    color: var(--dsw-alias-label-tertiary);
+    cursor: not-allowed;
+  }
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.actionsRow,
+.messageRow {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.28fr) minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+.messageRow {
+  align-items: start;
+}
+
+.actions > button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: 10px;
+  font-size: 12px;
+}
+
+.save {
+  grid-column: 1 / -1;
+  width: 100%;
+}

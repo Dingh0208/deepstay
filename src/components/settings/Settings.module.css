@@ -104,46 +104,25 @@
   line-height: 22px;
 }
 
+.importProgress {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 12px;
+  padding-bottom: 12px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-tertiary);
+
+  progress {
+    flex: 1;
+    min-width: 0;
+    height: 8px;
+    accent-color: var(--dsw-alias-button-primary-fill);
+  }
+}
+
 .uploadButton {
   padding: 0 13px;
-}
-
-.locationCell {
-  flex-wrap: wrap;
-}
-
-.locationCell .text {
-  flex: 1 0 auto;
-  padding-right: 8px;
-}
-
-.locationSelectors {
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  justify-content: flex-end;
-  gap: 16px;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.locationSelectors > button {
-  flex-shrink: 1;
-  min-width: 0;
-  text-align: start;
-}
-
-.provinceSelect {
-  width: 159px;
-}
-
-.locationSelectors > .citySelect {
-  min-width: 120px;
-  width: 120px;
-}
-
-.regionSelect {
-  max-width: min(285px, 100%);
 }
 
 .theme {
@@ -340,25 +319,6 @@
   .cellButton {
     flex-shrink: 0;
     min-height: 44px;
-  }
-
-  .locationCell {
-    gap: 12px;
-  }
-
-  .locationCell .text {
-    flex-basis: 100%;
-    padding-right: 0;
-  }
-
-  .locationSelectors {
-    width: 100%;
-    gap: 12px;
-  }
-
-  .provinceSelect,
-  .citySelect {
-    flex: 1 1 auto;
   }
 
   .apiKey {

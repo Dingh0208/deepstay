@@ -1,100 +1,86 @@
+import clsx from 'clsx'
 import { useState } from 'react'
-import { IconEditOutline16 } from '../base/icons.js'
-import { useSettings } from '../../services/settings.js'
-import { useIsMobile } from '../../app/viewport.js'
-import { IconButton } from '../base/IconButton.js'
-import { useApiKeyForm } from './useApiKeyForm.js'
+import { useChatStore } from '../../services/chat/store.js'
 import { useTranslate } from '../../i18n/index.js'
+import { Button } from '../base/Button.js'
+import { Select } from '../base/Select.js'
+import { ApiBalanceQueryButton } from './ApiBalanceSetting.js'
+import { useApiKeyForm } from './useApiKeyForm.js'
 import styles from './Settings.module.css'
+import apiStyles from './ApiKeyField.module.css'
 
-/** API Key 的编辑状态：输入框与移动端底部的「确定」按钮共用 */
-export const useApiKeyEditor = () => {
-  const apiKey = useSettings((state) => state.apiKey)
-  const [editing, setEditing] = useState(false)
-  const form = useApiKeyForm(() => setEditing(false))
-  return { apiKey, editing, setEditing, form, showInput: !apiKey || editing }
-}
+export const useApiKeyEditor = useApiKeyForm
 
-type ApiKeyEditor = ReturnType<typeof useApiKeyEditor>
-
-/** API Key：保存后只显示掩码，点编辑按钮才能重新输入 */
-export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
+export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEditor> }) => {
   const t = useTranslate()
-  const isMobile = useIsMobile()
-  const { apiKey, editing, setEditing, form, showInput } = editor
-
+  const [customModel, setCustomModel] = useState(false)
+  const streaming = useChatStore((state) => Object.keys(state.streaming).length > 0)
+  const choices = [...new Set([editor.model, ...editor.models].filter(Boolean))]
+  const disabled = editor.busy !== null
   return (
     <div className={styles.cell}>
-      <div className={styles.apiKey}>
-        <div className={styles.label}>{t('apiKeyStart')}</div>
-        {apiKey && !editing ? (
-          <div className={styles.apiKeySaved}>
-            <span className={styles.apiKeyMask}>{'*'.repeat(apiKey.length)}</span>
-            <IconButton
-              tone="primary"
-              icon={<IconEditOutline16 />}
-              tooltip={t('apiKeyEdit')}
-              onClick={() => setEditing(true)}
-            />
+      <div className={apiStyles.fields}>
+        <label className={apiStyles.fieldRow}>
+          <span className={styles.label}>{t('apiBaseUrl')}</span>
+          <div className={clsx(styles.apiKeyInput, editor.protocol === 'deepseek' && apiStyles.readOnly)}>
+            <input type="url" disabled={editor.protocol === 'deepseek' || disabled} autoCapitalize="none" autoComplete="off" spellCheck={false}
+              value={editor.baseUrl} onChange={(event) => editor.setBaseUrl(event.target.value)}
+              placeholder="https://api.deepseek.com" />
           </div>
-        ) : (
+        </label>
+        <div className={apiStyles.fieldRow}>
+          <span className={styles.label}>{t('apiProtocol')}</span>
+          <Select value={editor.protocol} ariaLabel={t('apiProtocol')}
+            options={[{ value: 'deepseek', label: t('apiProtocolDeepSeek') }, { value: 'openai', label: t('apiProtocolOpenAI') }]}
+            onChange={editor.setProtocol} />
+        </div>
+        <label className={apiStyles.fieldRow}>
+          <span className={styles.label}>API Key</span>
           <div className={styles.apiKeyInput}>
-            <input
-              type="password"
-              placeholder={t('apiKeyPlaceholder')}
-              autoComplete="off"
-              spellCheck={false}
-              // 移动端打开设置时不弹键盘，点编辑后才聚焦
-              autoFocus={!isMobile || editing}
-              value={form.value}
-              onChange={(event) => form.setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-                  void form.submit()
-                }
-              }}
-              onBlur={() => {
-                // 修改时没输入就离开，回到已保存的状态
-                if (apiKey && !form.value.trim()) {
-                  setEditing(false)
-                }
-              }}
-            />
-            {!isMobile && form.value.trim() ? (
-              <>
-                <span className={styles.divider} />
-                <button
-                  type="button"
-                  className={styles.confirm}
-                  disabled={form.verifying}
-                  // 保持输入框焦点
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => void form.submit()}
-                >
-                  {form.verifying ? t('apiKeyVerifying') : t('confirm')}
-                </button>
-              </>
+            <input type="password" autoComplete="off" autoCapitalize="none" spellCheck={false}
+              value={editor.value} placeholder={t('apiKeyPlaceholder')}
+              onChange={(event) => editor.setValue(event.target.value)} />
+          </div>
+        </label>
+        <div className={apiStyles.actionsRow}>
+          <span aria-hidden="true" />
+          <div className={apiStyles.actions}>
+            <Button variant="outlined" size="s" disabled={disabled} onClick={() => void editor.run('test')}>
+              {t(editor.busy === 'test' ? 'apiTesting' : 'apiTestConnection')}
+            </Button>
+            <Button variant="outlined" size="s" disabled={disabled} onClick={() => void editor.run('models')}>
+              {t(editor.busy === 'models' ? 'apiLoadingModels' : 'apiLoadModels')}
+            </Button>
+            {editor.protocol === 'deepseek' ? (
+              <ApiBalanceQueryButton apiKey={editor.value} apiBaseUrl={editor.baseUrl} apiProtocol={editor.protocol} />
             ) : null}
           </div>
-        )}
-        {showInput && form.error ? <div className={styles.error}>{form.error}</div> : null}
+        </div>
+        <div className={apiStyles.fieldRow}>
+          <span className={styles.label}>{t('apiModel')}</span>
+          <Select value={customModel ? '__custom__' : editor.model} ariaLabel={t('apiModel')} disabled={disabled}
+            options={[...choices.map((value) => ({ value, label: value })), { value: '__custom__', label: t('apiCustomModel') }]}
+            onChange={(value) => {
+              setCustomModel(value === '__custom__')
+              if (value !== '__custom__') {
+                editor.setModel(value)
+              }
+            }} />
+        </div>
+        {customModel ? (
+          <label className={apiStyles.fieldRow}>
+            <span className={styles.label}>{t('apiModelId')}</span>
+            <div className={styles.apiKeyInput}>
+              <input value={editor.model} disabled={disabled} autoComplete="off" autoCapitalize="none" spellCheck={false}
+                onChange={(event) => editor.setModel(event.target.value)} />
+            </div>
+          </label>
+        ) : null}
+        {editor.error ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div role="alert" className={styles.error}>{editor.error}</div></div> : null}
+        {editor.status ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div role="status" className={editor.status.error ? styles.error : styles.description}>{t(editor.status.key)}</div></div> : null}
+        {streaming ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div className={styles.description}>{t('apiSaveAfterReply')}</div></div> : null}
+        <Button variant="primary" size="m" className={apiStyles.save} disabled={disabled || streaming} onClick={editor.submit}>{t('save')}</Button>
       </div>
     </div>
   )
-}
-
-/** 移动端：输入 API Key 时在选项下方显示整行「确定」 */
-export const ApiKeyConfirm = ({ editor: { showInput, form } }: { editor: ApiKeyEditor }) => {
-  const t = useTranslate()
-  return showInput && form.value.trim() ? (
-    <button
-      type="button"
-      className={styles.mobileConfirm}
-      disabled={form.verifying}
-      onMouseDown={(event) => event.preventDefault()}
-      onClick={() => void form.submit()}
-    >
-      {form.verifying ? t('apiKeyVerifying') : t('confirm')}
-    </button>
-  ) : null
 }

@@ -1,86 +1,20 @@
-import { translate, type TranslationMessage } from '../../i18n/index.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
-import type {
-  ApiErrorBody,
-  CreateMessageRequest,
-  FileObject,
-  FilePurpose,
-  MessageStreamEvent,
-} from './types.js'
+import {
+  apiEndpoint,
+  getApiConnection,
+  supportsDeepSeekExtras,
+  type ApiConnection,
+} from './connection.js'
+import { streamOpenAiMessage } from './openai.js'
+import { ApiError, isErrorBody, readErrorResponse, request } from './http.js'
+export { ApiError, request, type ApiErrorKind } from './http.js'
+import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent } from './types.js'
 
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
 export const API_ORIGIN = __API_ORIGIN__
-/** Anthropic 兼容接口的前缀 */
-const ANTHROPIC_BASE_URL = `${API_ORIGIN}/anthropic/v1`
 /** 引用 Files API 上传的图片、调用 Anthropic 兼容 Files API 时必须携带 */
 const FILES_BETA = 'files-api-2025-04-14'
-
-export type ApiErrorKind =
-  /** 非 2xx 响应 */
-  | 'http'
-  /** 流中返回的错误帧（如等待生成超时），随后连接关闭 */
-  | 'stream'
-  /** 请求没有到达服务端（断网、跨域被拦截等） */
-  | 'network'
-  /** 流在 message_stop 之前结束 */
-  | 'interrupted'
-  /** 响应不符合协议（如非 SSE 响应） */
-  | 'protocol'
-
-export class ApiError extends Error {
-  readonly localMessage?: TranslationMessage
-
-  constructor(
-    readonly kind: ApiErrorKind,
-    message: string | TranslationMessage,
-    readonly status?: number
-  ) {
-    super(typeof message === 'string' ? message : translate(message.key, message.params))
-    this.name = 'ApiError'
-    this.localMessage = typeof message === 'string' ? undefined : message
-  }
-}
-
-const isErrorBody = (value: unknown): value is ApiErrorBody =>
-  typeof value === 'object' &&
-  value !== null &&
-  'error' in value &&
-  typeof (value as ApiErrorBody).error?.message === 'string'
-
-const readErrorResponse = async (
-  response: Response,
-  kind: 'http' | 'protocol' = 'http',
-  fallback = response.statusText
-): Promise<ApiError> => {
-  const text = await response.text().catch(() => '')
-  let message = text || fallback
-  try {
-    const body: unknown = JSON.parse(text)
-    if (isErrorBody(body)) {
-      message = body.error.message
-    }
-  } catch {
-    // 非 JSON 响应体直接展示原文
-  }
-  return new ApiError(kind, message, response.status)
-}
-
-export const request = async (url: string, init: RequestInit): Promise<Response> => {
-  let response: Response
-  try {
-    response = await fetch(url, init)
-  } catch (error) {
-    if (init.signal?.aborted) {
-      throw error
-    }
-    throw new ApiError('network', error instanceof Error ? error.message : String(error))
-  }
-  if (!response.ok) {
-    throw await readErrorResponse(response)
-  }
-  return response
-}
 
 const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string> => ({
   // DeepSeek 兼容接口的鉴权方式，也可使用 Authorization: Bearer。
@@ -89,13 +23,57 @@ const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string>
   ...(beta ? { 'anthropic-beta': FILES_BETA } : {}),
 })
 
-/** 用 GET /models 校验 API Key（不产生费用） */
+/** 拉取模型不生成内容；超时和调用方取消都只中止本次请求。 */
+export const fetchModels = async (
+  apiKey: string,
+  baseUrl: string,
+  signal?: AbortSignal
+): Promise<string[]> => {
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) {
+    controller.abort()
+  }
+  const timeout = setTimeout(abort, 10_000)
+  try {
+    const response = await request(apiEndpoint(baseUrl, 'v1/models'), {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+      credentials: 'omit',
+      signal: controller.signal,
+    })
+    const value: unknown = await response.json()
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('data' in value) ||
+      !Array.isArray(value.data)
+    ) {
+      throw new ApiError('protocol', 'Invalid model list response')
+    }
+    return [
+      ...new Set(
+        value.data.flatMap((item: unknown) =>
+          typeof item === 'object' &&
+          item !== null &&
+          'id' in item &&
+          typeof item.id === 'string' &&
+          item.id.trim()
+            ? [item.id.trim()]
+            : []
+        )
+      ),
+    ]
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
+  }
+}
+
+/** 兼容旧的 Key 校验入口，使用当前设置中的服务地址。 */
 export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
-  await request(`${API_ORIGIN}/models`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal,
-  })
+  await fetchModels(apiKey, getApiConnection().baseUrl, signal)
 }
 
 /**
@@ -106,17 +84,22 @@ export const uploadFile = async (
   apiKey: string,
   file: File,
   purpose: FilePurpose | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  connection: ApiConnection = getApiConnection()
 ): Promise<FileObject> => {
+  if (!supportsDeepSeekExtras(connection)) {
+    throw new ApiError('protocol', 'File uploads are unavailable for this API connection')
+  }
   const form = new FormData()
   if (purpose) {
     form.append('purpose', purpose)
   }
   form.append('file', file)
-  const response = await request(`${ANTHROPIC_BASE_URL}/files`, {
+  const response = await request(apiEndpoint(connection.baseUrl, 'anthropic/v1/files'), {
     method: 'POST',
     headers: anthropicHeaders(apiKey, true),
     body: form,
+    credentials: 'omit',
     signal,
   })
   return (await response.json()) as FileObject
@@ -124,10 +107,18 @@ export const uploadFile = async (
 
 /** DELETE /anthropic/v1/files/{file_id} */
 export const deleteFile = async (apiKey: string, fileId: string): Promise<void> => {
-  await request(`${ANTHROPIC_BASE_URL}/files/${encodeURIComponent(fileId)}`, {
-    method: 'DELETE',
-    headers: anthropicHeaders(apiKey, true),
-  })
+  const connection = getApiConnection()
+  if (!supportsDeepSeekExtras(connection)) {
+    throw new ApiError('protocol', 'File deletion is unavailable for this API connection')
+  }
+  await request(
+    apiEndpoint(connection.baseUrl, `anthropic/v1/files/${encodeURIComponent(fileId)}`),
+    {
+      method: 'DELETE',
+      headers: anthropicHeaders(apiKey, true),
+      credentials: 'omit',
+    }
+  )
 }
 
 const hasFile = (body: CreateMessageRequest) =>
@@ -144,9 +135,14 @@ const hasFile = (body: CreateMessageRequest) =>
 export async function* streamMessage(
   apiKey: string,
   body: CreateMessageRequest,
-  signal: AbortSignal
+  signal: AbortSignal,
+  connection: ApiConnection = getApiConnection()
 ): AsyncGenerator<MessageStreamEvent> {
-  const response = await request(`${ANTHROPIC_BASE_URL}/messages`, {
+  if (connection.protocol === 'openai') {
+    yield* streamOpenAiMessage(apiKey, body, signal, connection)
+    return
+  }
+  const response = await request(apiEndpoint(connection.baseUrl, 'anthropic/v1/messages'), {
     method: 'POST',
     headers: {
       ...anthropicHeaders(apiKey, hasFile(body)),
@@ -154,6 +150,7 @@ export async function* streamMessage(
       Accept: 'text/event-stream',
     },
     body: JSON.stringify({ ...body, stream: true }),
+    credentials: 'omit',
     signal,
   })
   const contentType = response.headers.get('Content-Type') ?? ''

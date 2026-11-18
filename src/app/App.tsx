@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useTranslate } from '../i18n/index.js'
 import { useSettings } from '../services/settings.js'
+import { loadChatBackground, useChatBackground } from '../services/chatBackground.js'
 import { useIsMobile, useMobileViewport, usePreventPageScroll } from './viewport.js'
 import {
   bindChatPersistence,
@@ -32,6 +33,7 @@ export const App = () => {
   const t = useTranslate()
   const isMobile = useIsMobile()
   const locale = useSettings((state) => state.locale)
+  const background = useChatBackground((state) => state.url)
   // 移动端侧边栏以独立抽屉管理开合状态
   const siderCollapsed = useSettings((state) => state.siderCollapsed) && !isMobile
   const ready = useChatStore((state) => state.ready)
@@ -51,6 +53,7 @@ export const App = () => {
     state.activeId === null ? false : hasOwn(state.streaming, state.activeId)
   )
   const activeId = useChatStore((state) => state.activeId)
+  const contextProgress = useChatStore((state) => state.activeId ? state.contextProgress[state.activeId] : undefined)
 
   usePreventPageScroll(isMobile)
 
@@ -70,12 +73,16 @@ export const App = () => {
   useEffect(closeMobileSider, [activeId, isMobile])
 
   useEffect(() => { void initChat() }, [])
+  useEffect(() => { void loadChatBackground().catch(() => {}) }, [])
 
   return (
     <>
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main}>
+          {contextProgress ? <div className={styles.saveError} role="status">
+            {t('contextMemoryProgress', contextProgress)}
+          </div> : null}
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>
@@ -90,6 +97,13 @@ export const App = () => {
             </div>
           ) : null}
           <div className={styles.content}>
+            {background ? (
+              <div
+                className={styles.chatBackground}
+                style={{ backgroundImage: `url("${background}")` }}
+                aria-hidden="true"
+              />
+            ) : null}
             {siderCollapsed ? <CollapsedSider /> : null}
             {!ready || (activeId !== null && !session) ? (
               <div className={styles.loadingView}>

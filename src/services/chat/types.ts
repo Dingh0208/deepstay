@@ -11,7 +11,7 @@ import type {
 
 /**
  * 消息附件。id 是本地标识（IndexedDB files 表的主键，原件按它存储，所有引用同一 id 的消息共用一份），
- * 导入的附件沿用导出产物里的文件 ID；本地没有原件的附件只展示文件名，不进入请求。
+ * 导入提交时为附件分配新的本地 ID；本地没有原件的附件只展示文件名，不进入请求。
  * serverId 是 Files API 返回的 file_id，导入的数据或尚未上传成功的文件为 null，发送前补传。
  */
 export type FileAttachment = {
@@ -105,6 +105,18 @@ export type AssistantMessage = MessageBranch & {
 
 export type Message = UserMessage | AssistantMessage
 
+/** 摘要仅作为发送上下文的缓存；原始消息仍完整保存在会话中。 */
+export type ContextMemory = {
+  fixed: string
+  cache?: {
+    provider: string
+    model: string
+    source: { id: string; fingerprint: string }[]
+    summary: string
+    updatedAt: number
+  }
+}
+
 export type Session = {
   id: string
   title: string
@@ -114,6 +126,7 @@ export type Session = {
   messages: Message[]
   /** undefined 表示线性消息列表；null 表示空会话。 */
   rootMessageId?: string | null
+  contextMemory?: ContextMemory
 }
 
 /** 会话列表元数据；消息只在打开会话时加载。 */

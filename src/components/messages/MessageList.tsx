@@ -6,6 +6,7 @@ import {
   type MessageVersions,
 } from '../../services/chat/branches.js'
 import { selectMessageVersion } from '../../services/chat/store.js'
+import { useHistoryTarget } from '../../services/chat/historySearch.js'
 import type { Session } from '../../services/chat/types.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { AssistantMessage } from './AssistantMessage.js'
@@ -42,6 +43,7 @@ export const MessageList = ({
   footer: React.ReactNode
 }) => {
   const isMobile = useIsMobile()
+  const searchTarget = useHistoryTarget()
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const stickyRef = useRef(true)
@@ -60,6 +62,17 @@ export const MessageList = ({
     setPreviousVersions(versions)
   }
   const lastMessageId = messages[messages.length - 1]?.id
+  useLayoutEffect(() => {
+    if (searchTarget.sessionId !== session.id || !searchTarget.messageId) {
+      return
+    }
+    const node = contentRef.current?.querySelector<HTMLElement>(`[data-chat-message="${CSS.escape(searchTarget.messageId)}"]`)
+    if (node) {
+      stickyRef.current = false
+      node.scrollIntoView({ block: 'center' })
+      useHistoryTarget.setState({ sessionId: null, messageId: null })
+    }
+  }, [searchTarget, session.id, session.messages])
   const scrollToBottom = useCallback(() => {
     if (scrollFrameRef.current || !stickyRef.current) {
       return

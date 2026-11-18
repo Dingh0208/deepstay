@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
-import type { ChatModel, CreateMessageRequest } from '../api/types.js'
+import type { CreateMessageRequest } from '../api/types.js'
+import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
@@ -16,6 +17,14 @@ import {
   prepareDraftMessage,
 } from './drafts.js'
 import { createLatestReminder } from './latestReminder.js'
+import { useHistoryTarget } from './historySearch.js'
+import {
+  assertContextBudget,
+  estimateContextTokens,
+  prepareContextMemory,
+} from './contextMemory.js'
+import { memoryText } from './memoryRecords.js'
+import type { MemoryState } from './memoryTypes.js'
 import {
   applyEvent,
   canContinueReply,
@@ -33,8 +42,6 @@ import {
   type UserMessage,
 } from './types.js'
 
-/** deepseek-flash 同时支持深度思考与图片输入 */
-const MODEL: ChatModel = 'deepseek-flash'
 /** 所有生成请求统一携带的助手身份说明 */
 const SYSTEM_PROMPT = '你是 deepstay 的 AI 助手。认真理解用户的语境，以自然、温和的方式回应。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
@@ -74,12 +81,14 @@ type ChatState = {
   activeId: string | null
   /** 正在生成回复的会话 */
   streaming: Record<string, AbortController>
+  contextProgress: Record<string, { completed: number; total: number }>
 }
 
 export const useChatStore = create<ChatState>(() => ({
   ready: false,
   initError: false,
   importingHistory: false,
+  contextProgress: {},
   sessions: [],
   sessionCache: {},
   sessionLoadErrors: {},
@@ -108,11 +117,13 @@ const sameSummary = (a: SessionSummary, b: SessionSummary) =>
 
 const sessionAccess = new Map<string, number>()
 const unsavedSessions = new Set<string>()
+const pendingSaves = new Map<string, Promise<boolean>>()
 /** 保存失败时保留原件，重试成功后才释放。 */
 const pendingFiles = new Map<string, db.StoredFile[]>()
 const deletingSessions = new Set<string>()
 const deletionTasks = new Set<Promise<boolean>>()
 const streamFlushes = new Map<string, () => void>()
+const contextPreparations = new Set<string>()
 let accessSequence = 0
 let historyEpoch = 0
 let initTask: Promise<void> | undefined
@@ -180,20 +191,20 @@ const updateReply = (sessionId: string, reply: AssistantMessage) =>
     ),
   }))
 
-const persist = (sessionId: string) => {
+const persist = (sessionId: string): Promise<boolean> => {
   const session = getSession(sessionId)
   if (session) {
     unsavedSessions.add(sessionId)
     if (deletingSessions.has(sessionId)) {
-      return
+      return Promise.resolve(false)
     }
     const epoch = historyEpoch
     const files = pendingFiles.get(sessionId)
-    void db
+    const task = db
       .saveSession(session, files)
       .then(() => {
         if (epoch !== historyEpoch || !getSession(sessionId)) {
-          return
+          return false
         }
         if (pendingFiles.get(sessionId) === files) {
           pendingFiles.delete(sessionId)
@@ -207,6 +218,7 @@ const persist = (sessionId: string) => {
           }))
           trimSessionCache()
         }
+        return true
       })
       .catch((error: unknown) => {
         db.reportStorageError('save session')(error)
@@ -215,8 +227,17 @@ const persist = (sessionId: string) => {
             sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
           }))
         }
+        return false
       })
+    pendingSaves.set(sessionId, task)
+    void task.finally(() => {
+      if (pendingSaves.get(sessionId) === task) {
+        pendingSaves.delete(sessionId)
+      }
+    })
+    return task
   }
+  return Promise.resolve(false)
 }
 
 export const retrySaveSessions = () => {
@@ -232,6 +253,9 @@ export const bindChatPersistence = () => {
       return
     }
     for (const [id, flush] of streamFlushes) {
+      if (contextPreparations.has(id)) {
+        continue
+      }
       flush()
       persist(id)
     }
@@ -256,15 +280,15 @@ export const bindChatPersistence = () => {
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
 const createReply = (): AssistantMessage => {
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, model, apiProtocol } = useSettings.getState()
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
-    model: MODEL,
+    model,
     thinking,
-    search,
-    prefix: true,
+    search: supportsDeepSeekExtras() && search,
+    prefix: apiProtocol === 'deepseek',
     status: 'pending',
     blocks: [],
   }
@@ -409,7 +433,7 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     let summaries: SessionSummary[]
     try {
       await write()
-      summaries = await db.commitStaging()
+      summaries = await db.commitStaging(true)
     } catch (error) {
       await db.clearStaging().catch(db.reportStorageError('clear unfinished history replacement'))
       throw error
@@ -446,6 +470,21 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
   }
 }
 
+/** 导入作为独立会话新增；保留现有缓存、草稿和正在生成的回复。 */
+export const appendStagedHistory = async (): Promise<number> => {
+  await initChat()
+  const summaries = await db.commitStaging()
+  const activeId = sortSessions(summaries)[0]?.id
+  set((state) => ({
+    sessions: sortSessions([...state.sessions, ...summaries]),
+    ...(activeId ? { activeId } : {}),
+  }))
+  if (activeId) {
+    await ensureSessionLoaded(activeId)
+  }
+  return summaries.length
+}
+
 export const newChat = () => {
   if (!get().importingHistory) {
     set({ activeId: null })
@@ -460,6 +499,42 @@ export const selectSession = (id: string) => {
     void ensureSessionLoaded(id)
     trimSessionCache()
   }
+}
+
+export const openHistoryMatch = async (id: string, messageId: string | null) => {
+  selectSession(id)
+  await ensureSessionLoaded(id)
+  const original = getSession(id)
+  if (!original || get().activeId !== id || get().importingHistory || !messageId) {
+    return
+  }
+  const session = normalizeSession(original)
+  const byId = new Map(session.messages.map((message) => [message.id, message]))
+  let child = byId.get(messageId)
+  const choices = new Map<string, string>()
+  const visited = new Set<string>()
+  while (child?.parentId && !visited.has(child.id)) {
+    visited.add(child.id)
+    choices.set(child.parentId, child.id)
+    child = byId.get(child.parentId)
+  }
+  if (!child) {
+    return
+  }
+  updateSession(id, (current) => ({ ...current, rootMessageId: child.id,
+    messages: current.messages.map((message) => choices.has(message.id)
+      ? { ...message, selectedChildId: choices.get(message.id) } : message) }))
+  useHistoryTarget.setState({ sessionId: id, messageId })
+  persist(id)
+}
+
+export const setSessionContextMemory = (sessionId: string, fixed: string) => {
+  if (get().importingHistory || get().streaming[sessionId] || !getSession(sessionId)) {
+    return
+  }
+  updateSession(sessionId, (session) => ({ ...session,
+    contextMemory: { ...session.contextMemory, fixed: fixed.slice(0, 10_000) } }))
+  persist(sessionId)
 }
 
 export const renameSession = (id: string, title: string) => {
@@ -560,6 +635,9 @@ export const sendMessage = (targetSessionId: string | null) => {
     return false
   }
   const { text, files } = prepared
+  if (files.length > 0 && !supportsDeepSeekExtras()) {
+    return false
+  }
   const now = Date.now()
   let sessionId = targetSessionId
   if (
@@ -693,7 +771,7 @@ export const selectMessageVersion = (sessionId: string, messageId: string) => {
 
 /** 继续最后一条未完成的回答：保留原消息与开关，仅将新流的内容追加到原块之后。 */
 export const continueReply = (sessionId: string, messageId: string) => {
-  if (get().importingHistory || deletingSessions.has(sessionId)) {
+  if (get().importingHistory || deletingSessions.has(sessionId) || useSettings.getState().apiProtocol !== 'deepseek') {
     return
   }
   const session = getSession(sessionId)
@@ -711,11 +789,11 @@ export const continueReply = (sessionId: string, messageId: string) => {
   ) {
     return
   }
-  const { thinking, search } = useSettings.getState()
+  const { thinking, search, model } = useSettings.getState()
   const reply: AssistantMessage = {
     ...previous,
     // 未记录请求配置的回复，续写时使用默认模型和当前开关。
-    model: previous.model ?? MODEL,
+    model: previous.model ?? model,
     thinking: previous.thinking ?? thinking,
     search: previous.search ?? search,
     status: 'pending',
@@ -782,7 +860,7 @@ const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
  * 附件的服务端 id：已有直接用；正在上传的等待同一任务；否则读取本地原件补传。
  * 本地也没有原件（导入的文档附件只有元数据）时返回 null，该附件只展示、不进入请求。
  */
-const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<string | null> => {
+const ensureServerId = async (apiKey: string, file: FileAttachment, connection: ApiConnection): Promise<string | null> => {
   if (file.serverId) {
     return file.serverId
   }
@@ -794,7 +872,7 @@ const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<str
   if (!blob) {
     return null
   }
-  return uploadAttachment(apiKey, file.id, blob, file.name, file.isImage)
+  return uploadAttachment(apiKey, file.id, blob, file.name, file.isImage, connection)
 }
 
 /** 用会话里的最新消息替换请求快照：重传前会重置附件的 serverId，快照必须跟着更新 */
@@ -819,12 +897,11 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
  * - 历史轮次（仅进入上下文的）中没有 serverId 的附件，多为导入的图片：从最新的消息往前逐张补传，
  *   失败静默跳过，该附件不进入本次请求，下次发送时再试。
  */
-const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal) => {
+const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal, apiKey: string, connection: ApiConnection) => {
   const epoch = historyEpoch
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
   request = refreshRequest(sessionId, request)
-  const apiKey = useSettings.getState().apiKey ?? ''
   const serverIds = new Map<string, string>()
   // 停止生成立即生效；上传本身不取消（输入框与其他消息可能共用同一任务），完成后照常写回 serverId
   const aborted = new Promise<never>((_, reject) => {
@@ -832,7 +909,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   })
   const uploads = Promise.allSettled(
     request.question.files.map(async (file) => {
-      const serverId = await ensureServerId(apiKey, file)
+      const serverId = await ensureServerId(apiKey, file, connection)
       if (serverId) {
         serverIds.set(file.id, serverId)
       }
@@ -862,7 +939,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
       throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     }
     try {
-      const serverId = await Promise.race([ensureServerId(apiKey, file), aborted])
+      const serverId = await Promise.race([ensureServerId(apiKey, file, connection), aborted])
       if (serverId) {
         serverIds.set(file.id, serverId)
         saveServerIds(sessionId, new Map([[file.id, serverId]]))
@@ -970,6 +1047,16 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
  * 服务端判定 file_id 失效时重新补传后重发，退避重试且次数有上限，超过则按原始报错收尾。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
+  const settings = useSettings.getState()
+  const connection = getApiConnection()
+  const apiKey = settings.apiKey ?? ''
+  const model = initial.model ?? settings.model
+  const extras = supportsDeepSeekExtras(connection)
+  const latestReminder = request.prefix
+    ? request.prefix.latestReminder
+    : createLatestReminder(settings)
+  const sourceSession = getSession(sessionId)
+  const sourceEpoch = historyEpoch
   const controller = new AbortController()
   if (!getSession(sessionId)?.title) {
     titleRequests.add(controller)
@@ -983,19 +1070,139 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     updateReply(sessionId, reply)
   }
   streamFlushes.set(sessionId, flush)
+  let contextPrepared = false
+  let systemMemory = ''
+  let sourceConflict = false
+  let sourceState: MemoryState | undefined
+  if (settings.contextMemoryEnabled) {
+    contextPreparations.add(sessionId)
+  }
 
   try {
     for (let attempt = 0; ; attempt += 1) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
-      let preparing = true
+      let preparing = false
       let receivedContent = false
       try {
-        const prepared = await prepareFiles(sessionId, request, controller.signal)
+        if (!contextPrepared && settings.contextMemoryEnabled) {
+          const validSource = () =>
+            !controller.signal.aborted &&
+            historyEpoch === sourceEpoch &&
+            getSession(sessionId) === sourceSession &&
+            useSettings.getState().contextMemoryEnabled
+          const saved = pendingSaves.get(sessionId)
+          if (saved && !(await saved)) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          const snapshot = await db.loadMemorySnapshot(sessionId)
+          if (!snapshot) {
+            sourceConflict = true
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          sourceState = snapshot.state
+          if (
+            (snapshot.session.contextMemory?.fixed ?? '') !==
+            (sourceSession?.contextMemory?.fixed ?? '')
+          ) {
+            sourceConflict = true
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          // A second tab may have written a different branch before the snapshot was loaded.
+          const savedPath = getVisibleMessages(snapshot.session)
+          const persistedPath = new Map(savedPath.map((message) => [message.id, message]))
+          if (
+            savedPath.length !== request.history.length + 2 ||
+            savedPath[savedPath.length - 1]?.id !== initial.id ||
+            [...request.history, request.question].some((message, index) => {
+              const stored = persistedPath.get(message.id)
+              return (
+                !stored ||
+                savedPath[index]?.id !== message.id ||
+                stored.createdAt !== message.createdAt ||
+                stored.role !== message.role ||
+                memoryText(stored) !== memoryText(message) ||
+                (stored.role === 'user' &&
+                  message.role === 'user' &&
+                  JSON.stringify(stored.files) !== JSON.stringify(message.files))
+              )
+            })
+          ) {
+            sourceConflict = true
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          if (request.prefix) {
+            const stored = persistedPath.get(request.prefix.id)
+            if (
+              stored?.role !== 'assistant' ||
+              JSON.stringify(stored.blocks) !== JSON.stringify(request.prefix.blocks)
+            ) {
+              sourceConflict = true
+              throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+            }
+          }
+          if (!validSource()) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          let expected = snapshot.state
+          const context = await prepareContextMemory({
+            sessionId,
+            snapshot,
+            history: request.history,
+            question: request.question,
+            prefix: request.prefix,
+            memory: sourceSession?.contextMemory,
+            apiKey,
+            thinking: initial.thinking ?? false,
+            connection,
+            model,
+            signal: controller.signal,
+            requestOverhead:
+              estimateContextTokens(
+                SYSTEM_PROMPT +
+                  (latestReminder ?? '') +
+                  JSON.stringify(extras ? serverTools(initial.search ?? false) : [])
+              ) + 256,
+            onCommit: async (update) => {
+              if (!validSource()) {
+                return false
+              }
+              if (!(await db.commitMemoryUpdate(expected, update, validSource))) {
+                sourceConflict = validSource()
+                return false
+              }
+              expected = { ...expected, memoryRevision: expected.memoryRevision + 1 }
+              sourceState = expected
+              return validSource()
+            },
+            onProgress: (progress) =>
+              set((state) => ({
+                contextProgress: { ...state.contextProgress, [sessionId]: progress },
+              })),
+          })
+          if (!validSource()) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          if (
+            !(await db.commitMemoryUpdate(expected, { records: [], segments: [] }, validSource))
+          ) {
+            sourceConflict = validSource()
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          request = { ...request, history: context.history }
+          systemMemory = context.systemMemory
+          set((state) => ({
+            contextProgress: Object.fromEntries(
+              Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)
+            ),
+          }))
+        }
+        contextPreparations.delete(sessionId)
+        contextPrepared = true
+        preparing = true
+        const prepared = extras
+          ? await prepareFiles(sessionId, request, controller.signal, apiKey, connection)
+          : request
         preparing = false
-        // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
-        const latestReminder = prepared.prefix
-          ? prepared.prefix.latestReminder
-          : createLatestReminder(useSettings.getState())
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
@@ -1004,21 +1211,22 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared.question,
           prepared.prefix,
           initial.thinking ?? false,
-          latestReminder
+          latestReminder,
+          !extras
         )
-        const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
-          {
-            model: initial.model ?? MODEL,
-            system: SYSTEM_PROMPT,
-            messages,
-            thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
-            safety_check: SAFETY_CHECK,
-            tools: serverTools(initial.search ?? false),
-            ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),
-          },
-          controller.signal
-        )
+        const body: CreateMessageRequest = {
+          model,
+          system: [SYSTEM_PROMPT, systemMemory].filter(Boolean).join('\n\n'),
+          messages,
+          thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+          safety_check: SAFETY_CHECK,
+          tools: extras ? serverTools(initial.search ?? false) : [],
+          ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+        }
+        if (settings.contextMemoryEnabled) {
+          assertContextBudget(body)
+        }
+        const events = streamMessage(apiKey, body, controller.signal, connection)
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'
@@ -1059,6 +1267,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
+          extras &&
           attempt < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
@@ -1090,15 +1299,88 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       }
     }
   } finally {
+    let sourceVerified = true
+    if (!contextPrepared && sourceState && !sourceConflict) {
+      try {
+        // Cancellation stops new memory writes; it cannot permit a stale source save.
+        sourceConflict = !(await db.commitMemoryUpdate(sourceState, { records: [], segments: [] }))
+      } catch (error) {
+        sourceVerified = false
+        db.reportStorageError('verify interrupted memory source')(error)
+        unsavedSessions.add(sessionId)
+        set((state) => ({
+          sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
+        }))
+      }
+    }
+    contextPreparations.delete(sessionId)
+    set((state) => ({
+      contextProgress: Object.fromEntries(
+        Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)
+      ),
+    }))
     titleRequests.delete(controller)
     streamFlushes.delete(sessionId)
     cancelAnimationFrame(frame)
     updateReply(sessionId, reply)
+    if (sourceConflict) {
+      // Reload competing source changes before another local send can persist the old cache.
+      const cached = getSession(sessionId)
+      try {
+        const stored = await db.loadSession(sessionId)
+        if (
+          historyEpoch === sourceEpoch &&
+          getSession(sessionId) === cached &&
+          !deletingSessions.has(sessionId)
+        ) {
+          unsavedSessions.delete(sessionId)
+          if (stored) {
+            const current = normalizeSession(stored)
+            set((state) => ({
+              sessionCache: {
+                ...state.sessionCache,
+                [sessionId]: {
+                  ...current,
+                  messages: current.messages.map((message) =>
+                    message.id === reply.id &&
+                    message.role === 'assistant' &&
+                    message.status === 'pending'
+                      ? {
+                          ...reply,
+                          parentId: message.parentId,
+                          selectedChildId: message.selectedChildId,
+                        }
+                      : message
+                  ),
+                },
+              },
+            }))
+          } else {
+            set((state) => ({
+              sessionCache: Object.fromEntries(
+                Object.entries(state.sessionCache).filter(([id]) => id !== sessionId)
+              ),
+              sessions: state.sessions.filter((session) => session.id !== sessionId),
+              activeId: state.activeId === sessionId ? null : state.activeId,
+            }))
+          }
+        }
+      } catch (error) {
+        db.reportStorageError('reload changed session')(error)
+        set((state) => ({
+          sessionCache: Object.fromEntries(
+            Object.entries(state.sessionCache).filter(([id]) => id !== sessionId)
+          ),
+          sessionLoadErrors: { ...state.sessionLoadErrors, [sessionId]: true },
+        }))
+      }
+    } else if (sourceVerified) {
+      persist(sessionId)
+    }
     set((state) => ({
       streaming: Object.fromEntries(
         Object.entries(state.streaming).filter(([id]) => id !== sessionId)
       ),
     }))
-    persist(sessionId)
   }
 }

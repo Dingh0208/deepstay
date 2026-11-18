@@ -1,12 +1,12 @@
 import { formatDate } from '../../utils/format.js'
 import { hasOwn } from '../../utils/object.js'
 import * as db from './db.js'
-import { replaceHistory, useChatStore } from './store.js'
+import { appendStagedHistory, replaceHistory, useChatStore } from './store.js'
 import type { Session } from './types.js'
 
 export { BackupError } from './history/errors.js'
 
-// 导入、导出与全部删除串行处理，避免读取归档时数据被清空或两个替换事务交错。
+// 导入、导出与全部删除串行处理，避免读取归档时数据被清空或两个导入事务交错。
 let backupQueue: Promise<unknown> = Promise.resolve()
 
 const enqueueBackup = <T>(run: () => Promise<T>): Promise<T> => {
@@ -40,15 +40,30 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
     return { name: backupFileName(now), blob }
   })
 
-/**
- * 确认覆盖后调用：先检查 ZIP 格式与版本，校验失败时保留正在生成的回答；
- * 通过后从 ZIP 流式写入暂存，成功才替换原有会话与图片原件。返回导入的会话数。
- */
-export const importHistory = (file: File): Promise<number> =>
+/** 先流式校验和暂存，再原子新增会话与图片；失败保留原有记录。 */
+export const importHistory = (file: File, onProgress?: (percent: number) => void): Promise<number> =>
   enqueueBackup(async () => {
+    let progress = -1
+    const report = (percent: number) => {
+      if (percent > progress) {
+        progress = percent
+        onProgress?.(percent)
+      }
+    }
+    report(0)
     const { checkArchiveFormat, importArchive } = await import('./history/importArchive.js')
     await checkArchiveFormat(file)
-    return replaceHistory(() => importArchive(file))
+    try {
+      await db.clearStaging()
+      await importArchive(file, (bytes) => report(Math.min(95, Math.floor(bytes / file.size * 95))))
+      report(97)
+      const count = await appendStagedHistory()
+      report(100)
+      return count
+    } catch (error) {
+      await db.clearStaging().catch(db.reportStorageError('clear unfinished history import'))
+      throw error
+    }
   })
 
 /** 确认删除后调用：以空历史原子替换全部本地会话与附件，保留 API Key 和其他设置。 */

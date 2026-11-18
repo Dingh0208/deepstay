@@ -76,8 +76,6 @@ export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEdi
             </div>
           </label>
         ) : null}
-        <div className={apiStyles.messageRow}><span aria-hidden="true" /><div className={styles.description}>{t('apiConnectionHint')}</div></div>
-        {editor.protocol === 'openai' ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div className={styles.description}>{t('apiOpenAIHint')}</div></div> : null}
         {editor.error ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div role="alert" className={styles.error}>{editor.error}</div></div> : null}
         {editor.status ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div role="status" className={editor.status.error ? styles.error : styles.description}>{t(editor.status.key)}</div></div> : null}
         {streaming ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div className={styles.description}>{t('apiSaveAfterReply')}</div></div> : null}

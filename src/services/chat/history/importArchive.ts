@@ -77,9 +77,9 @@ export const checkArchiveFormat = async (file: File): Promise<void> => {
  * 流式导入：manifest → user（不导入）→ 全部会话 JSON → index → 全部图片。
  * 也支持会话与图片交错排列、index 位于末尾的条目顺序。
  * 会话按至多 32 条 / 4 MiB 的批次暂存；图片全部读完后逐会话回填 MIME，不改变图片身份。
- * 写入导入暂存存储；调用方负责先清空暂存，成功后替换正式数据，失败时清理暂存。
+ * 写入导入暂存存储；调用方负责先清空暂存，成功后提交正式数据，失败时清理暂存。
  */
-export const importArchive = async (file: File, onProgress?: (bytes: number, sessions: number) => void): Promise<void> => {
+export const importArchive = async (file: File, onProgress?: (bytes: number) => void): Promise<void> => {
   if (!(await isZipFile(file))) {
     fail('backupUnrecognized')
   }
@@ -112,7 +112,7 @@ export const importArchive = async (file: File, onProgress?: (bytes: number, ses
   }
 
   try {
-    for await (const entry of readArchive(file, (bytes) => onProgress?.(bytes, imported.size))) {
+    for await (const entry of readArchive(file, onProgress)) {
       const { path } = entry
       const sessionId = parseSessionPath(path)
       if (!manifest) {

@@ -14,8 +14,8 @@ import {
   BackupError,
   clearHistory,
   exportHistory,
+  importHistory,
 } from '../../services/chat/backup.js'
-import { backgroundImportBusy, startBackgroundImport, useBackgroundImport } from '../../services/chat/backgroundImport.js'
 import { useChatStore } from '../../services/chat/store.js'
 import {
   setLocale,
@@ -72,7 +72,7 @@ const SettingsContent = () => {
         className={styles.dialog}
         mainClassName={styles.dialogMain}
         onClose={() => {
-          if (!historyDelete.busy && !replacingHistory) {
+          if (!historyBusy) {
             closeSettings()
           }
         }}
@@ -107,7 +107,7 @@ const SettingsContent = () => {
             <>
               <ApiKeyField editor={apiKeyEditor} />
               <ImportHistory historyImport={historyImport} disabled={historyBusy} />
-              <ExportHistory disabled={historyDelete.busy || replacingHistory} />
+              <ExportHistory disabled={historyBusy} />
               <SettingCell
                 label={t('deleteAllSessions')}
                 status={null}
@@ -251,7 +251,7 @@ const TtsVoiceSetting = () => {
   )
 }
 
-/** 覆盖导入的二次确认，叠在设置弹窗上 */
+/** 新增导入的二次确认，叠在设置弹窗上 */
 const ImportConfirm = ({
   historyImport,
 }: {
@@ -268,13 +268,13 @@ const ImportConfirm = ({
           <Button variant="outlined" size="m" autoFocus onClick={historyImport.cancel}>
             {t('cancel')}
           </Button>
-          <Button variant="outlined" size="m" onClick={historyImport.confirm}>
-            {t('historyBackgroundStart')}
+          <Button variant="outlined" size="m" onClick={() => void historyImport.confirm()}>
+            {t('historyImportConfirm')}
           </Button>
         </>
       }
     >
-      <div className={styles.importConfirmText}>{t('historyBackgroundHint')}</div>
+      <div className={styles.importConfirmText}>{t('historyImportConfirmDescription')}</div>
     </Modal>
   )
 }
@@ -373,28 +373,38 @@ const SettingCell = ({
   )
 }
 
-/** 选文件后先提示覆盖；确认后才检查文件并执行导入，任何错误都提示导入失败。 */
+/** 选文件后先确认；确认后串行导入，成功新增会话，失败保留原有记录。 */
 const useHistoryImport = () => {
   const [file, setFile] = useState<File | null>(null)
-  const state = useBackgroundImport()
-  const busy = backgroundImportBusy()
-  const status: Status = state.phase === 'error' ? { key: state.error ?? 'historyImportFailed', error: true }
-    : state.phase === 'idle' ? null
-      : { key: state.phase === 'done' ? 'historyBackgroundDone' : state.phase === 'ready' ? 'historyBackgroundReady' : 'historyBackgroundProgress',
-        params: { percent: state.progress, count: state.sessions } }
-  const confirm = () => {
-    if (!file || busy) {
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<Status>(null)
+  const [progress, setProgress] = useState(0)
+  const importing = useRef(false)
+
+  const confirm = async () => {
+    if (!file || importing.current) {
       return
     }
-    startBackgroundImport(file)
+    importing.current = true
     setFile(null)
-    closeSettings()
+    setBusy(true)
+    setProgress(0)
+    setStatus(null)
+    try {
+      const count = await importHistory(file, setProgress)
+      setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
+    } catch {
+      setStatus({ key: 'historyImportFailed', error: true })
+    } finally {
+      importing.current = false
+      setBusy(false)
+    }
   }
 
-  return { file, busy, status, select: setFile, cancel: () => setFile(null), confirm }
+  return { file, busy, progress, status, select: setFile, cancel: () => setFile(null), confirm }
 }
 
-/** 导入 = 覆盖：用选中文件替换本地全部会话与附件。 */
+/** 导入作为独立会话新增，保留本地全部会话与附件。 */
 const ImportHistory = ({
   historyImport,
   disabled,
@@ -406,39 +416,47 @@ const ImportHistory = ({
   const inputRef = useRef<HTMLInputElement>(null)
 
   return (
-    <SettingCell
-      label={t('historyImport')}
-      description={t('historyImportDescription')}
-      status={historyImport.status}
-      action={
-        <>
-          <Button
-            variant="outlined"
-            size="m"
-            className={clsx(styles.cellButton, styles.uploadButton)}
-            disabled={disabled}
-            aria-busy={historyImport.busy}
-            onClick={() => inputRef.current?.click()}
-          >
-            <IconUploadOutline14 />
-            {t(historyImport.busy ? 'historyImporting' : 'upload')}
-          </Button>
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".zip,application/zip,application/x-zip-compressed"
-            hidden
-            onChange={(event) => {
-              const file = event.target.files?.[0]
-              event.target.value = ''
-              if (file) {
-                historyImport.select(file)
-              }
-            }}
-          />
-        </>
-      }
-    />
+    <>
+      <SettingCell
+        label={t('historyImport')}
+        description={t('historyImportDescription')}
+        status={historyImport.status}
+        action={
+          <>
+            <Button
+              variant="outlined"
+              size="m"
+              className={clsx(styles.cellButton, styles.uploadButton)}
+              disabled={disabled}
+              aria-busy={historyImport.busy}
+              onClick={() => inputRef.current?.click()}
+            >
+              <IconUploadOutline14 />
+              {t(historyImport.busy ? 'historyImporting' : 'upload')}
+            </Button>
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".zip,application/zip,application/x-zip-compressed"
+              hidden
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                event.target.value = ''
+                if (file) {
+                  historyImport.select(file)
+                }
+              }}
+            />
+          </>
+        }
+      />
+      {historyImport.busy ? (
+        <div className={styles.importProgress}>
+          <progress aria-label={t('historyImporting')} value={historyImport.progress} max={100} />
+          <span>{historyImport.progress}%</span>
+        </div>
+      ) : null}
+    </>
   )
 }
 

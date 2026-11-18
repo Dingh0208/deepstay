@@ -16,10 +16,8 @@ export const ContextMemorySetting = () => {
   const session = useChatStore((state) => state.activeId ? state.sessionCache[state.activeId] : undefined)
   return (
     <div className={`${settingsStyles.cell} ${appearanceStyles.row}`}>
-      <label className={appearanceStyles.info} htmlFor="context-memory-enabled">
-        <span className={settingsStyles.label}>{t('contextMemoryLabel')}</span>
-        <span className={settingsStyles.description}>{t('contextMemoryDescription')}</span>
-        <span className={settingsStyles.description}>{session ? t('contextMemoryCurrentChat', { title: session.title || t('untitledChat') }) : t('contextMemorySelectChat')}</span>
+      <label className={settingsStyles.label} htmlFor="context-memory-enabled">
+        {t('contextMemoryLabel')}
       </label>
       <div className={styles.actions}>
         <input id="context-memory-enabled" type="checkbox" role="switch" checked={enabled}
@@ -45,14 +43,13 @@ const MemoryEditor = ({ session, onClose }: { session: Session; onClose: () => v
         <div className={settingsStyles.description}>{session.title || t('untitledChat')}</div>
         <label className={styles.field}>
           <span>{t('contextMemoryFixed')}</span>
-          <span className={settingsStyles.description}>{t('contextMemoryFixedHint')}</span>
           <textarea value={fixed} maxLength={10_000} disabled={streaming} onChange={(event) => setFixed(event.target.value)} />
         </label>
         <label className={styles.field}>
           <span>{t('contextMemorySummary')}</span>
           <textarea value={session.contextMemory?.cache?.summary ?? ''} readOnly placeholder={t('contextMemoryNoSummary')} />
         </label>
-        <div className={settingsStyles.description}>{t(streaming ? 'contextMemoryWait' : 'contextMemoryLossy')}</div>
+        {streaming ? <div className={settingsStyles.description} role="status">{t('contextMemoryWait')}</div> : null}
       </div>
     </Modal>
   )

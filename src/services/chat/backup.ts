@@ -8,34 +8,6 @@ export { BackupError } from './history/errors.js'
 
 // 导入、导出与全部删除串行处理，避免读取归档时数据被清空或两个导入事务交错。
 let backupQueue: Promise<unknown> = Promise.resolve()
-let stagingReserved = false
-
-/** 校验和后台准备也占用暂存，避免两个导入在异步读取期间交错。 */
-export const reserveHistoryStaging = (): (() => void) | undefined => {
-  if (stagingReserved) {
-    return
-  }
-  stagingReserved = true
-  let owned = true
-  return () => {
-    if (owned) {
-      owned = false
-      stagingReserved = false
-    }
-  }
-}
-
-const withStaging = async <T>(run: () => Promise<T>): Promise<T> => {
-  const release = reserveHistoryStaging()
-  if (!release) {
-    throw new Error('Another history import already owns the staging area')
-  }
-  try {
-    return await run()
-  } finally {
-    release()
-  }
-}
 
 const enqueueBackup = <T>(run: () => Promise<T>): Promise<T> => {
   const task = backupQueue.then(run)
@@ -68,29 +40,26 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
     return { name: backupFileName(now), blob }
   })
 
-/**
- * 先检查 ZIP 格式与版本，再流式写入暂存；校验成功才新增会话和图片原件。
- * 现有聊天和生成不受影响。返回新增的会话数。
- */
-export const importHistory = (file: File): Promise<number> =>
-  enqueueBackup(() => withStaging(async () => {
+/** 先流式校验和暂存，再原子新增会话与图片；失败保留原有记录。 */
+export const importHistory = (file: File, onProgress?: (percent: number) => void): Promise<number> =>
+  enqueueBackup(async () => {
+    let progress = -1
+    const report = (percent: number) => {
+      if (percent > progress) {
+        progress = percent
+        onProgress?.(percent)
+      }
+    }
+    report(0)
     const { checkArchiveFormat, importArchive } = await import('./history/importArchive.js')
     await checkArchiveFormat(file)
     try {
       await db.clearStaging()
-      await importArchive(file)
-      return await appendStagedHistory()
-    } catch (error) {
-      await db.clearStaging().catch(db.reportStorageError('clear unfinished history import'))
-      throw error
-    }
-  }))
-
-/** 后台暂存由调用方持有；与导出串行，保证导出与正式导入按顺序执行。 */
-export const applyStagedHistory = (): Promise<number> =>
-  enqueueBackup(async () => {
-    try {
-      return await appendStagedHistory()
+      await importArchive(file, (bytes) => report(Math.min(95, Math.floor(bytes / file.size * 95))))
+      report(97)
+      const count = await appendStagedHistory()
+      report(100)
+      return count
     } catch (error) {
       await db.clearStaging().catch(db.reportStorageError('clear unfinished history import'))
       throw error
@@ -99,6 +68,6 @@ export const applyStagedHistory = (): Promise<number> =>
 
 /** 确认删除后调用：以空历史原子替换全部本地会话与附件，保留 API Key 和其他设置。 */
 export const clearHistory = (): Promise<void> =>
-  enqueueBackup(() => withStaging(async () => {
+  enqueueBackup(async () => {
     await replaceHistory(async () => {})
-  }))
+  })

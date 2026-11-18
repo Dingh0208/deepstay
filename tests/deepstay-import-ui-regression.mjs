@@ -13,8 +13,7 @@ const mocks = new Map([
   ['react/jsx-runtime', 'export const Fragment=Symbol.for("fragment"); export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx;'],
   ['@capacitor/core', 'export const Capacitor={}; export const registerPlugin=()=>({});'],
   ['../base/icons.js', ['IconDarkOutline16', 'IconDataOutline16', 'IconDownloadOutline16', 'IconFollowsystemOutline16', 'IconLightOutline16', 'IconSettingsOutline16', 'IconUploadOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
-  ['../../services/chat/backup.js', 'export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=async()=>{}; export const importHistory=(file)=>globalThis.__importHistory(file);'],
-  ['../../services/chat/backgroundImport.js', 'export const backgroundImportBusy=()=>["preparing","ready","applying","cancelling"].includes(globalThis.__backgroundState.phase); export const startBackgroundImport=file=>{globalThis.__backgroundCalls.push(file); globalThis.__backgroundState={phase:"preparing",progress:0,sessions:0,error:null};}; export const useBackgroundImport=()=>globalThis.__backgroundState;'],
+  ['../../services/chat/backup.js', 'export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=async()=>{}; export const importHistory=(...args)=>globalThis.__importHistory(...args);'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>true;'],
   ['../../services/chat/store.js', 'export const useChatStore=selector=>selector(globalThis.__chatState);'],
   ['../../services/settings.js', 'export const isChineseBrowser=()=>false; export const setLocale=()=>{}; export const setThemePreference=()=>{}; export const setTtsVoice=()=>{}; export const useSettings=selector=>selector({locale:"zh-CN"});'],
@@ -77,60 +76,92 @@ try {
   const { en } = await import(new URL('src/i18n/en.ts', app))
   globalThis.__translate = key => zh[key]
   globalThis.__closed = 0
-  globalThis.__backgroundCalls = []
-  globalThis.__backgroundState = { phase: 'idle', progress: 0, sessions: 0, error: null }
   globalThis.__chatState = { importingHistory: false }
+  let resolveImport, rejectImport, reportProgress
+  const calls = []
+  globalThis.__importHistory = (file, onProgress) => {
+    calls.push(file)
+    reportProgress = onProgress
+    return new Promise((resolve, reject) => { resolveImport = resolve; rejectImport = reject })
+  }
   const { useHistoryImport, ImportHistory, SettingsContent } = await import(source)
   const renderHook = runner(useHistoryImport)
   const renderImport = runner(ImportHistory)
   let current = renderHook()
+  current.select(new File(['fixture'], 'cancelled.zip'))
+  current = renderHook()
+  current.cancel()
+  current = renderHook()
+  assert.equal(current.file, null)
+  assert.equal(calls.length, 0)
+  checks.push('Selecting then cancelling a ZIP never starts import or touches history')
+
   current.select(new File(['fixture'], 'history.zip'))
   current = renderHook()
-  current.confirm()
+  const staleConfirm = current.confirm
+  const importing = current.confirm()
+  void staleConfirm()
   current = renderHook()
   assert.equal(current.busy, true)
   assert.equal(current.file, null)
-  assert.equal(current.status.key, 'historyBackgroundProgress')
-  assert.equal(globalThis.__backgroundCalls.length, 1, 'Confirmation starts one background import')
-  current.confirm()
-  assert.equal(globalThis.__backgroundCalls.length, 1, 'Repeated confirmation must not start another import')
+  assert.equal(calls.length, 1, 'Repeated confirmation must not start another import')
+  reportProgress(42)
+  current = renderHook()
+  assert.equal(current.progress, 42)
   const cell = renderImport({ historyImport: current, disabled: true })
-  const button = find(cell.props.action, node => node.type?.name === 'Button')
+  const button = find(cell, node => node.type?.name === 'SettingCell').props.action.props.children[0]
   assert.equal(button.props.disabled, true)
   assert.equal(button.props['aria-busy'], true)
   assert.equal(button.props.children[1], zh.historyImporting)
-  assert.ok(zh.historyBackgroundProgress && en.historyBackgroundProgress)
-  assert.equal(globalThis.__closed, 1)
-  checks.push('Actual import hook starts one worker, closes settings so chat remains usable, and displays translated progress while blocking duplicate imports')
+  const bar = find(cell, node => node.type === 'progress')
+  assert.equal(bar.props.value, 42)
+  assert.equal(bar.props.max, 100)
+  assert.equal(bar.props['aria-label'], zh.historyImporting)
+  assert.equal(globalThis.__closed, 0)
+  checks.push('Actual import hook prevents duplicate starts, keeps settings open, disables upload and shows an accessible real percentage progress bar')
 
-  globalThis.__backgroundState = { phase: 'done', progress: 100, sessions: 15, error: null }
+  reportProgress(100)
+  resolveImport(15)
+  await importing
   current = renderHook()
   assert.equal(current.busy, false)
-  assert.equal(current.status.key, 'historyBackgroundDone')
+  assert.equal(current.status.key, 'historyImported')
   assert.equal(current.status.params.count, 15)
-  checks.push('The completed background import count is available for the progress banner')
+  assert.equal(find(renderImport({ historyImport: current, disabled: false }), node => node.type === 'progress'), null)
+  checks.push('Successful save ends progress and displays the imported count')
 
   current.select(new File(['fixture'], 'bad.zip'))
   current = renderHook()
-  current.confirm()
-  assert.equal(globalThis.__backgroundCalls.length, 2)
-  globalThis.__backgroundState = { phase: 'error', progress: 0, sessions: 0, error: 'historyImportFailed' }
+  const failing = current.confirm()
+  rejectImport(new Error('Invalid ZIP'))
+  await failing
   current = renderHook()
   assert.equal(current.busy, false)
   assert.equal(current.status.key, 'historyImportFailed')
   assert.equal(current.status.error, true)
-  checks.push('Import failure releases the upload lock and retains a visible error')
+  checks.push('Failure releases the upload lock and displays an error without claiming success')
 
   const renderSettings = runner(SettingsContent)
+  let settings = renderSettings()
+  const componentHook = find(settings, node => node.type?.name === 'ImportHistory').props.historyImport
+  componentHook.select(new File(['fixture'], 'settings.zip'))
+  settings = renderSettings()
+  const settingsImport = find(settings, node => node.type?.name === 'ImportHistory').props.historyImport.confirm()
+  settings = renderSettings()
+  find(settings, node => node.type?.name === 'Modal').props.onClose()
+  assert.equal(globalThis.__closed, 0)
+  assert.equal(find(settings, node => node.type?.name === 'ExportHistory').props.disabled, true)
+  assert.equal(find(settings, node => node.type?.name === 'ImportHistory').props.disabled, true)
+  resolveImport(1)
+  await settingsImport
+  settings = renderSettings()
+  find(settings, node => node.type?.name === 'Modal').props.onClose()
+  assert.equal(globalThis.__closed, 1)
   globalThis.__chatState.importingHistory = true
-  const busyModal = find(renderSettings(), node => node.type?.name === 'Modal')
-  busyModal.props.onClose()
-  assert.equal(globalThis.__closed, 2)
-  globalThis.__chatState.importingHistory = false
-  const readyModal = find(renderSettings(), node => node.type?.name === 'Modal')
-  readyModal.props.onClose()
-  assert.equal(globalThis.__closed, 3)
-  checks.push('Settings cannot unmount during history replacement and can close immediately after it finishes')
+  find(renderSettings(), node => node.type?.name === 'Modal').props.onClose()
+  assert.equal(globalThis.__closed, 1)
+  checks.push('Settings cannot close or start export/import during a serial import or explicit history replacement')
+  assert.ok(zh.historyImported && en.historyImported)
 
   const evidence = { passed: true, runtime: process.version, checks,
     scope: 'Actual SettingsDialog TSX, import hook, button and modal callbacks with deterministic React hooks and deferred import I/O; complements the real ZIP/IndexedDB regression, not a handset screenshot.' }

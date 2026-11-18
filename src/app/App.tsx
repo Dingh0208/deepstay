@@ -17,7 +17,6 @@ import { MobileHeader } from '../components/session/MobileHeader.js'
 import { Welcome } from '../components/session/Welcome.js'
 import { PlatformDialog } from '../components/platform/Platform.js'
 import { SettingsDialog } from '../components/settings/SettingsDialog.js'
-import { HistoryImportBanner } from '../components/settings/HistoryImportBanner.js'
 import { FirstRunGuide } from '../components/settings/FirstRunGuide.js'
 import { Toast } from '../components/base/Toast.js'
 import { showToast } from '../components/base/toastState.js'
@@ -81,7 +80,6 @@ export const App = () => {
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main}>
-          <HistoryImportBanner />
           {contextProgress ? <div className={styles.saveError} role="status">
             {t('contextMemoryProgress', contextProgress)}
           </div> : null}

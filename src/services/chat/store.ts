@@ -393,7 +393,7 @@ const waitForIdle = (sessionId?: string) =>
  * 替换历史对话：先写入暂存，成功后原子替换旧记录；写入为空即删除全部会话与附件。
  * 期间停止生成并禁止修改会话；失败时清除暂存，保留原有记录。
  */
-export const replaceHistory = async (write: () => Promise<void>, staged = false): Promise<number> => {
+export const replaceHistory = async (write: () => Promise<void>): Promise<number> => {
   if (get().importingHistory) {
     throw new Error('History replacement is already in progress')
   }
@@ -408,9 +408,7 @@ export const replaceHistory = async (write: () => Promise<void>, staged = false)
     initTask = undefined
     sessionLoads.clear()
     await waitForIdle()
-    if (!staged) {
-      await db.clearStaging()
-    }
+    await db.clearStaging()
     let summaries: SessionSummary[]
     try {
       await write()

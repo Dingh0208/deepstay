@@ -17,9 +17,8 @@ export const ThinkingCollapseSetting = () => {
   return (
     <div className={settingsStyles.cell}>
       <div className={styles.row}>
-        <label className={styles.info} htmlFor="thinking-collapsed">
-          <span className={settingsStyles.label}>{t('thinkingCollapsedLabel')}</span>
-          <span className={settingsStyles.description}>{t('thinkingCollapsedDescription')}</span>
+        <label className={settingsStyles.label} htmlFor="thinking-collapsed">
+          {t('thinkingCollapsedLabel')}
         </label>
         <input
           id="thinking-collapsed"
@@ -59,12 +58,9 @@ export const ChatBackgroundSetting = () => {
   }
 
   return (
-    <div className={`${settingsStyles.cell} ${styles.column}`} aria-busy={busy}>
-      <div className={styles.info}>
+    <div className={settingsStyles.cell} aria-busy={busy}>
+      <div className={styles.row}>
         <span className={settingsStyles.label}>{t('chatBackgroundLabel')}</span>
-        <span className={settingsStyles.description}>{t('chatBackgroundDescription')}</span>
-      </div>
-      <div className={styles.background}>
         <div className={styles.actions}>
           <Button variant="outlined" size="m" disabled={busy} onClick={() => inputRef.current?.click()}>
             {t(busy ? 'chatBackgroundSaving' : 'chatBackgroundChoose')}

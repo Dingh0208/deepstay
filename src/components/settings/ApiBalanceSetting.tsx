@@ -89,7 +89,6 @@ const ApiBalanceContent = ({
           {t(state.status === 'loading' ? 'apiBalanceLoading' : 'apiBalanceQuery')}
         </Button>
       </div>
-      <div className={settingsStyles.description}>{t('apiBalanceHint')}</div>
       {state.status === 'error' ? (
         <div role="alert" className={settingsStyles.error}>
           {t(state.message)}

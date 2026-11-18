@@ -21,13 +21,13 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 - Attachments, voice input, and read-aloud replies.
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.
 - English and Simplified Chinese, light and dark themes, mobile layouts, and local history import/export.
-- Thinking is expanded by default, with a setting to collapse it initially; manual expansion survives streamed updates.
+- Deep thinking is off by default. Thinking content expands by default, with a setting to collapse it initially; manual expansion survives streamed updates.
 - Local chat background images with compression, persistence and a reset action.
 - Custom API base URL, key and model; test the connection, load model IDs or enter one manually.
 - Search local chat history from the sidebar; query the DeepSeek balance next to Fetch models in API settings.
 - On mobile, Enter inserts a newline; only the send button submits a message.
 - Optional long-conversation memory compression for requests; original chat records remain unchanged and compression is off by default.
-- History ZIP files are parsed in a background worker with progress; you can keep chatting and confirm to add separate chats while keeping existing history.
+- History ZIP files import through a serial queue with a progress bar; imported chats are added separately while all existing history is kept.
 
 Capabilities depend on the upstream API and account permissions. The default service is `https://api.deepseek.com`: chat uses Anthropic-compatible Messages / Files APIs, speech uses ASR / TTS, and search, link reading and titles require the default DeepSeek extensions. OpenAI-compatible mode uses `/v1/chat/completions` for text and `reasoning_content` streams. Unsupported attachment, search and speech actions are hidden. Switching providers sends the text of existing history while preserving the original local records. Provider-specific parameters and capabilities may differ.
 

@@ -133,77 +133,117 @@ export const loadMemorySnapshot = async (
 /** 只提交仍属于同一原文快照的派生结果；不改写消息，也不复活已删除会话。 */
 export const commitMemoryUpdate = async (
   expected: MemoryState,
-  update: MemoryUpdate
+  update: MemoryUpdate,
+  canCommit: () => boolean = () => true
 ): Promise<boolean> => {
   if (
     [...update.records, ...update.segments].some((entry) => entry.sessionId !== expected.sessionId)
   ) {
     throw new Error('Memory update belongs to another session')
   }
+  if (!canCommit()) {
+    return false
+  }
   const tx = (await getDB()).transaction(
     ['sessions', 'memoryRecords', 'memorySegments', 'memoryState'],
     'readwrite'
   )
   let committed = false
-  await Promise.all([
-    (async () => {
-      try {
-        const stateStore = tx.objectStore('memoryState')
-        const state = (await stateStore.get(expected.sessionId)) ?? {
-          sessionId: expected.sessionId,
-          sourceRevision: 0,
-          memoryRevision: 0,
-        }
-        if (
-          state.sourceRevision !== expected.sourceRevision ||
-          state.memoryRevision !== expected.memoryRevision ||
-          (await tx.objectStore('sessions').getKey(expected.sessionId)) === undefined
-        ) {
-          return
-        }
-        const segments = tx.objectStore('memorySegments')
-        const pending = []
-        for (const segment of update.segments) {
-          const existing = await segments.get(segment.id)
-          if (existing && existing.sessionId !== expected.sessionId) {
-            throw new Error('Memory segment belongs to another session')
+  let invalidated = false
+  const current = () => {
+    if (canCommit()) {
+      return true
+    }
+    invalidated = true
+    abortTransaction(tx)
+    return false
+  }
+  try {
+    await Promise.all([
+      (async () => {
+        try {
+          const stateStore = tx.objectStore('memoryState')
+          const state = (await stateStore.get(expected.sessionId)) ?? {
+            sessionId: expected.sessionId,
+            sourceRevision: 0,
+            memoryRevision: 0,
           }
-          if (!existing) {
-            pending.push(segment)
+          if (!current()) {
+            return
           }
-        }
-        // 同一分段重试不新增另一份模型结果；ID 由来源范围和抽取版本确定。
-        if (update.segments.length > 0 && pending.length === 0) {
-          committed = true
-          return
-        }
-        const records = tx.objectStore('memoryRecords')
-        let changed = false
-        for (const record of update.records) {
-          const existing = await records.get(record.id)
-          if (existing && existing.sessionId !== expected.sessionId) {
-            throw new Error('Memory record belongs to another session')
+          if (
+            state.sourceRevision !== expected.sourceRevision ||
+            state.memoryRevision !== expected.memoryRevision ||
+            (await tx.objectStore('sessions').getKey(expected.sessionId)) === undefined
+          ) {
+            return
           }
-          if (!existing) {
-            await records.add(record)
+          if (!current()) {
+            return
+          }
+          const segments = tx.objectStore('memorySegments')
+          const pending = []
+          for (const segment of update.segments) {
+            const existing = await segments.get(segment.id)
+            if (!current()) {
+              return
+            }
+            if (existing && existing.sessionId !== expected.sessionId) {
+              throw new Error('Memory segment belongs to another session')
+            }
+            if (!existing) {
+              pending.push(segment)
+            }
+          }
+          // 同一分段重试不新增另一份模型结果；ID 由来源范围和抽取版本确定。
+          if (update.segments.length > 0 && pending.length === 0) {
+            committed = true
+            return
+          }
+          const records = tx.objectStore('memoryRecords')
+          let changed = false
+          for (const record of update.records) {
+            const existing = await records.get(record.id)
+            if (!current()) {
+              return
+            }
+            if (existing && existing.sessionId !== expected.sessionId) {
+              throw new Error('Memory record belongs to another session')
+            }
+            if (!existing) {
+              await records.add(record)
+              if (!current()) {
+                return
+              }
+              changed = true
+            }
+          }
+          for (const segment of pending) {
+            await segments.add(segment)
+            if (!current()) {
+              return
+            }
             changed = true
           }
+          if (changed) {
+            await stateStore.put({ ...state, memoryRevision: state.memoryRevision + 1 })
+          }
+          if (!current()) {
+            return
+          }
+          committed = true
+        } catch (error) {
+          abortTransaction(tx)
+          throw error
         }
-        for (const segment of pending) {
-          await segments.add(segment)
-          changed = true
-        }
-        if (changed) {
-          await stateStore.put({ ...state, memoryRevision: state.memoryRevision + 1 })
-        }
-        committed = true
-      } catch (error) {
-        abortTransaction(tx)
-        throw error
-      }
-    })(),
-    tx.done,
-  ])
+      })(),
+      tx.done,
+    ])
+  } catch (error) {
+    if (!invalidated) {
+      throw error
+    }
+  }
   return committed
 }
 

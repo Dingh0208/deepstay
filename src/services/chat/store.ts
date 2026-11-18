@@ -3,7 +3,7 @@ import { createId } from '../../utils/id.js'
 import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest } from '../api/types.js'
-import { getApiConnection, supportsDeepSeekExtras } from '../api/connection.js'
+import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
@@ -24,6 +24,7 @@ import {
   prepareContextMemory,
 } from './contextMemory.js'
 import { memoryText } from './memoryRecords.js'
+import type { MemoryState } from './memoryTypes.js'
 import {
   applyEvent,
   canContinueReply,
@@ -122,6 +123,7 @@ const pendingFiles = new Map<string, db.StoredFile[]>()
 const deletingSessions = new Set<string>()
 const deletionTasks = new Set<Promise<boolean>>()
 const streamFlushes = new Map<string, () => void>()
+const contextPreparations = new Set<string>()
 let accessSequence = 0
 let historyEpoch = 0
 let initTask: Promise<void> | undefined
@@ -251,6 +253,9 @@ export const bindChatPersistence = () => {
       return
     }
     for (const [id, flush] of streamFlushes) {
+      if (contextPreparations.has(id)) {
+        continue
+      }
       flush()
       persist(id)
     }
@@ -855,7 +860,7 @@ const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
  * 附件的服务端 id：已有直接用；正在上传的等待同一任务；否则读取本地原件补传。
  * 本地也没有原件（导入的文档附件只有元数据）时返回 null，该附件只展示、不进入请求。
  */
-const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<string | null> => {
+const ensureServerId = async (apiKey: string, file: FileAttachment, connection: ApiConnection): Promise<string | null> => {
   if (file.serverId) {
     return file.serverId
   }
@@ -867,7 +872,7 @@ const ensureServerId = async (apiKey: string, file: FileAttachment): Promise<str
   if (!blob) {
     return null
   }
-  return uploadAttachment(apiKey, file.id, blob, file.name, file.isImage)
+  return uploadAttachment(apiKey, file.id, blob, file.name, file.isImage, connection)
 }
 
 /** 用会话里的最新消息替换请求快照：重传前会重置附件的 serverId，快照必须跟着更新 */
@@ -892,12 +897,11 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
  * - 历史轮次（仅进入上下文的）中没有 serverId 的附件，多为导入的图片：从最新的消息往前逐张补传，
  *   失败静默跳过，该附件不进入本次请求，下次发送时再试。
  */
-const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal) => {
+const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal, apiKey: string, connection: ApiConnection) => {
   const epoch = historyEpoch
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
   request = refreshRequest(sessionId, request)
-  const apiKey = useSettings.getState().apiKey ?? ''
   const serverIds = new Map<string, string>()
   // 停止生成立即生效；上传本身不取消（输入框与其他消息可能共用同一任务），完成后照常写回 serverId
   const aborted = new Promise<never>((_, reject) => {
@@ -905,7 +909,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   })
   const uploads = Promise.allSettled(
     request.question.files.map(async (file) => {
-      const serverId = await ensureServerId(apiKey, file)
+      const serverId = await ensureServerId(apiKey, file, connection)
       if (serverId) {
         serverIds.set(file.id, serverId)
       }
@@ -935,7 +939,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
       throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     }
     try {
-      const serverId = await Promise.race([ensureServerId(apiKey, file), aborted])
+      const serverId = await Promise.race([ensureServerId(apiKey, file, connection), aborted])
       if (serverId) {
         serverIds.set(file.id, serverId)
         saveServerIds(sessionId, new Map([[file.id, serverId]]))
@@ -1068,6 +1072,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   streamFlushes.set(sessionId, flush)
   let contextPrepared = false
   let systemMemory = ''
+  let sourceConflict = false
+  let sourceState: MemoryState | undefined
+  if (settings.contextMemoryEnabled) {
+    contextPreparations.add(sessionId)
+  }
 
   try {
     for (let attempt = 0; ; attempt += 1) {
@@ -1082,31 +1091,43 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             getSession(sessionId) === sourceSession &&
             useSettings.getState().contextMemoryEnabled
           const saved = pendingSaves.get(sessionId)
-          if ((saved && !(await saved)) || !validSource()) {
+          if (saved && !(await saved)) {
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           const snapshot = await db.loadMemorySnapshot(sessionId)
-          if (!snapshot || !validSource()) {
+          if (!snapshot) {
+            sourceConflict = true
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
-          if ((snapshot.session.contextMemory?.fixed ?? '') !== (sourceSession?.contextMemory?.fixed ?? '')) {
+          sourceState = snapshot.state
+          if (
+            (snapshot.session.contextMemory?.fixed ?? '') !==
+            (sourceSession?.contextMemory?.fixed ?? '')
+          ) {
+            sourceConflict = true
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           // A second tab may have written a different branch before the snapshot was loaded.
           const savedPath = getVisibleMessages(snapshot.session)
           const persistedPath = new Map(savedPath.map((message) => [message.id, message]))
           if (
-            savedPath.length !== request.history.length + 2 || savedPath[savedPath.length - 1]?.id !== initial.id ||
+            savedPath.length !== request.history.length + 2 ||
+            savedPath[savedPath.length - 1]?.id !== initial.id ||
             [...request.history, request.question].some((message, index) => {
               const stored = persistedPath.get(message.id)
               return (
-                !stored || savedPath[index]?.id !== message.id || stored.createdAt !== message.createdAt ||
+                !stored ||
+                savedPath[index]?.id !== message.id ||
+                stored.createdAt !== message.createdAt ||
                 stored.role !== message.role ||
                 memoryText(stored) !== memoryText(message) ||
-                (stored.role === 'user' && message.role === 'user' && JSON.stringify(stored.files) !== JSON.stringify(message.files))
+                (stored.role === 'user' &&
+                  message.role === 'user' &&
+                  JSON.stringify(stored.files) !== JSON.stringify(message.files))
               )
             })
           ) {
+            sourceConflict = true
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           if (request.prefix) {
@@ -1115,8 +1136,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               stored?.role !== 'assistant' ||
               JSON.stringify(stored.blocks) !== JSON.stringify(request.prefix.blocks)
             ) {
+              sourceConflict = true
               throw new ApiError('protocol', { key: 'contextMemoryFailed' })
             }
+          }
+          if (!validSource()) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           let expected = snapshot.state
           const context = await prepareContextMemory({
@@ -1127,6 +1152,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             prefix: request.prefix,
             memory: sourceSession?.contextMemory,
             apiKey,
+            thinking: initial.thinking ?? false,
             connection,
             model,
             signal: controller.signal,
@@ -1137,10 +1163,15 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                   JSON.stringify(extras ? serverTools(initial.search ?? false) : [])
               ) + 256,
             onCommit: async (update) => {
-              if (!validSource() || !(await db.commitMemoryUpdate(expected, update))) {
+              if (!validSource()) {
+                return false
+              }
+              if (!(await db.commitMemoryUpdate(expected, update, validSource))) {
+                sourceConflict = validSource()
                 return false
               }
               expected = { ...expected, memoryRevision: expected.memoryRevision + 1 }
+              sourceState = expected
               return validSource()
             },
             onProgress: (progress) =>
@@ -1148,10 +1179,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 contextProgress: { ...state.contextProgress, [sessionId]: progress },
               })),
           })
+          if (!validSource()) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
           if (
-            !validSource() ||
-            !(await db.commitMemoryUpdate(expected, { records: [], segments: [] }))
+            !(await db.commitMemoryUpdate(expected, { records: [], segments: [] }, validSource))
           ) {
+            sourceConflict = validSource()
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           request = { ...request, history: context.history }
@@ -1162,9 +1196,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             ),
           }))
         }
+        contextPreparations.delete(sessionId)
         contextPrepared = true
         preparing = true
-        const prepared = extras ? await prepareFiles(sessionId, request, controller.signal) : request
+        const prepared = extras
+          ? await prepareFiles(sessionId, request, controller.signal, apiKey, connection)
+          : request
         preparing = false
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
@@ -1230,7 +1267,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
-          extras && attempt < FILE_RETRY_LIMIT &&
+          extras &&
+          attempt < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
         ) {
@@ -1261,16 +1299,88 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       }
     }
   } finally {
-    set((state) => ({ contextProgress: Object.fromEntries(Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)) }))
+    let sourceVerified = true
+    if (!contextPrepared && sourceState && !sourceConflict) {
+      try {
+        // Cancellation stops new memory writes; it cannot permit a stale source save.
+        sourceConflict = !(await db.commitMemoryUpdate(sourceState, { records: [], segments: [] }))
+      } catch (error) {
+        sourceVerified = false
+        db.reportStorageError('verify interrupted memory source')(error)
+        unsavedSessions.add(sessionId)
+        set((state) => ({
+          sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
+        }))
+      }
+    }
+    contextPreparations.delete(sessionId)
+    set((state) => ({
+      contextProgress: Object.fromEntries(
+        Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)
+      ),
+    }))
     titleRequests.delete(controller)
     streamFlushes.delete(sessionId)
     cancelAnimationFrame(frame)
     updateReply(sessionId, reply)
+    if (sourceConflict) {
+      // Reload competing source changes before another local send can persist the old cache.
+      const cached = getSession(sessionId)
+      try {
+        const stored = await db.loadSession(sessionId)
+        if (
+          historyEpoch === sourceEpoch &&
+          getSession(sessionId) === cached &&
+          !deletingSessions.has(sessionId)
+        ) {
+          unsavedSessions.delete(sessionId)
+          if (stored) {
+            const current = normalizeSession(stored)
+            set((state) => ({
+              sessionCache: {
+                ...state.sessionCache,
+                [sessionId]: {
+                  ...current,
+                  messages: current.messages.map((message) =>
+                    message.id === reply.id &&
+                    message.role === 'assistant' &&
+                    message.status === 'pending'
+                      ? {
+                          ...reply,
+                          parentId: message.parentId,
+                          selectedChildId: message.selectedChildId,
+                        }
+                      : message
+                  ),
+                },
+              },
+            }))
+          } else {
+            set((state) => ({
+              sessionCache: Object.fromEntries(
+                Object.entries(state.sessionCache).filter(([id]) => id !== sessionId)
+              ),
+              sessions: state.sessions.filter((session) => session.id !== sessionId),
+              activeId: state.activeId === sessionId ? null : state.activeId,
+            }))
+          }
+        }
+      } catch (error) {
+        db.reportStorageError('reload changed session')(error)
+        set((state) => ({
+          sessionCache: Object.fromEntries(
+            Object.entries(state.sessionCache).filter(([id]) => id !== sessionId)
+          ),
+          sessionLoadErrors: { ...state.sessionLoadErrors, [sessionId]: true },
+        }))
+      }
+    } else if (sourceVerified) {
+      persist(sessionId)
+    }
     set((state) => ({
       streaming: Object.fromEntries(
         Object.entries(state.streaming).filter(([id]) => id !== sessionId)
       ),
     }))
-    persist(sessionId)
   }
 }

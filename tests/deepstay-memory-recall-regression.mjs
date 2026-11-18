@@ -77,6 +77,15 @@ try {
   assert.ok(!withRecent.includes('u-recent'))
   checks.push('Empty recall intent or absent evidence returns no invented material, and recent complete messages are not repeated as recalled history')
 
+  const unrelatedRecent = round('recent-only', '最近在讨论月光邮局的旅行。')
+  assert.equal(await ask('紫色玫瑰的线索是什么？', [...original, ...unrelatedRecent], { recent: unrelatedRecent }), '',
+    'Recent context may rank a match, but must not invent a match for an unrelated current question')
+  const repeatedPreference = `${'我的颜色偏好是红色。'.repeat(120)}更正：我的颜色偏好现在是蓝色。`
+  const correctedPreference = await ask('我的颜色偏好是什么？', round('repeated-preference', repeatedPreference))
+  assert.ok(correctedPreference.includes('更正：我的颜色偏好现在是蓝色'),
+    'A repeated early phrase must not hide a later correction within the same scan chunk')
+  checks.push('Recent supplementation cannot alone trigger unrelated recall, and repeated early mentions do not hide a later correction in the same long message')
+
   const longText = `${'日常散步。'.repeat(16_000)}\n特别约定：秘密代号叫青色鲸鱼，周六再见。\n${'普通闲聊。'.repeat(16_000)}`
   const large = await ask('秘密代号“青色鲸鱼”约定是什么？', round('large', longText))
   assert.ok(large.includes('青色鲸鱼'))
@@ -86,6 +95,9 @@ try {
   assert.ok(estimateMemoryTokens(large) <= 3_000)
   const acrossChunk = `${'x'.repeat(32_766)}月光邮局是在桥边。${'y'.repeat(32_768)}`
   assert.ok((await ask('月光邮局在哪里？', round('boundary', acrossChunk))).includes('月光邮局是在桥边'))
+  const mixedCase = `${'İ'.repeat(1_000)}月光邮局在桥边。${'x'.repeat(1_000)}`
+  assert.ok((await ask('月光邮局在哪里？', round('unicode-offset', mixedCase))).includes('月光邮局在桥边'),
+    'Case folding must map a hit back to its original UTF-16 source position')
   checks.push('Scans oversized single-message text in bounded overlapping chunks, finds middle and chunk-boundary evidence, and returns only marked excerpts within the token budget')
 
   const noHidden = [

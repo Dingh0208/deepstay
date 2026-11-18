@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { LinkedMessage, TranslationMessage } from '../i18n/index.js'
 import { uploadFile } from './api/client.js'
+import { getApiConnection, type ApiConnection } from './api/connection.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
@@ -122,7 +123,8 @@ const enqueueUpload = (
   file: Blob,
   name: string,
   isImage: boolean,
-  signal: AbortSignal
+  signal: AbortSignal,
+  connection: ApiConnection
 ) =>
   new Promise<string>((resolve, reject) => {
     queue.push(async () => {
@@ -132,7 +134,7 @@ const enqueueUpload = (
       }
       try {
         const body = file instanceof File ? file : new File([file], name, { type: file.type })
-        resolve((await uploadFile(apiKey, body, getUploadPurpose(name, isImage), signal)).id)
+        resolve((await uploadFile(apiKey, body, getUploadPurpose(name, isImage), signal, connection)).id)
       } catch (error) {
         reject(error)
       }
@@ -169,7 +171,8 @@ export const uploadAttachment = (
   id: string,
   blob: Blob,
   name: string,
-  isImage: boolean
+  isImage: boolean,
+  connection: ApiConnection = getApiConnection()
 ): Promise<string> => {
   const current = pending.get(id)
   if (current) {
@@ -177,7 +180,7 @@ export const uploadAttachment = (
   }
   const controller = new AbortController()
   setTask(id, { status: 'uploading' })
-  const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal)
+  const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal, connection)
     .then((serverId) => {
       setTask(id, { status: 'done', serverId })
       return serverId

@@ -2,7 +2,7 @@ import { getReplyText } from './reply.js'
 import type { MemoryMessage, MemoryRecord, MemorySlice, MemorySource } from './memoryTypes.js'
 import type { Message } from './types.js'
 
-export const MEMORY_VERSION = 1
+export const MEMORY_VERSION = 2
 
 /** Only visible, settled conversation text can support a memory. */
 export const memoryText = (message: Message): string =>
@@ -34,6 +34,40 @@ const text = (value: unknown, max: number): string =>
 const array = (value: unknown, max: number): unknown[] =>
   Array.isArray(value) && value.length <= max ? value : invalid()
 
+const textBoundary = (value: string, index: number): boolean =>
+  !(
+    index > 0 &&
+    index < value.length &&
+    value.charCodeAt(index - 1) >= 0xd800 &&
+    value.charCodeAt(index - 1) <= 0xdbff &&
+    value.charCodeAt(index) >= 0xdc00 &&
+    value.charCodeAt(index) <= 0xdfff
+  )
+
+/** A later slice of one long message can explicitly correct its earlier slice. */
+export const isMemorySourceBefore = (
+  previous: MemorySource,
+  next: MemorySource,
+  order: ReadonlyMap<string, number>
+): boolean => {
+  const before = order.get(previous.messageId)
+  const after = order.get(next.messageId)
+  return (
+    before !== undefined &&
+    after !== undefined &&
+    (before < after || (previous.messageId === next.messageId && previous.end <= next.start))
+  )
+}
+
+const authoredBy = (
+  kind: MemoryRecord['kind'],
+  actor: MemoryRecord['actor'],
+  roles: (Message['role'] | undefined)[]
+): boolean =>
+  ['preference', 'boundary', 'correction'].includes(kind)
+    ? actor === 'user' && roles.every((role) => role === 'user')
+    : roles.some((role) => role === actor)
+
 const findSource = (value: unknown, slices: MemorySlice[]): MemorySource => {
   const item = object(value)
   const id = text(item.messageId, 256)
@@ -49,7 +83,9 @@ const findSource = (value: unknown, slices: MemorySlice[]): MemorySource => {
       !Number.isInteger(slice.end) ||
       slice.start < 0 ||
       slice.end > full.length ||
-      slice.start >= slice.end
+      slice.start >= slice.end ||
+      !textBoundary(full, slice.start) ||
+      !textBoundary(full, slice.end)
     ) {
       invalid()
     }
@@ -57,6 +93,12 @@ const findSource = (value: unknown, slices: MemorySlice[]): MemorySource => {
     const start = within.indexOf(quote)
     if (start !== -1) {
       if (within.indexOf(quote, start + 1) !== -1) {
+        invalid()
+      }
+      if (
+        !textBoundary(full, slice.start + start) ||
+        !textBoundary(full, slice.start + start + quote.length)
+      ) {
         invalid()
       }
       matches.push({
@@ -104,8 +146,9 @@ export const parseMemoryExtraction = (
       .map((record) => [record.id, record])
   )
   const records: MemoryRecord[] = []
-  const seen = new Set<string>()
-  for (const raw of rows) {
+  const seen = new Map<string, MemoryRecord>()
+  const extracted = new Map<number, MemoryRecord>()
+  for (const [rowIndex, raw] of rows.entries()) {
     const row = object(raw)
     const kind = text(row.kind, 20) as MemoryRecord['kind']
     const actor = text(row.actor, 20) as MemoryRecord['actor']
@@ -125,9 +168,12 @@ export const parseMemoryExtraction = (
       invalid()
     }
     const sources = rawSources.map((source) => findSource(source, options.sources))
-    const authored = sources.some((source) =>
-      options.sources.some(
-        (slice) => slice.message.id === source.messageId && slice.message.role === actor
+    const authored = authoredBy(
+      kind,
+      actor,
+      sources.map(
+        (source) =>
+          options.sources.find((slice) => slice.message.id === source.messageId)?.message.role
       )
     )
     if (!authored) {
@@ -136,23 +182,22 @@ export const parseMemoryExtraction = (
     const supersedes: string[] = []
     if (row.supersedes !== undefined) {
       for (const target of array(row.supersedes, 6)) {
-        const id = text(target, 512)
-        const previous = known.get(id)
-        const lastSource = Math.max(...sources.map((source) => order.get(source.messageId) ?? -1))
+        const reference = text(target, 512)
+        const local = /^@(0|[1-9]\d*)$/.exec(reference)
+        const previous =
+          (local ? extracted.get(Number(local[1])) : known.get(reference)) ?? invalid()
         if (
           kind !== 'correction' ||
-          !previous ||
           previous.extractorVersion !== MEMORY_VERSION ||
           previous.realm !== realm ||
-          !previous.sources.every((source) => {
-            const position = order.get(source.messageId)
-            return position !== undefined && position < lastSource
-          })
+          !sources.some((current) =>
+            previous.sources.every((source) => isMemorySourceBefore(source, current, order))
+          )
         ) {
           invalid()
         }
-        if (!supersedes.includes(id)) {
-          supersedes.push(id)
+        if (!supersedes.includes(previous.id)) {
+          supersedes.push(previous.id)
         }
       }
     }
@@ -184,10 +229,12 @@ export const parseMemoryExtraction = (
       sources,
       supersedes,
     ])
-    if (!seen.has(signature)) {
-      seen.add(signature)
+    const duplicate = seen.get(signature)
+    if (!duplicate) {
+      seen.set(signature, record)
       records.push(record)
     }
+    extracted.set(rowIndex, duplicate ?? record)
   }
   return { summary, records }
 }
@@ -204,7 +251,9 @@ export const isMemorySourceValid = (
     Number.isInteger(source.end) &&
     source.start >= 0 &&
     source.end > source.start &&
-    source.end <= memoryText(current.message).length
+    source.end <= memoryText(current.message).length &&
+    textBoundary(memoryText(current.message), source.start) &&
+    textBoundary(memoryText(current.message), source.end)
   )
 }
 
@@ -219,28 +268,48 @@ export const filterMemoryRecords = (
       record.sessionId === sessionId &&
       record.extractorVersion === MEMORY_VERSION &&
       record.sources.length > 0 &&
-      record.sources.every((source) => isMemorySourceValid(source, path))
+      record.sources.every((source) => isMemorySourceValid(source, path)) &&
+      authoredBy(
+        record.kind,
+        record.actor,
+        record.sources.map((source) => path.get(source.messageId)?.message.role)
+      )
   )
   const byId = new Map(valid.map((record) => [record.id, record]))
   const order = new Map(Array.from(path.keys(), (id, index) => [id, index]))
+  const position = (record: MemoryRecord) =>
+    Math.max(...record.sources.map((source) => order.get(source.messageId) ?? -1))
+  const end = (record: MemoryRecord) =>
+    Math.max(
+      ...record.sources
+        .filter((source) => order.get(source.messageId) === position(record))
+        .map((source) => source.end)
+    )
+  const supported = new Set<string>()
   const hidden = new Set<string>()
-  for (const correction of valid) {
+  for (const correction of [...valid].sort(
+    (a, b) => position(a) - position(b) || end(a) - end(b)
+  )) {
     if (correction.kind !== 'correction' || correction.actor !== 'user') {
+      supported.add(correction.id)
       continue
     }
-    const latest = Math.max(
-      ...correction.sources.map((source) => order.get(source.messageId) ?? -1)
-    )
-    for (const id of correction.supersedes) {
+    const targets = correction.supersedes.map((id) => {
       const previous = byId.get(id)
-      if (
+      return (
         previous &&
+        supported.has(id) &&
         previous.realm === correction.realm &&
-        previous.sources.every((source) => (order.get(source.messageId) ?? Infinity) < latest)
-      ) {
-        hidden.add(id)
-      }
+        correction.sources.some((current) =>
+          previous.sources.every((source) => isMemorySourceBefore(source, current, order))
+        )
+      )
+    })
+    if (!targets.every(Boolean)) {
+      continue
     }
+    supported.add(correction.id)
+    correction.supersedes.forEach((id) => hidden.add(id))
   }
-  return valid.filter((record) => !hidden.has(record.id))
+  return valid.filter((record) => supported.has(record.id) && !hidden.has(record.id))
 }

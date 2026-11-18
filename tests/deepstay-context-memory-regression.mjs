@@ -25,7 +25,7 @@ globalThis.__API_ORIGIN__ = 'https://api.deepseek.com'
 const settings = await import(new URL('services/settings.ts', root))
 const { prepareContextMemory, estimateContextTokens, estimateRequestTokens, assertContextBudget, CONTEXT_INPUT_BUDGET } = await import(new URL('services/chat/contextMemory.ts', root))
 const { toRequestMessages } = await import(new URL('services/chat/reply.ts', root))
-const { memoryFingerprint } = await import(new URL('services/chat/memoryRecords.ts', root))
+const { memoryFingerprint, MEMORY_VERSION } = await import(new URL('services/chat/memoryRecords.ts', root))
 const { ApiError } = await import(new URL('services/api/client.ts', root))
 const connection = { baseUrl: 'https://qa-memory.example.test/v1', protocol: 'openai' }
 const requests = []
@@ -67,6 +67,17 @@ try {
   assert.ok(short.systemMemory.includes('称呼：小鹿'))
   assert.deepEqual(short.history, round(0, '你好', '我在'))
   checks.push('Compression defaults off, persists opt-in, and makes no extraction call for short history')
+
+  const repeatedReminders = Array.from({ length: 20 }, (_, index) => {
+    const pair = round(900 + index, '今天好。', '我在。')
+    pair[1].latestReminder = '同一份历史提醒。'.repeat(200)
+    return pair
+  }).flat()
+  const beforeReminders = requests.length
+  const reminders = await prepareContextMemory(optionsFor({ history: repeatedReminders }))
+  assert.equal(requests.length, beforeReminders, 'Deduplicated reminders that fit the actual request must not trigger extractions')
+  assert.deepEqual(reminders.history, repeatedReminders)
+  checks.push('Identical historical reminders are budgeted once as in the actual request instead of forcing unnecessary compression')
 
   const original = JSON.stringify(history)
   const progress = []
@@ -173,11 +184,11 @@ try {
     const content = message.role === 'user' ? message.content : message.blocks[0].text
     const source = { messageId: message.id, fingerprint: await memoryFingerprint(message), start: 0, end: content.length }
     ledgerSources.set(message.id, source)
-    if (message.id !== 'u-601') ledgerSnapshot.segments.push({ id: `covered-${message.id}`, sessionId: 'fixture-chat', sources: [source], summary: '已整理片段。', provider: 'openai:https://qa-memory.example.test', model: 'qa-model', createdAt: 1, extractorVersion: 1 })
+    if (message.id !== 'u-601') ledgerSnapshot.segments.push({ id: `covered-${message.id}`, sessionId: 'fixture-chat', sources: [source], summary: '已整理片段。', provider: 'openai:https://qa-memory.example.test', model: 'qa-model', createdAt: 1, extractorVersion: MEMORY_VERSION })
   }
-  for (let index = 0; index < 24; index++) ledgerSnapshot.records.push({ id: `setting-${index}`, sessionId: 'fixture-chat', kind: 'setting', actor: 'user', realm: 'roleplay', key: `人物设定${index}`, text: `人物设定${index}。` + '虚构角色细节'.repeat(30), sources: [ledgerSources.get('u-600')], supersedes: [], extractedAt: 100 + index, extractorVersion: 1 })
-  ledgerSnapshot.records.push({ id: 'old-color', sessionId: 'fixture-chat', kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '用户偏好红色。', sources: [{ ...ledgerSources.get('u-600'), end: colorBefore.length }], supersedes: [], extractedAt: 1, extractorVersion: 1 })
-  ledgerSnapshot.records.push({ id: 'later-color', sessionId: 'fixture-chat', kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '该记录来源在本次更正之后，不能倒填更正目标。', sources: [ledgerSources.get('u-605')], supersedes: [], extractedAt: 999, extractorVersion: 1 })
+  for (let index = 0; index < 24; index++) ledgerSnapshot.records.push({ id: `setting-${index}`, sessionId: 'fixture-chat', kind: 'setting', actor: 'user', realm: 'roleplay', key: `人物设定${index}`, text: `人物设定${index}。` + '虚构角色细节'.repeat(30), sources: [ledgerSources.get('u-600')], supersedes: [], extractedAt: 100 + index, extractorVersion: MEMORY_VERSION })
+  ledgerSnapshot.records.push({ id: 'old-color', sessionId: 'fixture-chat', kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '用户偏好红色。', sources: [{ ...ledgerSources.get('u-600'), end: colorBefore.length }], supersedes: [], extractedAt: 1, extractorVersion: MEMORY_VERSION })
+  ledgerSnapshot.records.push({ id: 'later-color', sessionId: 'fixture-chat', kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '该记录来源在本次更正之后，不能倒填更正目标。', sources: [ledgerSources.get('u-605')], supersedes: [], extractedAt: 999, extractorVersion: MEMORY_VERSION })
   let sawRelevantKnown = false
   respond = ({ body }) => {
     const chunk = body.messages[1].content
@@ -284,7 +295,7 @@ try {
   await assert.rejects(prepareContextMemory(optionsFor({ history: [], question: { ...question, content: '字'.repeat(20000) } })), tooLarge)
   const longPrefix = { ...round(99)[1], prefix: true, blocks: [{ type: 'text', text: '续'.repeat(17000) }] }
   await assert.rejects(prepareContextMemory(optionsFor({ history: [], prefix: longPrefix })), tooLarge)
-  const longThinking = { ...longPrefix, blocks: [{ type: 'thinking', thinking: '思'.repeat(17000), signature: 'fixture-signature' }] }
+  const longThinking = { ...longPrefix, thinking: true, blocks: [{ type: 'thinking', thinking: '思'.repeat(17000), signature: 'fixture-signature' }] }
   await assert.rejects(prepareContextMemory(optionsFor({ history: [], prefix: longThinking })), tooLarge)
   assert.equal(requests.length, beforeBudget)
   assert.throws(() => assertContextBudget({ system: '提醒'.repeat(9000), messages: [], tools: [] }), tooLarge)
@@ -292,6 +303,27 @@ try {
   assert.ok(estimateContextTokens('中文') > estimateContextTokens('en'))
   assert.equal(CONTEXT_INPUT_BUDGET, 24000)
   checks.push('Current question, continuation text/thinking, system reminders and unknown document content are included in complete-request limits before sending')
+
+  const largeCurrent = { ...question, content: '我们约好散步。'.repeat(2100) }
+  const largeCurrentContext = await prepareContextMemory(optionsFor({ question: largeCurrent,
+    history: [...round(880, '散步约定。' + '散步细节。'.repeat(2000), '我在听。'), ...history] }))
+  assert.equal(toRequestMessages(largeCurrentContext.history, largeCurrent).slice(-1)[0].content, largeCurrent.content)
+  assertContextBudget({ system: largeCurrentContext.systemMemory, messages: toRequestMessages(largeCurrentContext.history, largeCurrent), tools: [] })
+  checks.push('A large current question that fits the input budget is retained in full while optional recalled history yields room')
+
+  const protectedSnapshot = emptySnapshot()
+  for (const message of history) {
+    const content = message.role === 'user' ? message.content : message.blocks[0].text
+    const source = { messageId: message.id, fingerprint: await memoryFingerprint(message), start: 0, end: content.length }
+    protectedSnapshot.segments.push({ id: `protected-${message.id}`, sessionId: 'fixture-chat', sources: [source], summary: '已整理。', provider: 'openai:https://qa-memory.example.test', model: 'qa-model', createdAt: 1, extractorVersion: MEMORY_VERSION })
+  }
+  for (const kind of ['setting', 'boundary', 'correction']) protectedSnapshot.records.push({ id: `protected-${kind}`, sessionId: 'fixture-chat', kind, actor: 'user', realm: 'roleplay', key: kind, text: `${kind}必须保留。` + '明确的角色边界和设定。'.repeat(20), sources: [protectedSnapshot.segments[0].sources[0]], supersedes: [], extractedAt: 1, extractorVersion: MEMORY_VERSION })
+  const protectedContext = await prepareContextMemory(optionsFor({ snapshot: protectedSnapshot }))
+  for (const kind of ['setting', 'boundary', 'correction']) assert.ok(protectedContext.systemMemory.includes(`${kind}必须保留。`))
+  const beforeProtectedBudget = requests.length
+  await assert.rejects(prepareContextMemory(optionsFor({ snapshot: protectedSnapshot, question: { ...question, content: '问'.repeat(14750) } })), tooLarge)
+  assert.equal(requests.length, beforeProtectedBudget)
+  checks.push('Selected role settings, boundaries and corrections remain in the request; when they cannot fit with the current question, preparation stops instead of silently discarding them')
 
   // Exercise the real store, IndexedDB, adapter and stream parser with isolated chats.
   await import('fake-indexeddb/auto')

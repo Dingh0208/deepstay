@@ -19,59 +19,72 @@ export const estimateMemoryTokens = (text: string): number => {
   return Math.ceil(tokens)
 }
 
-type Term = { text: string; weight: number }
+type Term = { text: string; weight: number; direct: boolean }
 type Candidate = { message: Message; text: string; partner: Message; position: number; score: number; order: number }
 
 const termsOf = (question: string, recent: Message[]): Term[] => {
-  const terms = new Map<string, number>()
-  const add = (text: string, weight: number) => {
+  const terms = new Map<string, Term>()
+  const add = (text: string, weight: number, direct: boolean) => {
     const term = text.toLowerCase().trim()
     if (term.length >= 2 && !STOP_WORDS.has(term)) {
-      terms.set(term, Math.max(terms.get(term) ?? 0, weight))
+      const previous = terms.get(term)
+      terms.set(term, { text: term, weight: Math.max(previous?.weight ?? 0, weight), direct: direct || !!previous?.direct })
     }
   }
-  const extract = (text: string, weight: number) => {
+  const extract = (text: string, weight: number, direct: boolean) => {
     for (const match of text.matchAll(/[“「『"]([^”」』"\n]{2,80})[”」』"]/g)) {
-      add(match[1], 10 * weight)
+      add(match[1], 10 * weight, direct)
     }
     for (const match of text.matchAll(/\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?|[a-z][a-z0-9_-]{2,}|\d{2,}/gi)) {
-      add(match[0], 4 * weight)
+      add(match[0], 4 * weight, direct)
     }
     for (const match of text.replace(BOILERPLATE, ' ').matchAll(/[\u3400-\u9fff]{2,}/g)) {
       const run = match[0]
       if (run.length <= 10) {
-        add(run, 3 * weight)
+        add(run, 3 * weight, direct)
       }
       for (let index = 0; index + 1 < run.length; index += 1) {
-        add(run.slice(index, index + 2), weight)
+        add(run.slice(index, index + 2), weight, direct)
       }
     }
   }
-  extract(question.slice(0, 2_000), 1)
+  extract(question.slice(0, 2_000), 1, true)
   // 空泛的“你还记得吗”不根据其他上下文猜测某个事件。
   if (terms.size === 0) {
     return []
   }
   for (const message of recent.filter((item) => item.role === 'user').slice(-2)) {
-    extract(message.content.slice(-500), 0.4)
+    extract(message.content.slice(-500), 0.4, false)
   }
-  return [...terms].map(([text, weight]) => ({ text, weight }))
-    .sort((a, b) => b.weight - a.weight || b.text.length - a.text.length).slice(0, 32)
+  return [...terms.values()]
+    .sort((a, b) => Number(b.direct) - Number(a.direct) || b.weight - a.weight || b.text.length - a.text.length).slice(0, 32)
 }
 
 const matchingScore = (text: string, terms: Term[]): number => {
   let score = 0
+  let direct = false
   for (const term of terms) {
     if (text.includes(term.text)) {
       score += term.weight
+      direct ||= term.direct
     }
   }
-  return score
+  return direct ? score : 0
 }
 
 const safeBoundary = (text: string, index: number): number =>
   index > 0 && index < text.length && text.charCodeAt(index) >= 0xdc00 && text.charCodeAt(index) <= 0xdfff
     ? index - 1 : index
+
+const originalOffset = (text: string, folded: string, position: number): number => {
+  if (text.length === folded.length) {return position}
+  let length = 0
+  for (let index = 0; index < text.length; index += 1) {
+    length += text[index].toLowerCase().length
+    if (length > position) {return index}
+  }
+  return text.length
+}
 
 const excerpt = (text: string, position: number, before = WINDOW_BEFORE, after = WINDOW_AFTER): string => {
   let start = Math.max(0, position - before)
@@ -172,21 +185,31 @@ export const recallMemory = async ({ sessionId, history, question, recent, recor
       }
       for (let offset = 0; offset < text.length; offset += CHUNK_CHARS) {
         throwIfAborted(signal)
-        const chunk = text.slice(Math.max(0, offset - WINDOW_AFTER), offset + CHUNK_CHARS).toLowerCase()
         const chunkStart = Math.max(0, offset - WINDOW_AFTER)
+        const original = text.slice(chunkStart, offset + CHUNK_CHARS)
+        const chunk = original.toLowerCase()
         const anchors: { position: number; weight: number }[] = []
         for (const term of terms) {
+          if (!term.direct) {continue}
           let at = chunk.indexOf(term.text)
-          for (let occurrence = 0; at >= 0 && occurrence < 3; occurrence += 1) {
+          for (let occurrence = 0; at >= 0 && occurrence < 2; occurrence += 1) {
             anchors.push({ position: at, weight: term.weight })
             at = chunk.indexOf(term.text, at + term.text.length)
           }
+          at = chunk.lastIndexOf(term.text)
+          for (let occurrence = 0; at >= 0 && occurrence < 2; occurrence += 1) {
+            anchors.push({ position: at, weight: term.weight })
+            at = at === 0 ? -1 : chunk.lastIndexOf(term.text, at - 1)
+          }
         }
-        anchors.sort((a, b) => b.weight - a.weight)
+        anchors.sort((a, b) => b.weight - a.weight || b.position - a.position)
         for (const anchor of anchors.slice(0, 6)) {
           const local = chunk.slice(Math.max(0, anchor.position - WINDOW_BEFORE), anchor.position + WINDOW_AFTER)
-          keep({ message, text, partner, position: chunkStart + anchor.position,
-            score: matchingScore(local, terms), order: roundIndex * 2 + member })
+          const score = matchingScore(local, terms)
+          if (score > 0) {
+            keep({ message, text, partner, position: chunkStart + originalOffset(original, chunk, anchor.position),
+              score, order: roundIndex * 2 + member })
+          }
         }
         scanned += CHUNK_CHARS
         if (scanned >= 262_144) {

@@ -84,9 +84,9 @@ export const uploadFile = async (
   apiKey: string,
   file: File,
   purpose: FilePurpose | null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  connection: ApiConnection = getApiConnection()
 ): Promise<FileObject> => {
-  const connection = getApiConnection()
   if (!supportsDeepSeekExtras(connection)) {
     throw new ApiError('protocol', 'File uploads are unavailable for this API connection')
   }

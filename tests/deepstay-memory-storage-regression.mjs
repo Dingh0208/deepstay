@@ -130,6 +130,27 @@ try {
   assert.deepEqual(await db.loadMemorySnapshot(old.id), beforeFailure)
   checks.push('Failed source-version and segment writes roll back messages, records, coverage and revisions together, preserving the previous committed memory')
 
+  assert.equal(await db.commitMemoryUpdate(beforeFailure.state, update(old.id, 'pre-cancelled'), () => false), false)
+  for (const method of ['get', 'add']) {
+    const native = IDBObjectStore.prototype[method]
+    let valid = true
+    let armed = true
+    IDBObjectStore.prototype[method] = function (...args) {
+      const request = native.apply(this, args)
+      if (armed && this.transaction.mode === 'readwrite' && this.name === (method === 'get' ? 'memoryState' : 'memoryRecords')) {
+        armed = false
+        request.addEventListener('success', () => { valid = false }, { once: true })
+      }
+      return request
+    }
+    try {
+      assert.equal(await db.commitMemoryUpdate(beforeFailure.state, update(old.id, `cancel-${method}`), () => valid), false)
+    } finally { IDBObjectStore.prototype[method] = native }
+    assert.equal(armed, false)
+    assert.deepEqual(await db.loadMemorySnapshot(old.id), beforeFailure)
+  }
+  checks.push('An invalidated task cannot commit before a transaction, during source reads, or after a record write; the entire derived update rolls back without an unhandled rejection')
+
   const other = session('B')
   await db.saveSession(other)
   const otherStart = await db.loadMemorySnapshot(other.id)

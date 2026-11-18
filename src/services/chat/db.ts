@@ -64,8 +64,16 @@ const abortTransaction = (tx: { abort(): void }) => {
 }
 
 // 每个操作拿到连接后立即创建事务；IndexedDB 按创建顺序执行范围重叠的事务，读取总能看到之前发起的写入。
-const getDB = () =>
-  (dbPromise ??= openDB<ChatDB>('xuchat-guest', DB_VERSION, {
+const getDB = () => {
+  if (dbPromise) {
+    return dbPromise
+  }
+  const reset = () => {
+    if (dbPromise === opening) {
+      dbPromise = null
+    }
+  }
+  const opening = openDB<ChatDB>('xuchat-guest', DB_VERSION, {
     upgrade(db, _oldVersion, _newVersion, tx) {
       // 初始化当前格式需要的存储与索引，不迁移旧消息。
       for (const name of ['sessions', 'files', 'sessionsStaging', 'filesStaging'] as const) {
@@ -91,14 +99,55 @@ const getDB = () =>
         db.createObjectStore('memoryState', { keyPath: 'sessionId' })
       }
     },
+    blocking(_currentVersion, _blockedVersion, event) {
+      const connection = event.target as IDBDatabase
+      connection.close()
+      reset()
+    },
+    terminated: reset,
   }).catch((error: unknown) => {
     // 打开失败后允许界面重试，避免一直复用已拒绝的 Promise。
-    dbPromise = null
+    reset()
     throw error
-  }))
+  })
+  dbPromise = opening
+  return opening
+}
 
-export const loadSessionSummaries = async (): Promise<SessionSummary[]> =>
-  (await (await getDB()).getAll('sessionSummaries')).map(toSessionSummary)
+/** 以会话主表为准。缺少的列表索引可从仍在本机的原始会话恢复。 */
+export const loadSessionSummaries = async (): Promise<SessionSummary[]> => {
+  const tx = (await getDB()).transaction(['sessions', 'sessionSummaries'], 'readwrite')
+  const [summaries] = await Promise.all([
+    (async () => {
+      try {
+        const sessions = tx.objectStore('sessions')
+        const index = tx.objectStore('sessionSummaries')
+        // 完整的索引只读取键和摘要，详情继续按需加载。
+        const [ids, existing] = await Promise.all([sessions.getAllKeys(), index.getAll()])
+        const byId = new Map(existing.map((summary) => [summary.id, summary]))
+        const list: SessionSummary[] = []
+        for (const id of ids) {
+          let summary = byId.get(id)
+          if (!summary) {
+            const session = await sessions.get(id)
+            if (!session) {
+              continue
+            }
+            summary = storedSummary(session)
+            await index.put(summary)
+          }
+          list.push(toSessionSummary(summary))
+        }
+        return list
+      } catch (error) {
+        abortTransaction(tx)
+        throw error
+      }
+    })(),
+    tx.done,
+  ])
+  return summaries
+}
 
 export const loadSession = async (id: string): Promise<Session | undefined> =>
   (await getDB()).get('sessions', id)
@@ -261,7 +310,8 @@ export const saveSession = async (session: Session, files: StoredFile[] = []): P
   const summary = storedSummary(session)
   const tx = (await getDB()).transaction(
     ['sessions', 'sessionSummaries', 'files', 'memoryState'],
-    'readwrite'
+    'readwrite',
+    { durability: 'strict' }
   )
   await Promise.all([
     (async () => {
@@ -455,7 +505,8 @@ export const commitStaging = async (replace = false): Promise<SessionSummary[]> 
       'memorySegments',
       'memoryState',
     ],
-    'readwrite'
+    'readwrite',
+    { durability: 'strict' }
   )
   const move = async (from: 'sessionsStaging' | 'filesStaging', to: 'sessions' | 'files') => {
     try {

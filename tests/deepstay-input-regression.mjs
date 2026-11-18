@@ -78,7 +78,13 @@ try {
     textarea.props.onChange({ target: { value: 'hello\nworld' } })
     tree = Input({ sessionId: null })
     assert.equal(find(tree, node => node.type === 'textarea').props.value, 'hello\nworld')
-    find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()
+    const input = find(tree, node => node.type === 'textarea')
+    const send = find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send')
+    input.props.ref.current = { focus() {}, blur() {} }
+    globalThis.document = { activeElement: input.props.ref.current }
+    send.props.onPointerDown({ preventDefault: () => { prevented = true } })
+    assert.equal(prevented, mobile)
+    send.props.onClick()
     assert.equal(globalThis.__sent, mobile ? 2 : 1)
     checks.push(`${mobile ? 'Mobile' : 'Web'} Enter keeps native newline behavior without submitting; multiline draft persists and the send button submits`)
   }

@@ -22,6 +22,7 @@ type Settings = {
   contextMemoryEnabled: boolean
   search: boolean
   siderCollapsed: boolean
+  pinnedSessionIds: string[]
 }
 
 const KEYS = {
@@ -38,6 +39,7 @@ const KEYS = {
   contextMemoryEnabled: 'deepstay:context-memory-enabled',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
+  pinnedSessionIds: 'deepstay:pinned-session-ids',
 } as const
 
 const read = (key: string) => {
@@ -81,9 +83,9 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
-const initialModels = (): string[] => {
+const readStringList = (key: string): string[] => {
   try {
-    const value: unknown = JSON.parse(read(KEYS.models) ?? '[]')
+    const value: unknown = JSON.parse(read(key) ?? '[]')
     return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item.trim()) : []
   } catch {
     return []
@@ -95,7 +97,7 @@ export const useSettings = create<Settings>(() => ({
   apiBaseUrl: read(KEYS.apiBaseUrl) || __API_ORIGIN__,
   apiProtocol: read(KEYS.apiProtocol) === 'openai' ? 'openai' : 'deepseek',
   model: read(KEYS.model) || 'deepseek-flash',
-  models: initialModels(),
+  models: readStringList(KEYS.models),
   locale: initialLocale(),
   themePreference: initialThemePreference(),
   ttsVoice: initialTtsVoice(),
@@ -104,6 +106,7 @@ export const useSettings = create<Settings>(() => ({
   contextMemoryEnabled: read(KEYS.contextMemoryEnabled) === 'true',
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
+  pinnedSessionIds: [...new Set(readStringList(KEYS.pinnedSessionIds))],
 }))
 
 export const setLocale = (locale: Locale) => {
@@ -159,3 +162,18 @@ export const setSiderCollapsed = (siderCollapsed: boolean) => {
   write(KEYS.siderCollapsed, String(siderCollapsed))
   useSettings.setState({ siderCollapsed })
 }
+
+const savePinnedSessions = (pinnedSessionIds: string[]) => {
+  write(KEYS.pinnedSessionIds, pinnedSessionIds.length ? JSON.stringify(pinnedSessionIds) : null)
+  useSettings.setState({ pinnedSessionIds })
+}
+
+export const setPinnedSession = (id: string, pinned: boolean) => {
+  const ids = useSettings.getState().pinnedSessionIds
+  if (pinned === ids.includes(id)) {
+    return
+  }
+  savePinnedSessions(pinned ? [id, ...ids] : ids.filter((value) => value !== id))
+}
+
+export const clearPinnedSessions = () => savePinnedSessions([])

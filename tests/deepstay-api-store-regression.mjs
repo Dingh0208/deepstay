@@ -24,7 +24,7 @@ await import(new URL('../node_modules/fake-indexeddb/auto/index.mjs', import.met
 const saved = new Map()
 globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) }
 globalThis.window = new EventTarget()
-globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'hidden' })
+globalThis.document = Object.assign(new EventTarget(), { visibilityState: 'visible' })
 Object.defineProperty(globalThis, 'navigator', { value: { language: 'zh-CN' }, configurable: true })
 globalThis.__API_ORIGIN__ = 'https://api.deepseek.com'
 globalThis.requestAnimationFrame = callback => setTimeout(() => callback(Date.now()), 0)
@@ -69,17 +69,32 @@ settings.setThinking(true)
 drafts.setDraftText(null, '第一条问题')
 assert.equal(store.sendMessage(null), true)
 const firstId = store.useChatStore.getState().activeId
+assert.ok(store.useChatStore.getState().streaming[firstId])
+assert.equal(requests.length, 0)
+const visibleReasoning = []
+const unsubscribeReasoning = store.useChatStore.subscribe((state) => {
+  const reply = state.sessionCache[firstId]?.messages[1]
+  if (state.streaming[firstId] && reply?.status === 'streaming') {
+    visibleReasoning.push({
+      thinking: reply.blocks.find(block => block.type === 'thinking')?.thinking,
+      answer: reply.blocks.find(block => block.type === 'text')?.text,
+    })
+  }
+})
 // This change occurs before prepareFiles' awaited work settles. The first turn
 // must remain a coherent URL/key/model snapshot; the next turn uses the new one.
 settings.setApiConnection(changedB)
 await waitIdle()
+unsubscribeReasoning()
 if (requests.length === 0) console.log(store.useChatStore.getState().sessionCache[firstId].messages[1])
 assert.equal(requests.length, 1)
 const first = store.useChatStore.getState().sessionCache[firstId]
 assert.equal(first.messages[1].model, originalA.model)
 assert.equal(first.messages[1].status, 'done')
 assert.equal(first.messages[1].blocks.filter(block => block.type === 'text').map(block => block.text).join(''), '第一个供应商完整回答')
+assert.ok(visibleReasoning.some(({ thinking, answer }) => thinking === '认真思考' && answer === undefined))
 checks.push('A real sendMessage snapshots selected URL, key and model before async preparation; changing provider settings during that await never mixes old model with a new destination/key')
+checks.push('The first send is accepted before network preparation and shows reasoning before the answer even when both stream fragments are already buffered')
 
 drafts.setDraftText(firstId, '继续对话')
 assert.equal(store.sendMessage(firstId), true)
@@ -97,6 +112,83 @@ const stored = await db.loadSession(firstId)
 assert.equal(stored.messages.length, 4)
 assert.equal(stored.messages[3].model, changedB.model)
 checks.push('The next real turn uses the new selected provider/model, includes the full prior text history, renders thinking plus answer and persists both turns in IndexedDB')
+
+// Cancel while the UI has accepted the input but the next task has not started preflight.
+drafts.setDraftText(firstId, '立即停止')
+assert.equal(store.sendMessage(firstId), true)
+assert.equal(store.sendMessage(firstId), false)
+store.stopReply(firstId)
+await waitIdle()
+assert.equal(requests.length, 2)
+const stopped = await db.loadSession(firstId)
+assert.equal(stopped.messages.at(-2).content, '立即停止')
+assert.equal(stopped.messages.at(-1).status, 'stopped')
+checks.push('An immediate stop prevents starting a request and preserves the accepted question')
+
+const longId = 'long-deepseek-history'
+const title = '长历史验收'
+const rounds = 1200
+const messages = Array.from({ length: rounds * 2 }, (_, index) => {
+  const common = {
+    id: String(index),
+    createdAt: index,
+    parentId: index > 0 ? String(index - 1) : null,
+    selectedChildId: index + 1 < rounds * 2 ? String(index + 1) : undefined,
+  }
+  return index % 2
+    ? { ...common, role: 'assistant', status: 'done', blocks: [{ type: 'text', text: '旧回答' }] }
+    : {
+        ...common,
+        role: 'user',
+        content: '旧问题',
+        files: index === 0
+          ? [{ id: 'image', serverId: 'fixture-image', name: 'example.png', size: 128, isImage: true, mimeType: 'image/png' }]
+          : [],
+      }
+})
+const summary = { id: longId, title, createdAt: 0, updatedAt: rounds * 2 }
+await db.saveSession({ ...summary, messages, rootMessageId: '0' })
+store.useChatStore.setState(state => ({ sessions: [...state.sessions, summary] }))
+await store.openHistoryMatch(longId, null)
+const originalRevision = (await db.loadMemorySnapshot(longId)).state.sourceRevision
+settings.setApiConnection({
+  apiKey: 'deepseek-fixture',
+  apiBaseUrl: 'https://api.deepseek.com',
+  apiProtocol: 'deepseek',
+  model: 'deepseek-v4-pro',
+  models: ['deepseek-v4-pro'],
+})
+const officialRequests = []
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body)
+  officialRequests.push({ url: String(url), body })
+  const frames = [
+    { type: 'message_start', message: { id: 'fixture', model: body.model } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '新回答' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } },
+    { type: 'message_stop' },
+  ]
+  return new Response(frames.map(payload => `data: ${JSON.stringify(payload)}\n\n`).join(''),
+    { headers: { 'Content-Type': 'text/event-stream' } })
+}
+drafts.setDraftText(longId, '续聊')
+assert.equal(store.sendMessage(longId), true)
+assert.equal(officialRequests.length, 0)
+await waitIdle()
+store.regenerateReply(longId)
+await waitIdle()
+assert.equal(officialRequests.length, 2)
+for (const request of officialRequests) {
+  assert.equal(request.url, 'https://api.deepseek.com/anthropic/v1/messages')
+  assert.equal(request.body.messages.length, rounds * 2 + 2) // The latest reminder adds one message.
+  assert.equal(request.body.messages[0].content[0].source.file_id, 'fixture-image')
+  assert.equal(request.body.messages.at(-1).content, '续聊')
+}
+const longSaved = await db.loadMemorySnapshot(longId)
+assert.equal(longSaved.state.sourceRevision - originalRevision, 4) // One acceptance and one completion save per turn.
+assert.equal(longSaved.session.messages.length, rounds * 2 + 3) // The first reply and the regenerated version are retained.
+checks.push('A 1200-turn official history keeps its attachment reference and full protocol context on send and regenerate, with one acceptance and one completion save each')
 
 const evidence = { passed: true, runtime: process.version, checks,
   requests: requests.map(({ url, body }) => ({ url, model: body.model, messages: body.messages.length })),

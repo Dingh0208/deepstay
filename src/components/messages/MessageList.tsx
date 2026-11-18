@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
+import { useTranslate } from '../../i18n/index.js'
 import {
   buildMessageVersions,
   getVisibleMessages,
@@ -7,11 +8,12 @@ import {
 } from '../../services/chat/branches.js'
 import { selectMessageVersion } from '../../services/chat/store.js'
 import { useHistoryTarget } from '../../services/chat/historySearch.js'
-import type { Session } from '../../services/chat/types.js'
+import type { Message, Session } from '../../services/chat/types.js'
+import { Button } from '../base/Button.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { UserMessage } from './UserMessage.js'
-import type { Message } from '../../services/chat/types.js'
+import styles from './MessageList.module.css'
 
 /**
  * 会话共用可重试的附件上传失败入口，覆盖当前提问与历史消息中的附件。
@@ -27,11 +29,18 @@ const getUploadRetryId = (messages: Message[], streaming: boolean) => {
     ? last.id
     : null
 }
-import styles from './MessageList.module.css'
-
 /** 距底部小于该值时视为在底部，流式内容增长时跟随 */
 const STICKY_THRESHOLD = 40
 const EMPTY_VERSIONS: MessageVersions = { ids: [], index: -1 }
+const MESSAGE_PAGE_SIZE = 24
+const MESSAGE_WINDOW_SIZE = MESSAGE_PAGE_SIZE * 2
+
+type MessageWindow = { start: number; end: number }
+
+const windowAround = (index: number, length: number): MessageWindow => {
+  const start = Math.max(0, Math.min(index - MESSAGE_PAGE_SIZE / 2, length - MESSAGE_PAGE_SIZE))
+  return { start, end: Math.min(length, start + MESSAGE_PAGE_SIZE) }
+}
 
 export const MessageList = ({
   session,
@@ -42,6 +51,7 @@ export const MessageList = ({
   streaming: boolean
   footer: React.ReactNode
 }) => {
+  const t = useTranslate()
   const isMobile = useIsMobile()
   const searchTarget = useHistoryTarget()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -50,29 +60,50 @@ export const MessageList = ({
   const scrollTopRef = useRef(0)
   const scrollFrameRef = useRef(0)
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
-  const messages = getVisibleMessages(session)
-  const [previousVersions, setPreviousVersions] = useState(() =>
-    buildMessageVersions(session, new Map())
-  )
-  const versions = useMemo(
-    () => buildMessageVersions(session, previousVersions),
-    [session, previousVersions]
-  )
-  if (versions !== previousVersions) {
-    setPreviousVersions(versions)
-  }
+  const historyAnchorRef = useRef<{ messageId: string; top: number } | null>(null)
+  const messages = useMemo(() => getVisibleMessages(session), [session])
+  const [historyWindow, setHistoryWindow] = useState<MessageWindow | null>(null)
+  const previousVersions = useRef<ReadonlyMap<string, MessageVersions>>(new Map())
+  const previousLastMessageId = useRef<string>()
   const lastMessageId = messages[messages.length - 1]?.id
+  const targetIndex =
+    searchTarget.sessionId === session.id
+      ? messages.findIndex((message) => message.id === searchTarget.messageId)
+      : -1
+  const branchIndex = restoreScrollRef.current
+    ? messages.findIndex((message) => message.id === restoreScrollRef.current?.messageId)
+    : -1
+  const recentWindow = { start: Math.max(0, messages.length - MESSAGE_PAGE_SIZE), end: messages.length }
+  const readingWindow = historyWindow && historyWindow.end <= messages.length
+    ? historyWindow
+    : recentWindow
+  const anchorIndex = targetIndex >= 0 ? targetIndex : branchIndex
+  const { start, end } = anchorIndex >= 0 &&
+    (anchorIndex < readingWindow.start || anchorIndex >= readingWindow.end)
+    ? windowAround(anchorIndex, messages.length)
+    : readingWindow
+  const shown = useMemo(() => messages.slice(start, end), [messages, start, end])
+  const versions = useMemo(
+    () => buildMessageVersions(session, previousVersions.current, shown),
+    [session, shown]
+  )
   useLayoutEffect(() => {
-    if (searchTarget.sessionId !== session.id || !searchTarget.messageId) {
+    previousVersions.current = versions
+  }, [versions])
+
+  useLayoutEffect(() => {
+    if (targetIndex < 0 || !searchTarget.messageId) {
       return
     }
     const node = contentRef.current?.querySelector<HTMLElement>(`[data-chat-message="${CSS.escape(searchTarget.messageId)}"]`)
     if (node) {
       stickyRef.current = false
+      setHistoryWindow({ start, end })
       node.scrollIntoView({ block: 'center' })
+      scrollTopRef.current = scrollRef.current?.scrollTop ?? 0
       useHistoryTarget.setState({ sessionId: null, messageId: null })
     }
-  }, [searchTarget, session.id, session.messages])
+  }, [searchTarget, start, end, targetIndex])
   const scrollToBottom = useCallback(() => {
     if (scrollFrameRef.current || !stickyRef.current) {
       return
@@ -113,6 +144,10 @@ export const MessageList = ({
 
   // 切换版本后将选择器留在原位置，避免回答长短变化导致操作区跳出视口。
   useLayoutEffect(() => {
+    if (previousLastMessageId.current === lastMessageId) {
+      return
+    }
+    previousLastMessageId.current = lastMessageId
     const anchor = restoreScrollRef.current
     const scroll = scrollRef.current
     if (anchor && scroll) {
@@ -122,12 +157,18 @@ export const MessageList = ({
       if (switcher) {
         scroll.scrollTop += switcher.getBoundingClientRect().top - anchor.top
       }
+      scrollTopRef.current = scroll.scrollTop
       restoreScrollRef.current = null
+      setHistoryWindow({ start, end })
       return
     }
-    stickyRef.current = true
-    scrollToBottom()
-  }, [session.id, lastMessageId, scrollToBottom])
+    if (targetIndex < 0) {
+      setHistoryWindow(null)
+      stickyRef.current = true
+      scrollToBottom()
+    }
+    // 分页保持阅读位置，新消息才跟随到最新一轮。
+  }, [lastMessageId, start, end, targetIndex, scrollToBottom])
 
   useEffect(closeSearchPanel, [session.id, lastMessageId])
 
@@ -144,6 +185,42 @@ export const MessageList = ({
     [session.id, streaming]
   )
 
+  const firstShownId = shown[0]?.id
+  const lastShownId = shown[shown.length - 1]?.id
+  const count = messages.length
+  const showHistory = useCallback((direction: 'older' | 'newer') => {
+    const older = direction === 'older'
+    const messageId = older ? firstShownId : lastShownId
+    if (!messageId || (older ? start === 0 : end === count)) {
+      return
+    }
+    const node = contentRef.current?.querySelector<HTMLElement>(`[data-chat-message="${CSS.escape(messageId)}"]`)
+    if (node) {
+      historyAnchorRef.current = { messageId, top: node.getBoundingClientRect().top }
+    }
+    stickyRef.current = false
+    if (older) {
+      const nextStart = Math.max(0, start - MESSAGE_PAGE_SIZE)
+      setHistoryWindow({ start: nextStart, end: Math.min(count, nextStart + MESSAGE_WINDOW_SIZE) })
+    } else {
+      const nextEnd = Math.min(count, end + MESSAGE_PAGE_SIZE)
+      setHistoryWindow({ start: Math.max(0, nextEnd - MESSAGE_WINDOW_SIZE), end: nextEnd })
+    }
+  }, [firstShownId, lastShownId, count, start, end])
+
+  useLayoutEffect(() => {
+    const anchor = historyAnchorRef.current
+    const scroll = scrollRef.current
+    if (anchor && scroll) {
+      const node = contentRef.current?.querySelector<HTMLElement>(`[data-chat-message="${CSS.escape(anchor.messageId)}"]`)
+      if (node) {
+        scroll.scrollTop += node.getBoundingClientRect().top - anchor.top
+      }
+      scrollTopRef.current = scroll.scrollTop
+      historyAnchorRef.current = null
+    }
+  }, [start, end])
+
   // 跨移动端断点时切换滚动层，并保持输入框及当前阅读位置。
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -155,19 +232,30 @@ export const MessageList = ({
     } else {
       el.scrollTop = scrollTopRef.current
     }
+  }, [isMobile, scrollToBottom])
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) {
+      return
+    }
     const onScroll = () => {
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD
       // 仅在用户向上滚动时停止跟随底部，布局或内容增高时保持跟随状态。
-      if (nearBottom) {
+      const movedUp = el.scrollTop < scrollTopRef.current
+      if (nearBottom && end === messages.length) {
         stickyRef.current = true
-      } else if (el.scrollTop < scrollTopRef.current) {
+      } else if (movedUp) {
         stickyRef.current = false
       }
       scrollTopRef.current = el.scrollTop
+      if (start > 0 && movedUp && el.scrollTop < STICKY_THRESHOLD && !historyAnchorRef.current) {
+        showHistory('older')
+      }
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [isMobile, scrollToBottom])
+  }, [isMobile, start, end, messages.length, showHistory])
 
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
@@ -175,8 +263,14 @@ export const MessageList = ({
     <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
       <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
         <div ref={contentRef} className={styles.column}>
-          {messages.map((message, index) =>
-            message.role === 'user' ? (
+          {start > 0 ? (
+            <Button variant="outlined" size="s" className={styles.historyButton} onClick={() => showHistory('older')}>
+              {t('showOlderMessages')}
+            </Button>
+          ) : null}
+          {shown.map((message, offset) => {
+            const index = start + offset
+            return message.role === 'user' ? (
               <UserMessage
                 key={message.id}
                 sessionId={session.id}
@@ -200,7 +294,12 @@ export const MessageList = ({
                 onSelectVersion={selectVersion}
               />
             )
-          )}
+          })}
+          {end < messages.length ? (
+            <Button variant="outlined" size="s" className={styles.historyButton} onClick={() => showHistory('newer')}>
+              {t('showNewerMessages')}
+            </Button>
+          ) : null}
         </div>
       </div>
       {footer}

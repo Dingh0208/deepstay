@@ -36,6 +36,7 @@ export const SessionView = ({
         </div>
       )}
       <MessageList
+        key={session.id}
         session={session}
         streaming={streaming}
         footer={

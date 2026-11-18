@@ -24,7 +24,7 @@ import { onUploadNotice } from '../services/attachments.js'
 import { Button } from '../components/base/Button.js'
 import { stopReadAloud } from '../services/speech/readAloud.js'
 import { CollapsedSider } from '../components/sider/CollapsedSider.js'
-import { closeMobileSider } from '../components/sider/mobileSiderState.js'
+import { closeMobileSider, useMobileSiderSwipe } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import { hasOwn } from '../utils/object.js'
 import styles from './App.module.css'
@@ -49,6 +49,7 @@ export const App = () => {
     state.activeId === null ? false : state.sessionLoadErrors[state.activeId] === true
   )
   const frameRef = useMobileViewport(isMobile)
+  const siderSwipe = useMobileSiderSwipe(isMobile)
   const streaming = useChatStore((state) =>
     state.activeId === null ? false : hasOwn(state.streaming, state.activeId)
   )
@@ -79,7 +80,7 @@ export const App = () => {
     <>
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
-        <main className={styles.main}>
+        <main className={styles.main} {...siderSwipe}>
           {contextProgress ? <div className={styles.saveError} role="status">
             {t('contextMemoryProgress', contextProgress)}
           </div> : null}

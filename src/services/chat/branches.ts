@@ -19,7 +19,10 @@ export const getVisibleMessages = (session: Session): Message[] => {
   if (session.rootMessageId === undefined) {
     return session.messages
   }
-  const byId = new Map(session.messages.map((message) => [message.id, message]))
+  const byId = new Map<string, Message>()
+  for (const message of session.messages) {
+    byId.set(message.id, message)
+  }
   const path: Message[] = []
   let id = session.rootMessageId
   while (id) {
@@ -36,39 +39,39 @@ export const getVisibleMessages = (session: Session): Message[] => {
 
 export type MessageVersions = { ids: string[]; index: number }
 
-/** 一次遍历收集兄弟版本；版本列表未变化时复用旧对象与索引，避免流式正文更新重绘历史消息。 */
+/** 只为已显示的消息收集兄弟版本；版本未变时复用旧对象，避免正文更新重绘历史消息。 */
 export const buildMessageVersions = (
   session: Session,
-  previous: ReadonlyMap<string, MessageVersions>
+  previous: ReadonlyMap<string, MessageVersions>,
+  shown: Message[]
 ): ReadonlyMap<string, MessageVersions> => {
   const groups = new Map<string | null | undefined, string[]>()
-  for (const message of session.messages) {
-    const key = session.rootMessageId === undefined ? message.id : message.parentId
-    const ids = groups.get(key)
-    if (ids) {
-      ids.push(message.id)
-    } else {
-      groups.set(key, [message.id])
+  if (session.rootMessageId !== undefined) {
+    for (const message of shown) {
+      groups.set(message.parentId, [])
+    }
+    for (const message of session.messages) {
+      groups.get(message.parentId)?.push(message.id)
     }
   }
 
   const versions = new Map<string, MessageVersions>()
-  let unchanged = previous.size === session.messages.length
-  for (const ids of groups.values()) {
-    const cachedIds = previous.get(ids[0])?.ids
+  let unchanged = previous.size === shown.length
+  for (const message of shown) {
+    const ids = groups.get(message.parentId) ?? [message.id]
+    const cached = previous.get(message.id)
+    const cachedIds = cached?.ids
     const stableIds =
       cachedIds?.length === ids.length && ids.every((id, index) => id === cachedIds[index])
         ? cachedIds
         : ids
-    ids.forEach((id, index) => {
-      const cached = previous.get(id)
-      const version =
-        cached?.ids === stableIds && cached.index === index ? cached : { ids: stableIds, index }
-      versions.set(id, version)
-      if (version !== cached) {
-        unchanged = false
-      }
-    })
+    const index = stableIds.indexOf(message.id)
+    const version =
+      cached?.ids === stableIds && cached.index === index ? cached : { ids: stableIds, index }
+    versions.set(message.id, version)
+    if (version !== cached) {
+      unchanged = false
+    }
   }
   return unchanged ? previous : versions
 }

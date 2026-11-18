@@ -18,7 +18,7 @@ const mocks = new Map([
   ['i18n/index.ts', 'export const useTranslate=()=>key=>key;'],
   ['app/viewport.ts', 'export const useIsMobile=()=>globalThis.__mobile;'],
   ['services/chat/store.ts', 'export const selectMessageVersion=(...args)=>globalThis.__selection=args;'],
-  ['services/chat/historySearch.ts', 'export const useHistoryTarget=()=>({sessionId:null,messageId:null});'],
+  ['services/chat/historySearch.ts', 'export const useHistoryTarget=Object.assign(()=>globalThis.__historyTarget??{}, {setState:target=>globalThis.__historyTarget=target});'],
   ['components/search/searchPanelState.ts', 'export const closeSearchPanel=()=>{};'],
   ['components/messages/AssistantMessage.tsx', 'export const AssistantMessage=()=>null;'],
   ['components/messages/UserMessage.tsx', 'export const UserMessage=()=>null;'],
@@ -246,7 +246,7 @@ const scroll = {
 const { MessageList } = await import(new URL('components/messages/MessageList.tsx', src))
 const instance = runner(MessageList)
 let session = { id: 'fixture', title: 'Fixture', messages: [{ id: 'u', role: 'user', content: 'Hi', files: [], createdAt: 1 }, { id: 'a', role: 'assistant', blocks: [], status: 'streaming', createdAt: 2 }] }
-const attach = tree => {
+const attach = (tree, content = {}) => {
   const refs = []
   const visit = node => {
     if (!node || typeof node !== 'object') return
@@ -256,7 +256,7 @@ const attach = tree => {
   }
   visit(tree)
   refs[0].current = scroll
-  refs[1].current = {}
+  refs[1].current = content
 }
 let tree = instance.render({ session, streaming: true, footer: null })
 attach(tree)
@@ -312,6 +312,72 @@ assert.equal(pendingFrames.size, 1)
 instance.cleanup()
 assert.equal(pendingFrames.size, 0)
 checks.push('Actual MessageList coalesces 20 resize requests into one frame/read-write pass, respects upward reading, follows viewport resizing, preserves branch anchor, ignores branch selection while streaming, resumes on a new message and cancels work on unmount')
+
+// A long conversation should not mount every historical Markdown component on open.
+const longSession = { id: 'long-fixture', rootMessageId: 'long-0', messages: Array.from({ length: 240 }, (_, index) => ({
+  id: 'long-' + index,
+  parentId: index ? 'long-' + (index - 1) : null,
+  selectedChildId: index < 239 ? 'long-' + (index + 1) : undefined,
+  role: 'user',
+  content: 'History ' + index,
+  files: [],
+  createdAt: index,
+})) }
+longSession.messages.push({ ...longSession.messages[2], id: 'long-2-alt', selectedChildId: undefined })
+const messageIds = node => Array.isArray(node)
+  ? node.flatMap(messageIds)
+  : node?.props?.message ? [node.props.message.id]
+    : node?.props ? messageIds(node.props.children) : []
+const longInstance = runner(MessageList)
+const longProps = { session: longSession, streaming: false, footer: null }
+let longTree
+let centeredMessage
+const mountLong = (props = longProps) => {
+  longTree = longInstance.render(props)
+  attach(longTree, {
+    querySelector(selector) {
+      const message = /^\[data-chat-message="([^"]+)"\]$/.exec(selector)?.[1]
+      const position = messageIds(longTree).indexOf(message)
+      return position < 0 ? null : {
+        getBoundingClientRect: () => ({ top: position * 40 - top }),
+        scrollIntoView: ({ block }) => { centeredMessage = [message, block] },
+      }
+    },
+  })
+  longInstance.effects()
+  return messageIds(longTree)
+}
+const initialIds = mountLong()
+assert.ok(initialIds.length <= 32, 'Opening a long chat mounts only a recent batch')
+assert.equal(initialIds.at(-1), 'long-239')
+frame()
+const older = () => find(longTree, node => node.props?.children === 'showOlderMessages').props.onClick()
+older()
+let shownIds = mountLong()
+assert.ok(shownIds.length <= 48)
+assert.ok(shownIds.includes('long-200'))
+older()
+shownIds = mountLong()
+assert.ok(shownIds.length <= 48)
+assert.ok(shownIds.includes('long-170') && !shownIds.includes('long-239'))
+find(longTree, node => node.props?.children === 'showNewerMessages').props.onClick()
+assert.equal(mountLong().at(-1), 'long-239')
+globalThis.__historyTarget = { sessionId: longSession.id, messageId: 'long-2' }
+shownIds = mountLong()
+assert.ok(shownIds.length <= 32 && shownIds.includes('long-2') && !shownIds.includes('long-239'))
+assert.deepEqual(centeredMessage, ['long-2', 'center'])
+assert.deepEqual(globalThis.__historyTarget, { sessionId: null, messageId: null })
+assert.deepEqual(mountLong(), shownIds)
+assert.deepEqual(find(longTree, node => node.props?.message?.id === 'long-2').props.versions,
+  { ids: ['long-2', 'long-2-alt'], index: 0 })
+const laterSession = { ...longSession, messages: [...longSession.messages] }
+laterSession.messages[239] = { ...laterSession.messages[239], selectedChildId: 'long-240' }
+laterSession.messages.push({ ...laterSession.messages[239], id: 'long-240', parentId: 'long-239', selectedChildId: undefined })
+mountLong({ ...longProps, session: laterSession })
+assert.equal(mountLong({ ...longProps, session: laterSession }).at(-1), 'long-240')
+longInstance.cleanup()
+delete globalThis.__historyTarget
+checks.push('Actual MessageList bounds the DOM on a 240-message chat, pages in both directions, centers an early search match, preserves sibling versions and returns to the live tail on new input')
 
 const { useThrottleMarkdownRender } = await import(new URL('components/markdown/useThrottleMarkdownRender.ts', src))
 const { useThrottleMarkdownRender: baselineThrottle } = await import(baselineThrottleUrl)

@@ -6,7 +6,7 @@ import type { CreateMessageRequest } from '../api/types.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
-import { useSettings } from '../settings.js'
+import { clearPinnedSessions, setPinnedSession, useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
@@ -52,6 +52,22 @@ const SAFETY_CHECK = { level: 'high' } as const
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
+// 让浏览器先处理交互和绘制，再准备请求或继续处理缓冲中的数据。
+const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+// 首段正文或思考先绘制一帧。切到后台后动画帧可能暂停，用定时器收尾。
+const yieldPastPaint = () =>
+  new Promise<void>((resolve) => {
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(finish)
+    })
+    const fallback = setTimeout(finish, 100)
+    function finish() {
+      cancelAnimationFrame(frame)
+      clearTimeout(fallback)
+      resolve()
+    }
+  })
 
 /** 阅读链接始终开启，智能搜索开关控制是否另行声明搜索工具（含边想边搜）。 */
 const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
@@ -442,6 +458,7 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     unsavedSessions.clear()
     pendingFiles.clear()
     clearAllDrafts()
+    clearPinnedSessions()
     const sessions = sortSessions(summaries)
     const activeId = sessions[0]?.id ?? null
     set({
@@ -590,6 +607,7 @@ const removeSessionData = async (id: string): Promise<boolean> => {
     unsavedSessions.delete(id)
     pendingFiles.delete(id)
     clearDraft(id)
+    setPinnedSession(id, false)
     set((state) => ({
       sessions: state.sessions.filter((session) => session.id !== id),
       sessionCache: Object.fromEntries(
@@ -840,20 +858,29 @@ const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
   if (serverIds.size === 0) {
     return
   }
-  updateSession(sessionId, (session) => ({
-    ...session,
-    messages: session.messages.map((message) =>
-      message.role === 'user' && message.files.some((file) => serverIds.has(file.id))
-        ? {
-            ...message,
-            files: message.files.map((file) =>
-              serverIds.has(file.id) ? { ...file, serverId: serverIds.get(file.id) ?? null } : file
-            ),
-          }
-        : message
-    ),
-  }))
-  persist(sessionId)
+  let changed = false
+  updateSession(sessionId, (session) => {
+    const messages = session.messages.map((message) => {
+      if (message.role !== 'user') {
+        return message
+      }
+      let filesChanged = false
+      const files = message.files.map((file) => {
+        const serverId = serverIds.get(file.id)
+        if (!serverId || serverId === file.serverId) {
+          return file
+        }
+        filesChanged = true
+        return { ...file, serverId }
+      })
+      changed ||= filesChanged
+      return filesChanged ? { ...message, files } : message
+    })
+    return changed ? { ...session, messages } : session
+  })
+  if (changed) {
+    persist(sessionId)
+  }
 }
 
 /**
@@ -898,6 +925,12 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
  *   失败静默跳过，该附件不进入本次请求，下次发送时再试。
  */
 const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal, apiKey: string, connection: ApiConnection) => {
+  if (
+    request.question.files.length === 0 &&
+    !request.history.some((message) => message.role === 'user' && message.files.length > 0)
+  ) {
+    return request
+  }
   const epoch = historyEpoch
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
@@ -909,6 +942,9 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   })
   const uploads = Promise.allSettled(
     request.question.files.map(async (file) => {
+      if (file.serverId) {
+        return
+      }
       const serverId = await ensureServerId(apiKey, file, connection)
       if (serverId) {
         serverIds.set(file.id, serverId)
@@ -952,14 +988,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   }
 
   // 用补齐后的会话重新取历史与提问，保证请求里都是 serverId
-  const session = getSession(sessionId)
-  const resolve = <T extends Message>(message: T): T =>
-    (session?.messages.find((m) => m.id === message.id) as T | undefined) ?? message
-  return {
-    history: request.history.map(resolve),
-    question: resolve(request.question),
-    prefix: request.prefix,
-  }
+  return serverIds.size > 0 ? refreshRequest(sessionId, request) : request
 }
 
 /** 本次请求实际会用到的服务端 file_id */
@@ -1062,7 +1091,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     titleRequests.add(controller)
   }
   set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
-  let reply = initial
+  let reply: AssistantMessage = { ...initial, latestReminder }
   let frame = 0
   const flush = () => {
     cancelAnimationFrame(frame)
@@ -1074,24 +1103,28 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   let systemMemory = ''
   let sourceConflict = false
   let sourceState: MemoryState | undefined
+  const initialSave = pendingSaves.get(sessionId)
   if (settings.contextMemoryEnabled) {
     contextPreparations.add(sessionId)
   }
 
   try {
+    await yieldToBrowser()
     for (let attempt = 0; ; attempt += 1) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
       let preparing = false
       let receivedContent = false
       try {
+        if (controller.signal.aborted) {
+          throw controller.signal.reason
+        }
         if (!contextPrepared && settings.contextMemoryEnabled) {
           const validSource = () =>
             !controller.signal.aborted &&
             historyEpoch === sourceEpoch &&
             getSession(sessionId) === sourceSession &&
             useSettings.getState().contextMemoryEnabled
-          const saved = pendingSaves.get(sessionId)
-          if (saved && !(await saved)) {
+          if (initialSave && !(await initialSave)) {
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           const snapshot = await db.loadMemorySnapshot(sessionId)
@@ -1203,9 +1236,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           ? await prepareFiles(sessionId, request, controller.signal, apiKey, connection)
           : request
         preparing = false
-        reply = { ...reply, latestReminder }
-        updateReply(sessionId, reply)
-        persist(sessionId)
+        if (controller.signal.aborted) {
+          throw controller.signal.reason
+        }
         const messages = toRequestMessages(
           prepared.history,
           prepared.question,
@@ -1228,7 +1261,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         const events = streamMessage(apiKey, body, controller.signal, connection)
         const blockIndexes = new Map<number, number>()
+        let eventsSinceYield = 0
+        let displayedContent = false
         for await (const event of events) {
+          if (controller.signal.aborted) {
+            throw controller.signal.reason
+          }
           receivedContent ||= event.type === 'content_block_start'
           if (
             event.type === 'message_delta' &&
@@ -1243,10 +1281,26 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             titleRequests.delete(controller)
           }
           reply = applyEvent(reply, event, Date.now(), blockIndexes)
+          const firstText: boolean =
+            !displayedContent &&
+            ((event.type === 'content_block_delta' &&
+              (event.delta.type === 'text_delta' || event.delta.type === 'thinking_delta')) ||
+              (event.type === 'content_block_start' &&
+                ((event.content_block.type === 'text' && !!event.content_block.text) ||
+                  (event.content_block.type === 'thinking' && !!event.content_block.thinking))))
+          displayedContent ||= firstText
           if (document.visibilityState === 'hidden') {
             flush()
+          } else if (firstText) {
+            flush()
+            await yieldPastPaint()
           } else {
             frame ||= requestAnimationFrame(flush)
+          }
+          eventsSinceYield += 1
+          if (eventsSinceYield >= 128) {
+            eventsSinceYield = 0
+            await yieldToBrowser()
           }
         }
         reply = settleReply(reply, 'done', Date.now())

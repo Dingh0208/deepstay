@@ -289,6 +289,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               className={clsx(styles.sendButton, !canSend && styles.disabled)}
               aria-label={t('send')}
               aria-disabled={!canSend}
+              onPointerDown={(event) => {
+                // 点击提交前保持输入框焦点，避免键盘先收起导致按钮移位。
+                if (isMobile && document.activeElement === textareaRef.current) {
+                  event.preventDefault()
+                }
+              }}
               onClick={send}
             >
               <IconSendOutline16 />

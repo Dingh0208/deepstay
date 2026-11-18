@@ -18,7 +18,12 @@ import {
 } from './drafts.js'
 import { createLatestReminder } from './latestReminder.js'
 import { useHistoryTarget } from './historySearch.js'
-import { prepareContextMemory } from './contextMemory.js'
+import {
+  assertContextBudget,
+  estimateContextTokens,
+  prepareContextMemory,
+} from './contextMemory.js'
+import { memoryText } from './memoryRecords.js'
 import {
   applyEvent,
   canContinueReply,
@@ -111,6 +116,7 @@ const sameSummary = (a: SessionSummary, b: SessionSummary) =>
 
 const sessionAccess = new Map<string, number>()
 const unsavedSessions = new Set<string>()
+const pendingSaves = new Map<string, Promise<boolean>>()
 /** 保存失败时保留原件，重试成功后才释放。 */
 const pendingFiles = new Map<string, db.StoredFile[]>()
 const deletingSessions = new Set<string>()
@@ -183,20 +189,20 @@ const updateReply = (sessionId: string, reply: AssistantMessage) =>
     ),
   }))
 
-const persist = (sessionId: string) => {
+const persist = (sessionId: string): Promise<boolean> => {
   const session = getSession(sessionId)
   if (session) {
     unsavedSessions.add(sessionId)
     if (deletingSessions.has(sessionId)) {
-      return
+      return Promise.resolve(false)
     }
     const epoch = historyEpoch
     const files = pendingFiles.get(sessionId)
-    void db
+    const task = db
       .saveSession(session, files)
       .then(() => {
         if (epoch !== historyEpoch || !getSession(sessionId)) {
-          return
+          return false
         }
         if (pendingFiles.get(sessionId) === files) {
           pendingFiles.delete(sessionId)
@@ -210,6 +216,7 @@ const persist = (sessionId: string) => {
           }))
           trimSessionCache()
         }
+        return true
       })
       .catch((error: unknown) => {
         db.reportStorageError('save session')(error)
@@ -218,8 +225,17 @@ const persist = (sessionId: string) => {
             sessionSaveErrors: { ...state.sessionSaveErrors, [sessionId]: true },
           }))
         }
+        return false
       })
+    pendingSaves.set(sessionId, task)
+    void task.finally(() => {
+      if (pendingSaves.get(sessionId) === task) {
+        pendingSaves.delete(sessionId)
+      }
+    })
+    return task
   }
+  return Promise.resolve(false)
 }
 
 export const retrySaveSessions = () => {
@@ -1032,6 +1048,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const apiKey = settings.apiKey ?? ''
   const model = initial.model ?? settings.model
   const extras = supportsDeepSeekExtras(connection)
+  const latestReminder = request.prefix
+    ? request.prefix.latestReminder
+    : createLatestReminder(settings)
+  const sourceSession = getSession(sessionId)
+  const sourceEpoch = historyEpoch
   const controller = new AbortController()
   if (!getSession(sessionId)?.title) {
     titleRequests.add(controller)
@@ -1055,28 +1076,96 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let receivedContent = false
       try {
         if (!contextPrepared && settings.contextMemoryEnabled) {
+          const validSource = () =>
+            !controller.signal.aborted &&
+            historyEpoch === sourceEpoch &&
+            getSession(sessionId) === sourceSession &&
+            useSettings.getState().contextMemoryEnabled
+          const saved = pendingSaves.get(sessionId)
+          if ((saved && !(await saved)) || !validSource()) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          const snapshot = await db.loadMemorySnapshot(sessionId)
+          if (!snapshot || !validSource()) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          if ((snapshot.session.contextMemory?.fixed ?? '') !== (sourceSession?.contextMemory?.fixed ?? '')) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          // A second tab may have written a different branch before the snapshot was loaded.
+          const savedPath = getVisibleMessages(snapshot.session)
+          const persistedPath = new Map(savedPath.map((message) => [message.id, message]))
+          if (
+            savedPath.length !== request.history.length + 2 || savedPath[savedPath.length - 1]?.id !== initial.id ||
+            [...request.history, request.question].some((message, index) => {
+              const stored = persistedPath.get(message.id)
+              return (
+                !stored || savedPath[index]?.id !== message.id || stored.createdAt !== message.createdAt ||
+                stored.role !== message.role ||
+                memoryText(stored) !== memoryText(message) ||
+                (stored.role === 'user' && message.role === 'user' && JSON.stringify(stored.files) !== JSON.stringify(message.files))
+              )
+            })
+          ) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          if (request.prefix) {
+            const stored = persistedPath.get(request.prefix.id)
+            if (
+              stored?.role !== 'assistant' ||
+              JSON.stringify(stored.blocks) !== JSON.stringify(request.prefix.blocks)
+            ) {
+              throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+            }
+          }
+          let expected = snapshot.state
           const context = await prepareContextMemory({
-            history: request.history, question: request.question, prefix: request.prefix,
-            memory: getSession(sessionId)?.contextMemory,
-            apiKey, connection, model, signal: controller.signal,
-            onProgress: (progress) => set((state) => ({ contextProgress: { ...state.contextProgress, [sessionId]: progress } })),
+            sessionId,
+            snapshot,
+            history: request.history,
+            question: request.question,
+            prefix: request.prefix,
+            memory: sourceSession?.contextMemory,
+            apiKey,
+            connection,
+            model,
+            signal: controller.signal,
+            requestOverhead:
+              estimateContextTokens(
+                SYSTEM_PROMPT +
+                  (latestReminder ?? '') +
+                  JSON.stringify(extras ? serverTools(initial.search ?? false) : [])
+              ) + 256,
+            onCommit: async (update) => {
+              if (!validSource() || !(await db.commitMemoryUpdate(expected, update))) {
+                return false
+              }
+              expected = { ...expected, memoryRevision: expected.memoryRevision + 1 }
+              return validSource()
+            },
+            onProgress: (progress) =>
+              set((state) => ({
+                contextProgress: { ...state.contextProgress, [sessionId]: progress },
+              })),
           })
+          if (
+            !validSource() ||
+            !(await db.commitMemoryUpdate(expected, { records: [], segments: [] }))
+          ) {
+            throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
           request = { ...request, history: context.history }
           systemMemory = context.systemMemory
-          if (context.memoryPatch) {
-            updateSession(sessionId, (session) => ({ ...session, contextMemory: context.memoryPatch }))
-            persist(sessionId)
-          }
-          set((state) => ({ contextProgress: Object.fromEntries(Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)) }))
+          set((state) => ({
+            contextProgress: Object.fromEntries(
+              Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)
+            ),
+          }))
         }
         contextPrepared = true
         preparing = true
         const prepared = extras ? await prepareFiles(sessionId, request, controller.signal) : request
         preparing = false
-        // 附件就绪后获取本轮信息；续写沿用原回答快照，重新生成的快照独立保存。
-        const latestReminder = prepared.prefix
-          ? prepared.prefix.latestReminder
-          : createLatestReminder(useSettings.getState())
         reply = { ...reply, latestReminder }
         updateReply(sessionId, reply)
         persist(sessionId)
@@ -1088,20 +1177,19 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           latestReminder,
           !extras
         )
-        const events = streamMessage(
-          apiKey,
-          {
-            model,
-            system: [SYSTEM_PROMPT, systemMemory].filter(Boolean).join('\n\n'),
-            messages,
-            thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
-            safety_check: SAFETY_CHECK,
-            tools: extras ? serverTools(initial.search ?? false) : [],
-            ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
-          },
-          controller.signal,
-          connection
-        )
+        const body: CreateMessageRequest = {
+          model,
+          system: [SYSTEM_PROMPT, systemMemory].filter(Boolean).join('\n\n'),
+          messages,
+          thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+          safety_check: SAFETY_CHECK,
+          tools: extras ? serverTools(initial.search ?? false) : [],
+          ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+        }
+        if (settings.contextMemoryEnabled) {
+          assertContextBudget(body)
+        }
+        const events = streamMessage(apiKey, body, controller.signal, connection)
         const blockIndexes = new Map<number, number>()
         for await (const event of events) {
           receivedContent ||= event.type === 'content_block_start'

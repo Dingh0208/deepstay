@@ -1,24 +1,24 @@
 # 应用内更新与国内分发
 
-Android 在应用内下载 APK，显示进度并核对 SHA-256、包名及签名，通过后由系统安装器确认更新。首次安装更新需用户允许 deepstay 安装应用。关闭设置不会丢失当前下载状态；安装包保存在应用缓存，清缓存或重启进程后可重新下载。
+Android 在应用内下载 APK，显示进度并核对 SHA-256、包名及签名，通过后由系统安装器确认更新。首次安装更新需用户允许 deepstay 安装应用。关闭设置不会丢失当前下载状态；授权导致进程重启时，重新进入设置可恢复缓存中已验证新版的安装入口。清缓存后需重新下载。
 
-GitHub Release 继续保存源码、正式 APK 和校验和。国内更新使用腾讯云 COS 或阿里云 OSS 的 HTTPS 地址，不依赖 GitHub 连通性；存储桶和域名需产品方提供。
+GitHub Release 继续保存源码、正式 APK 和校验和。正式版从自有服务器 `https://ds.herohao.top/updates/latest.json` 检查更新，同目录下载 APK，不依赖 GitHub 连通性。也可配置腾讯云 COS 或阿里云 OSS。
 
 ## 目录与版本清单
 
-例如，分发目录为 `https://downloads.example.com/deepstay/`，内含：
+例如，分发目录为 `https://ds.herohao.top/updates/`，内含：
 
 ```text
 latest.json
-deepstay-0.1.2.apk
+deepstay-0.1.3.apk
 ```
 
 `latest.json` 格式：
 
 ```json
 {
-  "version": "0.1.2",
-  "apkUrl": "https://downloads.example.com/deepstay/deepstay-0.1.2.apk",
+  "version": "0.1.3",
+  "apkUrl": "https://ds.herohao.top/updates/deepstay-0.1.3.apk",
   "sha256": "APK 文件的 64 位 SHA-256 十六进制值"
 }
 ```
@@ -32,15 +32,32 @@ deepstay-0.1.2.apk
 构建时在同一个终端设置 `DEEPSTAY_UPDATE_MANIFEST_URL` 为真实公开清单地址，Web 与 Android 原生会使用相同设置：
 
 ```powershell
-$env:DEEPSTAY_UPDATE_MANIFEST_URL='https://downloads.example.com/deepstay/latest.json'
+$env:DEEPSTAY_UPDATE_MANIFEST_URL='https://ds.herohao.top/updates/latest.json'
 pnpm android:release
-pnpm updates:manifest https://downloads.example.com/deepstay/
+pnpm updates:manifest https://ds.herohao.top/updates/
 ```
 
-未配置时继续使用 GitHub 最新 Release。国内源上线后必须用该配置重新构建 APK；已经发布的旧版只知道旧更新源，需手动下载安装一次新包，之后即可走国内源。
+未配置时继续使用 GitHub 最新 Release。国内源上线后必须用该配置重新构建 APK；已经发布的旧版只知道旧更新源，需通过旧源升级或手动安装一次新包，之后即可走国内源。
 
 GitHub Actions 使用仓库变量 `DEEPSTAY_UPDATE_MANIFEST_URL`，同时注入 Web 与 Android 构建；配置后在 Release 中额外生成 `latest.json`。该变量是公开 HTTPS 地址，不是访问密钥。修改变量后需重新构建发布。
 
 将 `release/deepstay-版本.apk` 先上传，确认下载和校验和一致后，再上传 `release/latest.json`。先发布 APK，最后切换清单，避免用户发现新版却下载不到。
 
 COS / OSS 控制台可手动上传这两个文件。使用默认 HTTPS 存储桶域名即可开始；若用中国大陆 CDN 自定义域名，按服务商要求完成域名备案和 HTTPS 配置。云服务访问密钥仅用于发布端，不得写入 APK、前端源码或 GitHub Release。
+
+## 当前服务器发布
+
+更新目录为 `/var/www/deepstay/updates`，Nginx 站点配置为 `/etc/nginx/sites-available/deepstay-updates`。源站已配置有效 HTTPS 证书，`certbot.timer` 自动续期。清单禁止缓存，版本 APK 可长期缓存；两者允许公开跨域 GET。
+
+Android 发布工作流在正式 Release 发布前同步服务器：先上传 APK，公开 HTTPS 下载核对 SHA-256，再原子替换 `latest.json`。发布账号 `deepstay-publisher` 只开放 SFTP，不使用 Ubuntu 密码或管理员 SSH 凭据。
+
+仓库配置：
+
+| 类型 | 名称 | 用途 |
+| --- | --- | --- |
+| Variable | `DEEPSTAY_UPDATE_MANIFEST_URL` | `https://ds.herohao.top/updates/latest.json` |
+| Variable | `DEEPSTAY_UPDATE_DEPLOY_HOST` | 更新服务器的 SSH 地址 |
+| Secret | `DEEPSTAY_UPDATE_SSH_KEY` | 专用发布账号的私钥 |
+| Secret | `DEEPSTAY_UPDATE_KNOWN_HOSTS` | 已核对的服务器 SSH 公钥 |
+
+首次安装时，可直接下载 `https://ds.herohao.top/updates/deepstay-版本.apk`。域名目前通过 Cloudflare 代理；切换为仅 DNS 时仍可使用源站 HTTPS。

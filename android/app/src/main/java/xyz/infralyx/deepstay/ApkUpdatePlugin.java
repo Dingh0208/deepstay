@@ -101,7 +101,7 @@ public class ApkUpdatePlugin extends Plugin {
                 if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
                     throw new IOException("APK checksum does not match the release manifest");
                 }
-                verifyArchive(partial);
+                verifyArchive(partial, false);
                 checkCancelled();
                 if (!partial.renameTo(output)) throw new IOException("Cannot finish the verified download");
                 sendProgress(received, received);
@@ -199,8 +199,32 @@ public class ApkUpdatePlugin extends Plugin {
         cancelDownload();
     }
 
+    @PluginMethod
+    public void getPendingApk(PluginCall call) {
+        synchronized (downloadLock) {
+            JSObject result = new JSObject();
+            result.put("ready", false);
+            if (!downloading) {
+                File apk = updateFile();
+                new File(apk.getPath() + ".part").delete();
+                try {
+                    PackageInfo archive = verifyArchive(apk, true);
+                    if (archive.versionName == null || archive.versionName.trim().isEmpty()) {
+                        throw new IOException("Update version name is missing");
+                    }
+                    result.put("ready", true);
+                    result.put("version", archive.versionName);
+                    result.put("bytes", apk.length());
+                } catch (Exception error) {
+                    apk.delete();
+                }
+            }
+            call.resolve(result);
+        }
+    }
+
     @SuppressWarnings("deprecation")
-    private void verifyArchive(File apk) throws Exception {
+    private PackageInfo verifyArchive(File apk, boolean requireNewer) throws Exception {
         PackageManager manager = getContext().getPackageManager();
         PackageInfo current = manager.getPackageInfo(getContext().getPackageName(), PackageManager.GET_SIGNATURES);
         PackageInfo archive = manager.getPackageArchiveInfo(apk.getAbsolutePath(), PackageManager.GET_SIGNATURES);
@@ -212,6 +236,8 @@ public class ApkUpdatePlugin extends Plugin {
         long currentVersion = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? current.getLongVersionCode() : current.versionCode;
         long archiveVersion = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? archive.getLongVersionCode() : archive.versionCode;
         if (archiveVersion < currentVersion) throw new IOException("Update would downgrade this app");
+        if (requireNewer && archiveVersion == currentVersion) throw new IOException("Update is already installed");
+        return archive;
     }
 
     private String toHex(byte[] bytes) {
@@ -256,7 +282,7 @@ public class ApkUpdatePlugin extends Plugin {
             return;
         }
         try {
-            verifyArchive(apk);
+            verifyArchive(apk, false);
             Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", apk);
             Intent installer = new Intent(Intent.ACTION_VIEW);
             installer.setDataAndType(uri, "application/vnd.android.package-archive");

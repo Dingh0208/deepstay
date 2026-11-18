@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { useEffect } from 'react'
 import { create } from 'zustand'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 import { compareVersions, fetchLatestRelease, type AppRelease } from '../../services/updates.js'
@@ -15,6 +16,7 @@ type ApkUpdatePlugin = {
   ): Promise<PluginListenerHandle>
   downloadApk(options: { url: string; sha256: string }): Promise<{ bytes: number }>
   installApk(): Promise<{ permissionRequired?: boolean }>
+  getPendingApk(): Promise<{ ready: boolean; version?: string; bytes?: number }>
 }
 
 const apkUpdate = registerPlugin<ApkUpdatePlugin>('ApkUpdate')
@@ -51,6 +53,32 @@ export const UpdateSetting = () => {
   const currentVersion =
     document.querySelector<HTMLMetaElement>('meta[name="application-version"]')?.content ?? ''
   const state = useUpdateState((current) => current.value)
+
+  useEffect(() => {
+    if (!isAndroid) {
+      return
+    }
+    let active = true
+    // 开启安装权限可能重启 Android 进程；从原生校验过的缓存恢复安装入口。
+    void apkUpdate.getPendingApk().then((result) => {
+      const version = result.version
+      if (!active || !result.ready || !version || compareVersions(version, version) === null) {
+        return
+      }
+      setState((current) => current.status === 'idle' ? {
+        status: 'downloaded',
+        release: {
+          version,
+          releaseUrl: `https://github.com/Dingh0208/deepstay/releases/tag/v${version}`,
+          apkUrl: null,
+          apkSha256: null,
+        },
+      } : current)
+    }).catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [isAndroid])
 
   const check = async () => {
     if (pending) {

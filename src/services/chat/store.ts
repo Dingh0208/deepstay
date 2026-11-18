@@ -418,15 +418,20 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     unsavedSessions.clear()
     pendingFiles.clear()
     clearAllDrafts()
+    const sessions = sortSessions(summaries)
+    const activeId = sessions[0]?.id ?? null
     set({
       ready: true,
       initError: false,
-      sessions: sortSessions(summaries),
+      sessions,
       sessionCache: {},
       sessionLoadErrors: {},
       sessionSaveErrors: {},
-      activeId: null,
+      activeId,
     })
+    if (activeId !== null) {
+      await ensureSessionLoaded(activeId)
+    }
     return summaries.length
   } finally {
     set({ importingHistory: false })

@@ -75,7 +75,7 @@ const SettingsContent = () => {
         className={styles.dialog}
         mainClassName={styles.dialogMain}
         onClose={() => {
-          if (!historyDelete.busy) {
+          if (!historyBusy) {
             closeSettings()
           }
         }}
@@ -453,7 +453,7 @@ const useHistoryImport = () => {
     importing.current = true
     setFile(null)
     setBusy(true)
-    setStatus(null)
+    setStatus({ key: 'historyImporting' })
     try {
       const count = await importHistory(file)
       setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
@@ -491,10 +491,11 @@ const ImportHistory = ({
             size="m"
             className={clsx(styles.cellButton, styles.uploadButton)}
             disabled={disabled}
+            aria-busy={historyImport.busy}
             onClick={() => inputRef.current?.click()}
           >
             <IconUploadOutline14 />
-            {t('upload')}
+            {t(historyImport.busy ? 'historyImporting' : 'upload')}
           </Button>
           <input
             ref={inputRef}

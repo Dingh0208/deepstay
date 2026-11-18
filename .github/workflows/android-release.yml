@@ -65,6 +65,34 @@ jobs:
         run: |
           UPDATE_DIRECTORY=$(node -e 'process.stdout.write(new URL(".", process.env.DEEPSTAY_UPDATE_MANIFEST_URL).href)')
           pnpm updates:manifest "$UPDATE_DIRECTORY"
+      - name: Publish domestic update
+        if: env.DEEPSTAY_UPDATE_MANIFEST_URL != '' && vars.DEEPSTAY_UPDATE_DEPLOY_HOST != ''
+        env:
+          DEPLOY_HOST: ${{ vars.DEEPSTAY_UPDATE_DEPLOY_HOST }}
+          UPDATE_SSH_KEY: ${{ secrets.DEEPSTAY_UPDATE_SSH_KEY }}
+          UPDATE_KNOWN_HOSTS: ${{ secrets.DEEPSTAY_UPDATE_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SSH_KEY="$RUNNER_TEMP/deepstay-update-key"
+          KNOWN_HOSTS="$RUNNER_TEMP/deepstay-update-known-hosts"
+          DOWNLOADED_APK="$RUNNER_TEMP/deepstay-update-check.apk"
+          DOWNLOADED_MANIFEST="$RUNNER_TEMP/deepstay-update-check.json"
+          trap 'rm -f "$SSH_KEY" "$KNOWN_HOSTS" "$DOWNLOADED_APK" "$DOWNLOADED_MANIFEST"' EXIT
+          test -n "$UPDATE_SSH_KEY" && test -n "$UPDATE_KNOWN_HOSTS"
+          printf '%s\n' "$UPDATE_SSH_KEY" > "$SSH_KEY"
+          printf '%s\n' "$UPDATE_KNOWN_HOSTS" > "$KNOWN_HOSTS"
+          chmod 600 "$SSH_KEY" "$KNOWN_HOSTS"
+          APK_NAME=$(node -p '"deepstay-" + require("./package.json").version + ".apk"')
+          APK_URL=$(node -p 'JSON.parse(require("fs").readFileSync("release/latest.json", "utf8")).apkUrl')
+          MANIFEST_TMP=".latest-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
+          SFTP=(sftp -b - -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" "deepstay-publisher@$DEPLOY_HOST")
+          printf 'cd /var/www/deepstay/updates\nput "release/%s" "%s"\nput release/latest.json "%s"\n' "$APK_NAME" "$APK_NAME" "$MANIFEST_TMP" | "${SFTP[@]}"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 300 "$APK_URL" -o "$DOWNLOADED_APK"
+          test "$(sha256sum "$DOWNLOADED_APK" | cut -d ' ' -f1)" = "$(sha256sum "release/$APK_NAME" | cut -d ' ' -f1)"
+          printf 'cd /var/www/deepstay/updates\nrename "%s" latest.json\n' "$MANIFEST_TMP" | "${SFTP[@]}"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 30 -H 'Cache-Control: no-cache' "$DEEPSTAY_UPDATE_MANIFEST_URL" -o "$DOWNLOADED_MANIFEST"
+          cmp release/latest.json "$DOWNLOADED_MANIFEST"
       - uses: actions/upload-artifact@v4
         with:
           name: deepstay-android

@@ -75,11 +75,11 @@ export async function* streamOpenAiMessage(
       ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
       messages: toMessages(body),
       stream: true,
-      stream_options: { include_usage: true },
+      ...(officialDeepSeek ? { stream_options: { include_usage: true } } : {}),
       ...(officialDeepSeek ? { thinking: body.thinking } : {}),
     }),
     signal,
-  })
+  }, false)
   let started = false
   let index = -1
   let channel: 'text' | 'thinking' | null = null
@@ -186,7 +186,7 @@ export async function* streamOpenAiMessage(
     throw signal.reason ?? new DOMException('Aborted', 'AbortError')
   }
   if (!done && !stopReason) {
-    throw new ApiError('interrupted', '')
+    throw new ApiError('interrupted', { key: 'replyInterrupted' })
   }
   if (!started) {
     throw new ApiError('protocol', 'Empty OpenAI event stream')

@@ -32,12 +32,15 @@ export type MemorySegment = {
   model: string
   createdAt: number
   extractorVersion: number
+  /** The protected tail and last complete turn when this branch was compacted. */
+  checkpoint?: { retainedFromId: string | null; lastReplyId: string; complete: boolean }
 }
 
 export type MemoryState = {
   sessionId: string
   sourceRevision: number
   memoryRevision: number
+  hasCheckpoint?: boolean
 }
 
 export type MemorySnapshot = {

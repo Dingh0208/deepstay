@@ -32,6 +32,39 @@ button.image {
   cursor: pointer;
 }
 
+.previewDialog[role='dialog'] {
+  width: min(960px, calc(100vw - 32px));
+
+  button {
+    width: 44px;
+    height: 44px;
+    flex-shrink: 0;
+  }
+}
+
+.previewTitle {
+  display: block;
+  max-width: min(820px, calc(100vw - 136px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previewBody {
+  text-align: center;
+
+  img {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: max(1px, calc(100vh - 132px));
+    max-height: max(1px, calc(100dvh - 132px));
+    margin-inline: auto;
+    object-fit: contain;
+  }
+}
+
 .failedIcon {
   display: flex;
   align-items: center;

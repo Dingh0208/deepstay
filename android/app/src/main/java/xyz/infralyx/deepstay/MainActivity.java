@@ -16,9 +16,12 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LocalFilesPlugin.class);
         registerPlugin(ApkUpdatePlugin.class);
+        registerPlugin(ProviderHttpPlugin.class);
         super.onCreate(savedInstanceState);
         WebView webView = bridge.getWebView();
         WebSettings settings = webView.getSettings();
+        // Chat text applies the system or app preference through the CSS scale.
+        settings.setTextZoom(100);
         settings.setSupportZoom(false);
         settings.setBuiltInZoomControls(false);
         settings.setDisplayZoomControls(false);

@@ -14,6 +14,11 @@ export const normalizeApiBaseUrl = (input: string): string => {
   ) {
     throw new Error('Enter an HTTP or HTTPS API base URL without credentials, query or fragment')
   }
+  // Accept a request URL copied from an API example without losing a relay's prefix.
+  url.pathname = url.pathname
+    .replace(/\/+$/, '')
+    .replace(/(\/v1)\/(?:chat\/completions|models)$/, '$1')
+    .replace(/(\/anthropic\/v1)\/messages$/, '$1')
   return url.href.replace(/\/+$/, '')
 }
 

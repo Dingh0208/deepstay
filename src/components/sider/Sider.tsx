@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import { IconDataOutline16, IconPanelLeftOutline16, IconSettingsOutline16, NewChatIcon } from '../base/icons.js'
 import { setSiderCollapsed, useSettings } from '../../services/settings.js'
@@ -17,25 +17,35 @@ import { SessionItem } from './SessionItem.js'
 import { openPlans } from '../platform/plansDialogState.js'
 import styles from './Sider.module.css'
 
+const HISTORY_PAGE_SIZE = 50
+
 /** 展开的侧边栏：名称与收起按钮、开启新对话、按时间分组的会话列表、底部设置；移动端放在抽屉里，收起按钮关闭抽屉 */
 export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const t = useTranslate()
   const sessions = useChatStore((state) => state.sessions)
   const activeId = useChatStore((state) => state.activeId)
   const [now, setNow] = useState(Date.now)
+  const locale = useSettings((state) => state.locale)
   const pinnedIds = useSettings((state) => state.pinnedSessionIds)
   const groups = useMemo(() => groupSessions(sessions, now, t, pinnedIds), [sessions, now, t, pinnedIds])
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
   const [deletePending, setDeletePending] = useState(false)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<HistoryMatch[]>([])
-  const [searching, setSearching] = useState(false)
-  const [searchError, setSearchError] = useState(false)
+  const [searchStatus, setSearchStatus] = useState<'searching' | 'done' | 'failed' | 'cancelled'>('done')
+  const [oldestFirst, setOldestFirst] = useState(false)
+  const [resultLimit, setResultLimit] = useState(HISTORY_PAGE_SIZE)
+  const searchController = useRef<AbortController>()
+  const formatter = useMemo(() => new Intl.DateTimeFormat(locale, {
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  }), [locale])
+  const page = oldestFirst ? results.slice(-resultLimit).reverse() : results.slice(0, resultLimit)
   useEffect(() => {
     const controller = new AbortController()
+    searchController.current = controller
     setResults([])
-    setSearchError(false)
-    setSearching(!!query.trim())
+    setResultLimit(HISTORY_PAGE_SIZE)
+    setSearchStatus(query.trim() ? 'searching' : 'done')
     if (!query.trim()) {
       return () => controller.abort()
     }
@@ -45,14 +55,11 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
         .then((matches) => {
           if (!controller.signal.aborted) {
             setResults(matches)
+            setSearchStatus('done')
           }
         }).catch(() => {
           if (!controller.signal.aborted) {
-            setSearchError(true)
-          }
-        }).finally(() => {
-          if (!controller.signal.aborted) {
-            setSearching(false)
+            setSearchStatus('failed')
           }
         })
     }, 250)
@@ -115,17 +122,43 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
           {query.trim() ? (
             <div className={styles.searchResults}>
               <div role="status" className={styles.sectionHeader}>
-                {t(searching ? 'historySearching' : searchError ? 'historySearchFailed' : 'historySearchCount', { count: results.length })}
+                {t(searchStatus === 'searching' ? 'historySearching'
+                  : searchStatus === 'failed' ? 'historySearchFailed'
+                  : searchStatus === 'cancelled' ? 'historySearchCancelled'
+                  : 'historySearchCount', { count: results.length })}
               </div>
-              {results.map((match) => (
-                <button key={match.sessionId} className={styles.searchResult} onClick={() => {
+              {searchStatus === 'searching' ? (
+                <Button className={styles.searchMore} size="s" variant="outlined" onClick={() => {
+                  searchController.current?.abort()
+                  setSearchStatus('cancelled')
+                }}>{t('cancel')}</Button>
+              ) : null}
+              {results.length ? (
+                <div className={styles.searchControls}>
+                  <select aria-label={t('historySearchSort')} value={oldestFirst ? 'oldest' : 'newest'} onChange={(event) => {
+                    setOldestFirst(event.currentTarget.value === 'oldest')
+                    setResultLimit(HISTORY_PAGE_SIZE)
+                  }}>
+                    <option value="newest">{t('historySearchNewest')}</option>
+                    <option value="oldest">{t('historySearchOldest')}</option>
+                  </select>
+                </div>
+              ) : null}
+              {page.map((match) => (
+                <button type="button" key={JSON.stringify([match.sessionId, match.messageId])} className={styles.searchResult} onClick={() => {
                   void openHistoryMatch(match.sessionId, match.messageId)
                   closeMobileSider()
                 }}>
                   <strong>{match.title || t('untitledChat')}</strong>
-                  <span>{match.excerpt}</span>
+                  {match.excerpt ? <span>{match.excerpt}</span> : null}
+                  {Number.isFinite(match.timestamp) ? <time>{formatter.format(match.timestamp)}</time> : null}
                 </button>
               ))}
+              {resultLimit < results.length ? (
+                <Button className={styles.searchMore} size="s" variant="outlined" onClick={() => setResultLimit((limit) => limit + HISTORY_PAGE_SIZE)}>
+                  {t('historySearchMore')}
+                </Button>
+              ) : null}
             </div>
           ) : groups.map((group) => (
             <div key={group.key} className={styles.section}>

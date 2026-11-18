@@ -18,6 +18,7 @@ export const ContextMemorySetting = () => {
           role="switch"
           checked={enabled}
           className={appearanceStyles.switch}
+          title={t('contextMemoryManualHint')}
           onChange={(event) => setContextMemoryEnabled(event.target.checked)}
         />
       </div>

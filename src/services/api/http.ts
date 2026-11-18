@@ -1,4 +1,5 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
+import { recordDiagnostic } from '../diagnostics/log.js'
 import {
   looksLikeEventStream,
   readServerSentEvents,
@@ -6,6 +7,7 @@ import {
   type ServerSentEvent,
 } from './sse.js'
 import type { ApiErrorBody } from './types.js'
+import { requestAndroidProvider, supportsAndroidProviderTransport } from './androidTransport.js'
 
 export type ApiErrorKind = 'http' | 'stream' | 'network' | 'interrupted' | 'protocol'
 
@@ -33,6 +35,15 @@ export const isErrorBody = (value: unknown): value is ApiErrorBody =>
   typeof (value as ApiErrorBody).error?.message === 'string'
 
 const INVALID_STREAM = { key: 'replyInvalidStream' } as const
+const INTERRUPTED = { key: 'replyInterrupted' } as const
+
+export const recordApiFailure = (operation: 'models' | 'chat' | 'fetch', error: unknown) => {
+  const apiError = error instanceof ApiError ? error : undefined
+  const detail = apiError?.localMessage?.key === 'apiModelsTimeout' ? 'timeout'
+    : apiError?.localMessage?.key === 'apiNetworkOffline' ? 'offline'
+      : apiError?.kind === 'interrupted' ? 'stream' : apiError?.kind ?? 'unknown'
+  recordDiagnostic({ area: 'api', operation, outcome: 'failed', detail, status: apiError?.status })
+}
 
 const isEventStreamResponse = (response: Response): boolean =>
   response.headers.get('Content-Type')?.split(';', 1)[0]?.trim().toLowerCase() === 'text/event-stream'
@@ -52,28 +63,35 @@ const readableErrorMessage = (message: string | undefined): string | Translation
 export const streamError = (message?: string, providerCode?: unknown): ApiError =>
   new ApiError('stream', readableErrorMessage(message), undefined, providerCode)
 
-export const readMessageEventStream = (
+export async function* readMessageEventStream(
   response: Response,
   signal: AbortSignal
-): AsyncGenerator<ServerSentEvent> => {
+): AsyncGenerator<ServerSentEvent> {
   if (!response.body) {
     throw new ApiError('protocol', INVALID_STREAM, response.status)
   }
-  return readServerSentEvents(
-    response.body,
-    signal,
-    isEventStreamResponse(response)
-      ? undefined
-      : (preview) => {
-          const detail = jsonError(preview)
-          throw new ApiError(
-            'protocol',
-            readableErrorMessage(detail?.message),
-            response.status,
-            detail?.code
-          )
-        }
-  )
+  try {
+    yield* readServerSentEvents(
+      response.body,
+      signal,
+      isEventStreamResponse(response)
+        ? undefined
+        : (preview) => {
+            const detail = jsonError(preview)
+            throw new ApiError(
+              'protocol',
+              readableErrorMessage(detail?.message),
+              response.status,
+              detail?.code
+            )
+          }
+    )
+  } catch (error) {
+    if (signal.aborted || error instanceof ApiError) {
+      throw error
+    }
+    throw new ApiError('interrupted', INTERRUPTED)
+  }
 }
 
 const readErrorResponse = async (response: Response): Promise<ApiError> => {
@@ -93,18 +111,30 @@ const readErrorResponse = async (response: Response): Promise<ApiError> => {
   )
 }
 
-export const request = async (url: string, init: RequestInit): Promise<Response> => {
+export const request = async (url: string, init: RequestInit, logFailure = true): Promise<Response> => {
   let response: Response
   try {
-    response = await fetch(url, init)
+    response = supportsAndroidProviderTransport(url)
+      ? await requestAndroidProvider(url, init)
+      : await fetch(url, init)
   } catch (error) {
     if (init.signal?.aborted) {
       throw error
     }
-    throw new ApiError('network', error instanceof Error ? error.message : String(error))
+    const failure = new ApiError('network', {
+      key: globalThis.navigator?.onLine === false ? 'apiNetworkOffline' : 'apiNetworkUnavailable',
+    })
+    if (logFailure) {
+      recordApiFailure('fetch', failure)
+    }
+    throw failure
   }
   if (!response.ok) {
-    throw await readErrorResponse(response)
+    const failure = await readErrorResponse(response)
+    if (logFailure && !init.signal?.aborted) {
+      recordApiFailure('fetch', failure)
+    }
+    throw failure
   }
   return response
 }

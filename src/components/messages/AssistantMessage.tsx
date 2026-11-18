@@ -17,6 +17,7 @@ import { SiteThumbnails } from '../search/SiteLogo.js'
 import { toggleSearchPanel, useSearchPanel } from '../search/searchPanelState.js'
 import { ReadAloudButton } from './ReadAloudButton.js'
 import { CopyButton } from './CopyButton.js'
+import { MessageActions } from './MessageActions.js'
 import { ReplyArea } from './ReplyArea.js'
 import { useReplyView } from './useReplyView.js'
 import {
@@ -49,9 +50,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const apiProtocol = useSettings((state) => state.apiProtocol)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
-  const contextProgress = useChatStore((state) =>
-    streaming ? state.contextProgress[sessionId] : undefined
-  )
+  const contextProgress = useChatStore((state) => {
+    const progress = state.contextProgress[sessionId]
+    return streaming && !progress?.manual ? progress : undefined
+  })
   const view = useReplyView(message, streaming)
   const panelEntry = useSearchPanel((state) => state.entry)
   const notice = streaming ? null : describeReply(message)
@@ -64,12 +66,19 @@ export const AssistantMessage = memo(function AssistantMessage({
   const copyText = responseText || notice?.text
   const waiting = streaming && !contextProgress && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
+  const regenerate = () => {
+    if (busy || refused) {
+      return
+    }
+    stopReadAloud()
+    regenerateReply(sessionId, message.id)
+  }
   return (
     <div data-chat-message={message.id} className={styles.message}>
       {contextProgress ? (
         <div className={clsx(styles.waiting, styles.compressionStatus)} role="status">
           {contextProgress.total > 0
-            ? t('contextMemoryProgress', contextProgress)
+            ? t('contextMemoryProgress', { completed: contextProgress.completed, total: contextProgress.total })
             : t('contextMemoryCompressing')}
         </div>
       ) : null}
@@ -82,14 +91,16 @@ export const AssistantMessage = memo(function AssistantMessage({
         />
       )}
       {answer ? (
-        <Markdown
-          className="ds-assistant-message-main-content"
-          content={answer.markdown}
-          loading={streaming}
-          cacheKey={message.id}
-          disableLink={false}
-          sources={view.sources}
-        />
+        <MessageActions text={streaming ? undefined : copyText} onRegenerate={busy || refused ? undefined : regenerate}>
+          <Markdown
+            className="ds-assistant-message-main-content"
+            content={answer.markdown}
+            loading={streaming}
+            cacheKey={message.id}
+            disableLink={false}
+            sources={view.sources}
+          />
+        </MessageActions>
       ) : null}
       {waiting ? (
         <div className={styles.waiting}>
@@ -117,7 +128,7 @@ export const AssistantMessage = memo(function AssistantMessage({
                 <button
                   type="button"
                   className={styles.noticeAction}
-                  onClick={() => openSettings('data')}
+                  onClick={() => openSettings('api')}
                 >
                   {t('changeApiKey')}
                 </button>
@@ -166,10 +177,7 @@ export const AssistantMessage = memo(function AssistantMessage({
               tooltip={t('regenerate')}
               tooltipPlacement="bottom"
               disabled={busy || refused}
-              onClick={() => {
-                stopReadAloud()
-                regenerateReply(sessionId, message.id)
-              }}
+              onClick={regenerate}
             />
           </div>
           {isLast && apiProtocol === 'deepseek' && canContinueReply(message) ? (

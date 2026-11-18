@@ -9,6 +9,7 @@ import {
   IconLightOutline16,
   IconSettingsOutline16,
   IconUploadOutline14,
+  IconWarningOutline16,
 } from '../base/icons.js'
 import {
   BackupError,
@@ -17,7 +18,10 @@ import {
   importHistory,
 } from '../../services/chat/backup.js'
 import { useChatStore } from '../../services/chat/store.js'
+import { recordDiagnostic } from '../../services/diagnostics/log.js'
 import {
+  setChatFont,
+  setChatFontSize,
   setLocale,
   setThemePreference,
   setTtsVoice,
@@ -32,14 +36,11 @@ import { showToast } from '../base/toastState.js'
 import { ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatBackgroundSetting, ThinkingCollapseSetting } from './AppearanceSetting.js'
 import { ContextMemorySetting } from './ContextMemorySetting.js'
+import { DiagnosticsSetting } from './DiagnosticsSetting.js'
 import { UpdateSetting } from './UpdateSetting.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
 
-/**
- * 设置弹窗：分「通用设置」（主题、记忆、背景、语言、朗读音色）与「数据管理」（API Key、导入、导出、删除）。
- * 桌面端为居中弹窗、左侧导航；移动端为底部弹层、导航横排在内容上方
- */
 export const SettingsDialog = () => {
   const open = useSettingsDialog((state) => state.open)
   return open ? <SettingsContent /> : null
@@ -51,7 +52,11 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     label: 'settingDialogAsideGeneralOptionLabel',
     icon: <IconSettingsOutline16 />,
   },
+  { value: 'appearance', label: 'settingsAppearance', icon: <IconLightOutline16 /> },
+  { value: 'chat', label: 'settingsChat', icon: null },
+  { value: 'api', label: 'settingsApi', icon: null },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
+  { value: 'diagnostics', label: 'settingsDiagnostics', icon: <IconWarningOutline16 /> },
 ]
 
 const SettingsContent = () => {
@@ -77,35 +82,68 @@ const SettingsContent = () => {
           }
         }}
       >
-        <div role="tablist" className={styles.navigation}>
-          {sections.map((item) => (
+        <div role="tablist" aria-label={t('settings')} className={styles.navigation}>
+          {sections.map((item, index) => (
             <button
               key={item.value}
               type="button"
               role="tab"
+              id={`settings-tab-${item.value}`}
+              aria-controls="settings-panel"
               aria-selected={section === item.value}
+              tabIndex={section === item.value ? 0 : -1}
               className={clsx(styles.navItem, section === item.value && styles.navItemActive)}
-              onClick={() => setSection(item.value)}
+              onClick={() => {
+                if (!historyBusy) {
+                  setSection(item.value)
+                }
+              }}
+              onKeyDown={(event) => {
+                if (historyBusy) {
+                  return
+                }
+                const direction = event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 :
+                  event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : 0
+                const target = event.key === 'Home' ? sections[0] : event.key === 'End' ? sections[sections.length - 1] :
+                  direction ? sections[(index + direction + sections.length) % sections.length] : null
+                if (!target) {
+                  return
+                }
+                event.preventDefault()
+                setSection(target.value)
+                document.getElementById(`settings-tab-${target.value}`)?.focus()
+              }}
             >
-              {item.icon}
+              <span className={styles.navIcon} aria-hidden="true">{item.icon}</span>
               {t(item.label)}
             </button>
           ))}
         </div>
-        <div role="tabpanel" className={styles.content}>
-          {section === 'general' ? (
+        <div key={section} id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${section}`} className={styles.content}>
+          {section === 'general' && (
             <>
-              <ThemeSetting />
-              <ThinkingCollapseSetting />
-              <ContextMemorySetting />
-              <ChatBackgroundSetting />
               <LocaleSetting />
-              <TtsVoiceSetting />
               <UpdateSetting />
             </>
-          ) : (
+          )}
+          {section === 'appearance' && (
             <>
-              <ApiKeyField editor={apiKeyEditor} />
+              <ThemeSetting />
+              <TypographySetting />
+              <ChatBackgroundSetting />
+            </>
+          )}
+          {section === 'chat' && (
+            <>
+              <ThinkingCollapseSetting />
+              <ContextMemorySetting />
+              <TtsVoiceSetting />
+            </>
+          )}
+          {section === 'api' && <ApiKeyField editor={apiKeyEditor} />}
+          {section === 'diagnostics' && <DiagnosticsSetting />}
+          {section === 'data' && (
+            <>
               <ImportHistory historyImport={historyImport} disabled={historyBusy} />
               <ExportHistory disabled={historyBusy} />
               <SettingCell
@@ -183,9 +221,11 @@ const useHistoryDelete = () => {
     setBusy(true)
     try {
       await clearHistory()
+      recordDiagnostic({ area: 'history', operation: 'delete', outcome: 'ok' })
       setOpened(false)
       showToast({ key: 'historyDeleted' })
     } catch {
+      recordDiagnostic({ area: 'history', operation: 'delete', outcome: 'failed' })
       showToast({ key: 'historyDeleteFailed', type: 'error' })
     } finally {
       deleting.current = false
@@ -204,6 +244,33 @@ const useHistoryDelete = () => {
     },
     confirm,
   }
+}
+
+const TypographySetting = () => {
+  const t = useTranslate()
+  const font = useSettings((state) => state.chatFont)
+  const size = useSettings((state) => state.chatFontSize)
+  const system = t('avatarMenuSettingsDialogThemeSelectSystemOption')
+  return (
+    <>
+      <SettingCell label={t('chatFont')} status={null} action={
+        <Select ariaLabel={t('chatFont')} value={font} onChange={setChatFont} options={[
+          { value: 'system', label: system },
+          { value: 'serif', label: t('chatFontSerif') },
+          { value: 'mono', label: t('chatFontMono') },
+        ]} />
+      } />
+      <SettingCell label={t('chatFontSize')} status={null} action={
+        <Select ariaLabel={t('chatFontSize')} value={size} onChange={setChatFontSize} options={[
+          { value: 'system', label: system },
+          { value: 'small', label: t('chatFontSmall') },
+          { value: 'normal', label: t('chatFontNormal') },
+          { value: 'large', label: t('chatFontLarge') },
+          { value: 'extraLarge', label: t('chatFontExtraLarge') },
+        ]} />
+      } />
+    </>
+  )
 }
 
 const LocaleSetting = () => {
@@ -392,8 +459,10 @@ const useHistoryImport = () => {
     setStatus(null)
     try {
       const count = await importHistory(file, setProgress)
+      recordDiagnostic({ area: 'history', operation: 'import', outcome: 'ok' })
       setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
     } catch {
+      recordDiagnostic({ area: 'history', operation: 'import', outcome: 'failed' })
       setStatus({ key: 'historyImportFailed', error: true })
     } finally {
       importing.current = false
@@ -482,7 +551,10 @@ const ExportHistory = ({ disabled }: { disabled: boolean }) => {
         const files = registerPlugin<{
           save(options: { name: string; data: string; mimeType: string }): Promise<{ cancelled: boolean }>
         }>('LocalFiles')
-        await files.save({ name, data, mimeType: 'application/zip' })
+        const { cancelled } = await files.save({ name, data, mimeType: 'application/zip' })
+        if (!cancelled) {
+          recordDiagnostic({ area: 'history', operation: 'export', outcome: 'ok' })
+        }
         return
       }
       const url = URL.createObjectURL(blob)
@@ -491,7 +563,9 @@ const ExportHistory = ({ disabled }: { disabled: boolean }) => {
       link.download = name
       link.click()
       setTimeout(() => URL.revokeObjectURL(url), 10_000)
+      recordDiagnostic({ area: 'history', operation: 'export', outcome: 'ok' })
     } catch (error) {
+      recordDiagnostic({ area: 'history', operation: 'export', outcome: 'failed' })
       setStatus(errorStatus('historyExportFailed', error))
     } finally {
       setBusy(false)

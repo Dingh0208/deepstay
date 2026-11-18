@@ -15,6 +15,7 @@ import {
   type SelectMessageVersion,
 } from './BranchSwitcher.js'
 import { MessageFile } from './MessageFile.js'
+import { MessageActions } from './MessageActions.js'
 import { CopyButton } from './CopyButton.js'
 import styles from './UserMessage.module.css'
 
@@ -44,6 +45,10 @@ export const UserMessage = memo(function UserMessage({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isMobile = useIsMobile()
   const canSend = !busy && (draft.trim() !== '' || message.files.length > 0)
+  const startEdit = () => {
+    setDraft(message.content)
+    setEditing(true)
+  }
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -112,7 +117,11 @@ export const UserMessage = memo(function UserMessage({
         </div>
       ) : (
         <>
-          {message.content ? <div className={styles.bubble}>{message.content}</div> : null}
+          {message.content ? (
+            <MessageActions className={styles.bubble} text={message.content} onEdit={busy ? undefined : startEdit}>
+              {message.content}
+            </MessageActions>
+          ) : null}
           <div className={styles.bottom}>
             <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
               {message.content ? <CopyButton text={message.content} /> : null}
@@ -121,10 +130,7 @@ export const UserMessage = memo(function UserMessage({
                 tooltip={t('editMessage')}
                 tooltipPlacement="bottom"
                 disabled={busy}
-                onClick={() => {
-                  setDraft(message.content)
-                  setEditing(true)
-                }}
+                onClick={startEdit}
               />
             </div>
             <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />

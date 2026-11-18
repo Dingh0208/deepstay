@@ -6,6 +6,8 @@ export type Locale = 'zh-CN' | 'en-US'
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ApiProtocol = 'deepseek' | 'openai'
+export type ChatFont = 'system' | 'serif' | 'mono'
+export type ChatFontSize = 'system' | 'small' | 'normal' | 'large' | 'extraLarge'
 
 /** 本机设置，存 localStorage：API Key、语言、主题、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
@@ -16,6 +18,8 @@ type Settings = {
   models: string[]
   locale: Locale
   themePreference: ThemePreference
+  chatFont: ChatFont
+  chatFontSize: ChatFontSize
   ttsVoice: TtsVoice
   thinking: boolean
   thinkingCollapsed: boolean
@@ -33,6 +37,8 @@ const KEYS = {
   models: 'deepstay:models',
   locale: 'chat-demo:locale',
   themePreference: 'chat-demo:theme-preference',
+  chatFont: 'deepstay:chat-font',
+  chatFontSize: 'deepstay:chat-font-size',
   ttsVoice: 'chat-demo:tts-voice',
   thinking: 'chat-demo:thinking',
   thinkingCollapsed: 'deepstay:thinking-collapsed',
@@ -83,6 +89,18 @@ const initialThemePreference = (): ThemePreference => {
 /** 未保存过时使用服务端默认音色 stella（海星） */
 const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
 
+const initialChatFont = (): ChatFont => {
+  const saved = read(KEYS.chatFont)
+  return saved === 'serif' || saved === 'mono' ? saved : 'system'
+}
+
+const initialChatFontSize = (): ChatFontSize => {
+  const saved = read(KEYS.chatFontSize)
+  return saved === 'small' || saved === 'normal' || saved === 'large' || saved === 'extraLarge'
+    ? saved
+    : 'system'
+}
+
 const readStringList = (key: string): string[] => {
   try {
     const value: unknown = JSON.parse(read(key) ?? '[]')
@@ -100,6 +118,8 @@ export const useSettings = create<Settings>(() => ({
   models: readStringList(KEYS.models),
   locale: initialLocale(),
   themePreference: initialThemePreference(),
+  chatFont: initialChatFont(),
+  chatFontSize: initialChatFontSize(),
   ttsVoice: initialTtsVoice(),
   thinking: read(KEYS.thinking) === 'true',
   thinkingCollapsed: read(KEYS.thinkingCollapsed) === 'true',
@@ -122,6 +142,16 @@ export const setThemePreference = (themePreference: ThemePreference) => {
 export const setTtsVoice = (ttsVoice: TtsVoice) => {
   write(KEYS.ttsVoice, ttsVoice)
   useSettings.setState({ ttsVoice })
+}
+
+export const setChatFont = (chatFont: ChatFont) => {
+  write(KEYS.chatFont, chatFont)
+  useSettings.setState({ chatFont })
+}
+
+export const setChatFontSize = (chatFontSize: ChatFontSize) => {
+  write(KEYS.chatFontSize, chatFontSize)
+  useSettings.setState({ chatFontSize })
 }
 
 export const setApiKey = (apiKey: string | null) => {

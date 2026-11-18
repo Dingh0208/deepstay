@@ -6,7 +6,8 @@ import {
   type ApiConnection,
 } from './connection.js'
 import { streamOpenAiMessage } from './openai.js'
-import { ApiError, isErrorBody, readMessageEventStream, request, streamError } from './http.js'
+import { ApiError, isErrorBody, readMessageEventStream, recordApiFailure, request, streamError } from './http.js'
+import { recordDiagnostic } from '../diagnostics/log.js'
 export { ApiError, request, type ApiErrorKind } from './http.js'
 import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent } from './types.js'
 
@@ -34,24 +35,33 @@ export const fetchModels = async (
   if (signal?.aborted) {
     controller.abort()
   }
-  const timeout = setTimeout(abort, 10_000)
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    abort()
+  }, 10_000)
   try {
     const response = await request(apiEndpoint(baseUrl, 'v1/models'), {
       method: 'GET',
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
       credentials: 'omit',
       signal: controller.signal,
+    }, false)
+    const value: unknown = await response.json().catch((error: unknown) => {
+      if (controller.signal.aborted) {
+        throw error
+      }
+      throw new ApiError('protocol', { key: 'apiModelsInvalid' }, response.status)
     })
-    const value: unknown = await response.json()
     if (
       typeof value !== 'object' ||
       value === null ||
       !('data' in value) ||
       !Array.isArray(value.data)
     ) {
-      throw new ApiError('protocol', 'Invalid model list response')
+      throw new ApiError('protocol', { key: 'apiModelsInvalid' }, response.status)
     }
-    return [
+    const models = [
       ...new Set(
         value.data.flatMap((item: unknown) =>
           typeof item === 'object' &&
@@ -64,6 +74,23 @@ export const fetchModels = async (
         )
       ),
     ]
+    if (value.data.length > 0 && models.length === 0) {
+      throw new ApiError('protocol', { key: 'apiModelsInvalid' }, response.status)
+    }
+    recordDiagnostic({ area: 'api', operation: 'models', outcome: 'ok', status: response.status })
+    return models
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error
+    }
+    let failure = error
+    if (timedOut) {
+      failure = new ApiError('network', { key: 'apiModelsTimeout' })
+    } else if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
+      failure = new ApiError('http', { key: 'apiModelsUnsupported' }, error.status)
+    }
+    recordApiFailure('models', failure)
+    throw failure
   } finally {
     clearTimeout(timeout)
     signal?.removeEventListener('abort', abort)
@@ -137,6 +164,23 @@ export async function* streamMessage(
   signal: AbortSignal,
   connection: ApiConnection = getApiConnection()
 ): AsyncGenerator<MessageStreamEvent> {
+  try {
+    yield* streamProviderMessage(apiKey, body, signal, connection)
+    recordDiagnostic({ area: 'api', operation: 'chat', outcome: 'ok' })
+  } catch (error) {
+    if (!signal.aborted) {
+      recordApiFailure('chat', error)
+    }
+    throw error
+  }
+}
+
+async function* streamProviderMessage(
+  apiKey: string,
+  body: CreateMessageRequest,
+  signal: AbortSignal,
+  connection: ApiConnection
+): AsyncGenerator<MessageStreamEvent> {
   if (connection.protocol === 'openai') {
     yield* streamOpenAiMessage(apiKey, body, signal, connection)
     return
@@ -151,7 +195,7 @@ export async function* streamMessage(
     body: JSON.stringify({ ...body, stream: true }),
     credentials: 'omit',
     signal,
-  })
+  }, false)
   for await (const { event: eventName, data } of readMessageEventStream(response, signal)) {
     let payload: unknown
     try {
@@ -176,6 +220,5 @@ export async function* streamMessage(
       return
     }
   }
-  // 服务端没有提供错误内容时保持为空，不推测断流原因。
-  throw new ApiError('interrupted', '')
+  throw new ApiError('interrupted', { key: 'replyInterrupted' })
 }

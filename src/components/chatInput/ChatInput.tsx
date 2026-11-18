@@ -10,7 +10,7 @@ import {
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
+import { compactSession, sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
 import { hasOwn } from '../../utils/object.js'
 import {
   addDraftFiles,
@@ -50,6 +50,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks) !== null)
   const streaming = useChatStore(
     (state) => sessionId !== null && hasOwn(state.streaming, sessionId)
+  )
+  const manualProgress = useChatStore((state) =>
+    sessionId !== null && state.contextProgress[sessionId]?.manual === true
   )
   const thinking = useSettings((state) => state.thinking)
   const importingHistory = useChatStore((state) => state.importingHistory)
@@ -146,6 +149,23 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
 
   const send = () => {
+    const draft = getDraft(sessionId)
+    if (draft.text.trim() === '/compact' && !draft.attachments.length) {
+      if (useChatStore.getState().importingHistory || streaming || voice.status !== 'idle') {return}
+      if (!sessionId) {
+        showToast({ key: 'contextMemoryNotNeeded' })
+        return
+      }
+      if (!ensureApiKey()) {return}
+      setText('')
+      if (isMobile) {textareaRef.current?.blur()}
+      void compactSession(sessionId).then((result) => {
+        if (result === 'saved') {showToast({ key: 'contextMemorySaved' })}
+        if (result === 'notNeeded') {showToast({ key: 'contextMemoryNotNeeded' })}
+        if (result === 'failed') {showToast({ key: 'contextMemoryManualFailed', type: 'error' })}
+      })
+      return
+    }
     if (!extras && attachments.length > 0) {
       showToast({ key: 'apiTextOnly' })
       return
@@ -178,6 +198,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         }
       }}
     >
+      {manualProgress ? <div role="status" className={styles.compactStatus}>{t('contextMemoryCompressing')}</div> : null}
       <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />
       <div className={styles.textareaWrapper}>
         <textarea

@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import { createId } from '../../utils/id.js'
+import { recordDiagnostic } from '../diagnostics/log.js'
 import { toSessionSummary, type Session, type SessionSummary } from './types.js'
 import type {
   MemoryRecord,
@@ -152,6 +153,9 @@ export const loadSessionSummaries = async (): Promise<SessionSummary[]> => {
 export const loadSession = async (id: string): Promise<Session | undefined> =>
   (await getDB()).get('sessions', id)
 
+export const hasContextCheckpoint = async (id: string): Promise<boolean> =>
+  (await (await getDB()).get('memoryState', id))?.hasCheckpoint === true
+
 /** 原文、派生记忆及版本来自同一事务，旧会话无需预先迁移。 */
 export const loadMemorySnapshot = async (
   sessionId: string
@@ -275,7 +279,11 @@ export const commitMemoryUpdate = async (
             changed = true
           }
           if (changed) {
-            await stateStore.put({ ...state, memoryRevision: state.memoryRevision + 1 })
+            await stateStore.put({
+              ...state,
+              memoryRevision: state.memoryRevision + 1,
+              ...(pending.some((segment) => segment.checkpoint) ? { hasCheckpoint: true } : {}),
+            })
           }
           if (!current()) {
             return
@@ -327,6 +335,7 @@ export const saveSession = async (session: Session, files: StoredFile[] = []): P
           sessionId: session.id,
           sourceRevision: (previous?.sourceRevision ?? 0) + 1,
           memoryRevision: previous?.memoryRevision ?? 0,
+          ...(previous?.hasCheckpoint ? { hasCheckpoint: true } : {}),
         })
       } catch (error) {
         abortTransaction(tx)
@@ -358,6 +367,7 @@ export const renameSession = async (id: string, title: string): Promise<void> =>
             sessionId: id,
             sourceRevision: (previous?.sourceRevision ?? 0) + 1,
             memoryRevision: previous?.memoryRevision ?? 0,
+            ...(previous?.hasCheckpoint ? { hasCheckpoint: true } : {}),
           })
         }
       } catch (error) {
@@ -560,8 +570,18 @@ export const commitStaging = async (replace = false): Promise<SessionSummary[]> 
   return summaries
 }
 
-/** 本地存储失败不打断对话，只在控制台留痕 */
+/** 可分享的诊断日志仅记录操作类别，不包含原始错误。 */
 export const reportStorageError = (action: string) => (error: unknown) => {
+  const operation = action.includes('read') || action.includes('reload')
+    ? 'load'
+    : action.includes('delete')
+      ? 'delete'
+      : action.includes('import') || action.includes('staging')
+        ? 'import'
+        : action.includes('export')
+          ? 'export'
+          : 'save'
+  recordDiagnostic({ area: 'history', operation, outcome: 'failed', detail: 'storage' })
   // eslint-disable-next-line no-console
   console.error(`[storage] ${action} failed`, error)
 }

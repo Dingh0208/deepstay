@@ -45,7 +45,7 @@ export const FirstRunGuide = () => {
           <Button variant="outlined" onClick={dismiss}>{t('keyGuideLater')}</Button>
           <Button autoFocus onClick={() => {
             dismiss()
-            openSettings('data')
+            openSettings('api')
           }}>{t('keyGuideOpenSettings')}</Button>
         </>
       }

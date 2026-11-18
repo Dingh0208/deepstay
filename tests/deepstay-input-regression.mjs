@@ -15,7 +15,7 @@ const mocks = new Map([
   ['../../services/settings.js', 'export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek";'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>globalThis.__mobile;'],
-  ['../../services/chat/store.js', 'export const sendMessage=()=>{globalThis.__sent++;return true}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
+  ['../../services/chat/store.js', 'export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
   ['../../utils/object.js', 'export const hasOwn=(object,key)=>Object.hasOwn(object,key);'],
   ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:new Map([[null,globalThis.__draft]])}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=()=>null;'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
@@ -61,9 +61,10 @@ const find = (node, predicate) => {
 try {
   const { Input } = await import(source)
   globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture' }
-  globalThis.__chat = { streaming: {}, importingHistory: false }
+  globalThis.__chat = { streaming: {}, importingHistory: false, contextProgress: {} }
   globalThis.__draft = { text: 'hello', attachments: [] }
   globalThis.__sent = 0
+  globalThis.__compacted = []
   globalThis.__retries = []
   globalThis.__notices = []
   const checks = []
@@ -102,6 +103,16 @@ try {
   find(tree, node => node.type?.name === 'DraftAttachments').props.onRetry('old-file')
   assert.equal(globalThis.__retries.length, 1)
   checks.push('Existing attachment retry is blocked in text-only mode, allowed for DeepSeek and still blocked during history replacement')
+  globalThis.__chat.importingHistory = false
+  globalThis.__draft.text = ' /compact '
+  tree = Input({ sessionId: 'current-chat' })
+  find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()
+  await Promise.resolve()
+  assert.deepEqual(globalThis.__compacted, ['current-chat'])
+  assert.equal(globalThis.__draft.text, '')
+  assert.equal(globalThis.__sent, 2)
+  assert.deepEqual(globalThis.__notices.at(-1), { key: 'contextMemorySaved' })
+  checks.push('Sending /compact dispatches only local compaction for the selected session and clears the command draft')
   const evidence = { passed: true, runtime: process.version, checks, scope: 'Actual ChatInput TSX with mocked application services; verifies event handling and retry calls. Native textarea newline is left to browser.' }
   await writeFile(new URL('./deepstay-input-evidence.json', import.meta.url), JSON.stringify(evidence, null, 2) + '\n')
   console.log(JSON.stringify(evidence, null, 2))

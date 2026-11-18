@@ -1,7 +1,7 @@
 .dialog {
   --modal-header-gap: 7px;
   width: 760px;
-  height: 500px;
+  height: 550px;
   max-height: calc(100vh - 32px);
   padding: 19px 24px 22px;
 }
@@ -19,8 +19,9 @@
   flex-shrink: 0;
   gap: 4px;
   width: 172px;
-  margin: 6px 12px 0 -12px;
+  margin: 6px 0 0 -8px;
   padding-top: 4px;
+  border-right: 1px solid var(--dsw-alias-border-l2);
 }
 
 .navItem {
@@ -51,12 +52,22 @@
 
   &:hover,
   &.navItemActive {
-    background-color: var(--dsw-alias-interactive-bg-hover);
+    background-color: var(--dsw-specific-selector);
+  }
+
+  &.navItemActive {
+    color: var(--dsw-alias-brand-text);
+    font-weight: 600;
   }
 
   &:focus-visible {
     box-shadow: 0 0 0 2px var(--dsw-alias-button-primary-fill);
   }
+}
+
+.navIcon {
+  display: inline-flex;
+  flex: 0 0 16px;
 }
 
 .content {
@@ -282,32 +293,33 @@
   }
 
   .navigation {
-    flex-direction: row;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     width: auto;
-    margin: 6px -4px;
-    padding: 4px 0;
-    overflow-x: auto;
+    margin: 4px 0 0;
+    padding: 4px 0 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
   }
 
   .navItem {
     flex: 1 0 auto;
     justify-content: center;
     width: auto;
-    min-width: 108px;
+    min-width: 0;
+    min-height: 44px;
     margin: 0;
-    white-space: nowrap;
+    padding: 6px 2px;
+    line-height: 1.25;
+    text-align: center;
+  }
 
-    &:first-child {
-      margin-left: 4px;
-    }
-
-    &:last-child {
-      margin-right: 4px;
-    }
+  .navIcon {
+    display: none;
   }
 
   .content {
-    padding-top: 24px;
+    padding-top: 10px;
     padding-left: 0;
     padding-bottom: env(safe-area-inset-bottom);
   }
@@ -343,6 +355,31 @@
   .cellButton svg {
     display: none;
   }
+}
+
+.diagnosticActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.diagnosticList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
+}
+
+.diagnosticEntry {
+  padding: 8px 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.diagnosticTime {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .mobileConfirm {

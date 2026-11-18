@@ -10,6 +10,8 @@ import { selectMessageVersion } from '../../services/chat/store.js'
 import { useHistoryTarget } from '../../services/chat/historySearch.js'
 import type { Message, Session } from '../../services/chat/types.js'
 import { Button } from '../base/Button.js'
+import { IconButton } from '../base/IconButton.js'
+import { IconChevronDownOutline14 } from '../base/icons.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { UserMessage } from './UserMessage.js'
@@ -63,6 +65,7 @@ export const MessageList = ({
   const historyAnchorRef = useRef<{ messageId: string; top: number } | null>(null)
   const messages = useMemo(() => getVisibleMessages(session), [session])
   const [historyWindow, setHistoryWindow] = useState<MessageWindow | null>(null)
+  const [atBottom, setAtBottom] = useState(true)
   const previousVersions = useRef<ReadonlyMap<string, MessageVersions>>(new Map())
   const previousLastMessageId = useRef<string>()
   const lastMessageId = messages[messages.length - 1]?.id
@@ -100,7 +103,11 @@ export const MessageList = ({
       stickyRef.current = false
       setHistoryWindow({ start, end })
       node.scrollIntoView({ block: 'center' })
-      scrollTopRef.current = scrollRef.current?.scrollTop ?? 0
+      const scroll = scrollRef.current
+      if (scroll) {
+        scrollTopRef.current = scroll.scrollTop
+        setAtBottom(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICKY_THRESHOLD)
+      }
       useHistoryTarget.setState({ sessionId: null, messageId: null })
     }
   }, [searchTarget, start, end, targetIndex])
@@ -117,9 +124,17 @@ export const MessageList = ({
           el.scrollTop = top
         }
         scrollTopRef.current = top
+        setAtBottom(true)
       }
     })
   }, [])
+
+  const jumpToLatest = () => {
+    historyAnchorRef.current = null
+    stickyRef.current = true
+    setHistoryWindow(null)
+    scrollToBottom()
+  }
 
   useEffect(
     () => () => {
@@ -228,6 +243,7 @@ export const MessageList = ({
       return
     }
     if (stickyRef.current) {
+      scrollTopRef.current = el.scrollTop
       scrollToBottom()
     } else {
       el.scrollTop = scrollTopRef.current
@@ -241,6 +257,7 @@ export const MessageList = ({
     }
     const onScroll = () => {
       const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICKY_THRESHOLD
+      setAtBottom(nearBottom)
       // 仅在用户向上滚动时停止跟随底部，布局或内容增高时保持跟随状态。
       const movedUp = el.scrollTop < scrollTopRef.current
       if (nearBottom && end === messages.length) {
@@ -302,7 +319,19 @@ export const MessageList = ({
           ) : null}
         </div>
       </div>
-      {footer}
+      <div className={styles.footer}>
+        {(!atBottom || end < messages.length) && (
+          <IconButton
+            icon={<IconChevronDownOutline14 />}
+            size="xl"
+            tone="primary"
+            tooltip={t('jumpToLatest')}
+            className={styles.jumpToLatest}
+            onClick={jumpToLatest}
+          />
+        )}
+        {footer}
+      </div>
     </div>
   )
 }

@@ -121,18 +121,24 @@ export const extractFileIds = (message: string): string[] => [
 export const getUnsupportedImageError = (
   error: unknown
 ): { location?: { messageIndex: number; blockIndex: number } } | null => {
-  if (!(error instanceof ApiError) || (error.status !== 400 && error.kind !== 'stream')) {
+  if (
+    !(error instanceof ApiError) ||
+    (error.kind !== 'stream' &&
+      !(error.kind === 'http' && (error.status === 400 || error.status === 422)) &&
+      !(error.kind === 'protocol' && error.status === 200))
+  ) {
     return null
   }
-  const match = /^(?:messages\.(\d+)\.content\.(\d+):\s*)?You have uploaded an (?:unsupported|invalid) image(?:\.\s|\.?$)/i.exec(
+  const match = /^(?:messages(?:\.(\d+)|\[(\d+)\])\.content(?:\.(\d+)|\[(\d+)\]):\s*)?(?:You have uploaded an )?(?:unsupported|invalid) image(?:[.:]\s|\.?$)/i.exec(
     error.message.trim()
   )
   if (!match) {
     return null
   }
-  return match[1] === undefined
+  const messageIndex = match[1] ?? match[2]
+  return messageIndex === undefined
     ? {}
-    : { location: { messageIndex: Number(match[1]), blockIndex: Number(match[2]) } }
+    : { location: { messageIndex: Number(messageIndex), blockIndex: Number(match[3] ?? match[4]) } }
 }
 
 /** 上传失败里能识别出具体原因的情况；其余统一按「上传失败」处理 */

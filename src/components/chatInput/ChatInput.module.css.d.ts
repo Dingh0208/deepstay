@@ -8,6 +8,7 @@ declare const styles: {
   readonly "uploading": string;
   readonly "spin": string;
   readonly "failed": string;
+  readonly "compactStatus": string;
   readonly "textareaWrapper": string;
   readonly "textarea": string;
   readonly "mirror": string;

@@ -62,6 +62,7 @@ const FILE_RETRY_LIMIT = 2
 const FILE_RETRY_BASE_DELAY = 1000
 // Reuse a confirmed input budget on the same API configuration during this app session.
 let learnedContextLimit: { route: string; key: string; budget: number } | undefined
+let rejectedHistoryImages: { route: string; key: string; ids: Set<string> } | undefined
 // 让浏览器先处理交互和绘制，再准备请求或继续处理缓冲中的数据。
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -107,7 +108,7 @@ type ChatState = {
   activeId: string | null
   /** 正在生成回复的会话 */
   streaming: Record<string, AbortController>
-  contextProgress: Record<string, { completed: number; total: number }>
+  contextProgress: Record<string, { completed: number; total: number; manual?: boolean }>
 }
 
 export const useChatStore = create<ChatState>(() => ({
@@ -650,6 +651,59 @@ const removeSessionData = async (id: string): Promise<boolean> => {
 
 export const stopReply = (sessionId: string) => getStreamController(sessionId)?.abort()
 
+/** Local command: compact the selected branch without creating a chat turn. */
+export const compactSession = async (
+  sessionId: string | null
+): Promise<'saved' | 'failed' | 'notNeeded' | 'cancelled'> => {
+  if (sessionId === null) {return 'notNeeded'}
+  const session = getSession(sessionId)
+  const settings = useSettings.getState()
+  if (!session || !settings.apiKey || get().importingHistory || getStreamController(sessionId) ||
+      deletingSessions.has(sessionId)) {return 'cancelled'}
+  const controller = new AbortController()
+  const { signal } = controller
+  const epoch = historyEpoch
+  const connection = getApiConnection()
+  const valid = () => !signal.aborted && !get().importingHistory && historyEpoch === epoch &&
+    getSession(sessionId) === session && !deletingSessions.has(sessionId)
+  set((state) => ({ streaming: { ...state.streaming, [sessionId]: controller } }))
+  try {
+    const pending = pendingSaves.get(sessionId)
+    if ((pending && !(await pending)) || unsavedSessions.has(sessionId)) {return 'failed'}
+    const snapshot = await db.loadMemorySnapshot(sessionId)
+    if (!snapshot || !valid()) {return 'cancelled'}
+    const history = getVisibleMessages(session)
+    const stored = getVisibleMessages(snapshot.session)
+    if (stored.length !== history.length || stored.some((message, i) =>
+      message.id !== history[i].id || memoryText(message) !== memoryText(history[i])
+    )) {return 'failed'}
+    const context = await prepareContextMemory({
+      mode: 'manual',
+      sessionId,
+      history,
+      question: { id: '', role: 'user', content: '', files: [], createdAt: Date.now() },
+      memory: snapshot.session.contextMemory,
+      snapshot,
+      apiKey: settings.apiKey,
+      connection,
+      model: settings.model,
+      signal,
+      onCommit: (update) => db.commitMemoryUpdate(snapshot.state, update, valid),
+      onProgress: (progress) => set((state) => ({
+        contextProgress: { ...state.contextProgress, [sessionId]: { ...progress, manual: true } },
+      })),
+    })
+    return context.compaction ?? 'notNeeded'
+  } catch {
+    return signal.aborted ? 'cancelled' : 'failed'
+  } finally {
+    set((state) => ({
+      streaming: Object.fromEntries(Object.entries(state.streaming).filter(([id]) => id !== sessionId)),
+      contextProgress: Object.fromEntries(Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)),
+    }))
+  }
+}
+
 /**
  * 提交指定会话的最新草稿；null 表示新建会话。
  * 同步接收成功才清空草稿，附件原件由会话接管；保存失败仍通过保存入口重试。
@@ -1097,6 +1151,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   let retriedContextLimit = false
   let attachmentRetries = 0
   const extras = supportsDeepSeekExtras(connection)
+  const imageRoute = JSON.stringify([connection.baseUrl, connection.protocol, model])
+  if (extras && (rejectedHistoryImages?.route !== imageRoute || rejectedHistoryImages.key !== apiKey)) {
+    rejectedHistoryImages = { route: imageRoute, key: apiKey, ids: new Set() }
+  }
+  const knownRejectedImageIds = extras ? rejectedHistoryImages?.ids : undefined
   const latestReminder = request.prefix
     ? request.prefix.latestReminder
     : createLatestReminder(settings)
@@ -1116,12 +1175,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   }
   streamFlushes.set(sessionId, flush)
   let contextPrepared = false
+  let compactContext = false
   let systemMemory = ''
   let requiredSystem = SYSTEM_PROMPT
   let sourceConflict = false
   let sourceState: MemoryState | undefined
   // 接口拒绝的历史图片只在本次生成的请求中省略。
   const excludedHistoryImageIds = new Set<string>()
+  let retriedWithoutHistoryImages = false
   const initialSave = pendingSaves.get(sessionId)
   if (settings.contextMemoryEnabled) {
     contextPreparations.add(sessionId)
@@ -1129,6 +1190,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
 
   try {
     await yieldToBrowser()
+    const contextEnabled = settings.contextMemoryEnabled || await db.hasContextCheckpoint(sessionId).catch((error) => {
+      db.reportStorageError('read context checkpoint')(error)
+      return false
+    })
+    if (contextEnabled) {
+      contextPreparations.add(sessionId)
+    }
     for (;;) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
       let preparing = false
@@ -1138,12 +1206,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         if (controller.signal.aborted) {
           throw controller.signal.reason
         }
-        if (!contextPrepared && settings.contextMemoryEnabled) {
+        if (!contextPrepared && contextEnabled) {
           const validSource = () =>
             !controller.signal.aborted &&
             historyEpoch === sourceEpoch &&
             getSession(sessionId) === sourceSession &&
-            useSettings.getState().contextMemoryEnabled
+            (!settings.contextMemoryEnabled || useSettings.getState().contextMemoryEnabled)
           if (initialSave && !(await initialSave)) {
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
@@ -1198,6 +1266,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
           let expected = snapshot.state
           const context = await prepareContextMemory({
+            mode: settings.contextMemoryEnabled ? 'auto' : 'reuse',
             sessionId,
             snapshot,
             history: request.history,
@@ -1242,6 +1311,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
           }
           request = { ...request, history: context.history }
+          compactContext = context.active
           systemMemory = context.systemMemory
           if (context.requiredSystemMemory) {
             requiredSystem = [SYSTEM_PROMPT, context.requiredSystemMemory].join('\n\n')
@@ -1263,13 +1333,14 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           throw controller.signal.reason
         }
         const history =
-          excludedHistoryImageIds.size > 0
+          excludedHistoryImageIds.size > 0 || knownRejectedImageIds?.size
             ? prepared.history.map((message) => {
                 if (message.role !== 'user' || message.files.length === 0) {
                   return message
                 }
                 const files = message.files.filter(
-                  (file) => !file.isImage || !file.serverId || !excludedHistoryImageIds.has(file.serverId)
+                  (file) => !file.isImage || !file.serverId ||
+                    (!excludedHistoryImageIds.has(file.serverId) && !knownRejectedImageIds?.has(file.serverId))
                 )
                 return files.length === message.files.length ? message : { ...message, files }
               })
@@ -1291,7 +1362,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           tools: extras ? serverTools(initial.search ?? false) : [],
           ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
-        if (inputBudget !== undefined || settings.contextMemoryEnabled) {
+        if (inputBudget !== undefined || compactContext) {
           body = fitRequestHistory(body, inputBudget ?? CONTEXT_INPUT_BUDGET, requiredSystem)
         }
         submitted = body
@@ -1368,23 +1439,53 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         }
         const messages = submitted?.messages ?? []
-        const unsupportedImage = extras ? getUnsupportedImageError(error) : null
-        if (attachmentRetries < FILE_RETRY_LIMIT && !receivedContent && unsupportedImage?.location) {
+        const unsupportedImage = submitted ? getUnsupportedImageError(error) : null
+        let sentImage = false
+        if (unsupportedImage) {
           // 以实际发送的消息为准，提醒和续写前缀也可能占用索引。
-          const { messageIndex, blockIndex } = unsupportedImage.location
-          const message = messages[messageIndex]
-          if (message?.role === 'user' && Array.isArray(message.content)) {
-            const block = message.content[blockIndex]
-            // 请求在本轮提问之后最多附带一条用于续写的 assistant。
-            const hasPrefix = messages[messages.length - 1]?.role === 'assistant'
-            const currentQuestionIndex = messages.length - (hasPrefix ? 2 : 1)
-            if (
-              block?.type === 'image' &&
-              messageIndex < currentQuestionIndex &&
-              !excludedHistoryImageIds.has(block.source.file_id)
-            ) {
-              excludedHistoryImageIds.add(block.source.file_id)
+          const currentQuestionIndex = messages.length - (messages[messages.length - 1]?.role === 'assistant' ? 2 : 1)
+          const previousImages = new Set<string>()
+          let currentImage = false
+          for (const [index, message] of messages.entries()) {
+            if (message.role !== 'user' || typeof message.content === 'string') {
+              continue
+            }
+            for (const block of message.content) {
+              if (block.type === 'image') {
+                if (index === currentQuestionIndex) {
+                  currentImage = true
+                } else {
+                  previousImages.add(block.source.file_id)
+                }
+              }
+            }
+          }
+          sentImage = currentImage || previousImages.size > 0
+          if (extras && !receivedContent && previousImages.size > 0) {
+            const location = unsupportedImage.location
+            const message = location && messages[location.messageIndex]
+            const block = message && message.role === 'user' && Array.isArray(message.content)
+              ? message.content[location.blockIndex]
+              : undefined
+            const rejectedHistoricalImage = location && location.messageIndex < currentQuestionIndex && block?.type === 'image'
+              ? block.source.file_id
+              : undefined
+            if (rejectedHistoricalImage && attachmentRetries < FILE_RETRY_LIMIT) {
+              excludedHistoryImageIds.add(rejectedHistoricalImage)
+              knownRejectedImageIds?.add(rejectedHistoricalImage)
               attachmentRetries += 1
+              continue
+            }
+            // 无位置的拒绝不能证明是哪张历史图片坏了；只为本次纯文字提问省略它们一次。
+            if (
+              !currentImage && !retriedWithoutHistoryImages &&
+              (!location || rejectedHistoricalImage)
+            ) {
+              if (rejectedHistoricalImage) {
+                knownRejectedImageIds?.add(rejectedHistoricalImage)
+              }
+              previousImages.forEach((id) => excludedHistoryImageIds.add(id))
+              retriedWithoutHistoryImages = true
               continue
             }
           }
@@ -1414,7 +1515,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             localMessage: lengthError
               ? { key: 'replyContextLimit' }
               : unsupportedImage
-                ? { key: 'replyUnsupportedImage' }
+                ? { key: sentImage ? 'replyUnsupportedImage' : 'replyImageErrorWithoutAttachment' }
                 : error.localMessage,
           })
         } else {

@@ -5,6 +5,7 @@ import { useUploads } from '../../services/attachments.js'
 import { loadFile } from '../../services/chat/db.js'
 import type { FileAttachment } from '../../services/chat/types.js'
 import { IconPhotoErrorFill20, IconRefreshOutline16 } from '../base/icons.js'
+import { Modal } from '../base/Modal.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { FileCard } from '../files/FileCard.js'
 import styles from './MessageFile.module.css'
@@ -15,12 +16,18 @@ const useFileUrl = (id: string) => {
   useEffect(() => {
     let objectUrl: string | null = null
     let cancelled = false
-    loadFile(id).then((blob) => {
-      if (!cancelled) {
-        objectUrl = blob ? URL.createObjectURL(blob) : null
-        setFileUrl({ id, url: objectUrl })
-      }
-    })
+    loadFile(id)
+      .then((blob) => {
+        if (!cancelled) {
+          objectUrl = blob ? URL.createObjectURL(blob) : null
+          setFileUrl({ id, url: objectUrl })
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFileUrl({ id, url: null })
+        }
+      })
     return () => {
       cancelled = true
       if (objectUrl) {
@@ -58,6 +65,7 @@ export const MessageFile = ({
   const t = useTranslate()
   const url = useFileUrl(file.id)
   const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
   const upload = useUploadState(file)
   const uploading = upload?.status === 'uploading'
   const failed = upload?.status === 'error'
@@ -66,15 +74,14 @@ export const MessageFile = ({
 
   const retry = retryable ? onRetry : null
 
-  if (file.isImage && url !== null) {
-    const preview = url ? (
-      failedUrl === url ? (
-        <span className={styles.failedIcon} role="img" aria-label={file.name}>
-          <IconPhotoErrorFill20 />
-        </span>
-      ) : (
-        <img src={url} alt={file.name} onError={() => setFailedUrl(url)} />
-      )
+  if (file.isImage) {
+    const canDisplay = url && failedUrl !== url
+    const preview = canDisplay ? (
+      <img src={url} alt={file.name} onError={() => setFailedUrl(url)} />
+    ) : url !== undefined ? (
+      <span className={styles.failedIcon} role="img" aria-label={file.name}>
+        <IconPhotoErrorFill20 />
+      </span>
     ) : null
 
     // 上传中：本地原件已在 IndexedDB，先垫在蒙层下显示，避免只有一块灰色占位
@@ -134,17 +141,33 @@ export const MessageFile = ({
       )
     }
 
-    // 正常态：链接到原件
-    return url ? (
-      <a
-        className={clsx(styles.image, styles.imageThumb)}
-        href={url}
-        target="_blank"
-        rel="noreferrer"
-        title={file.name}
-      >
-        {preview}
-      </a>
+    return url !== undefined ? (
+      <>
+        <button
+          type="button"
+          className={clsx(styles.image, styles.imageThumb)}
+          aria-label={file.name}
+          title={file.name}
+          onClick={() => setPreviewOpen(true)}
+        >
+          {preview}
+        </button>
+        {previewOpen ? (
+          <Modal
+            title={<span className={styles.previewTitle}>{file.name}</span>}
+            closable
+            className={styles.previewDialog}
+            mainClassName={styles.previewBody}
+            onClose={() => setPreviewOpen(false)}
+          >
+            {canDisplay ? (
+              <img src={url} alt={file.name} onError={() => setFailedUrl(url)} />
+            ) : (
+              <p role="status">{t('imagePreviewUnavailable')}</p>
+            )}
+          </Modal>
+        ) : null}
+      </>
     ) : (
       // 原件还没加载出来（极短暂）
       <div className={styles.image} />

@@ -22,7 +22,8 @@ const mocks = new Map([
   ['components/search/searchPanelState.ts', 'export const closeSearchPanel=()=>{};'],
   ['components/messages/AssistantMessage.tsx', 'export const AssistantMessage=()=>null;'],
   ['components/messages/UserMessage.tsx', 'export const UserMessage=()=>null;'],
-  ['components/base/icons.tsx', 'export const IconCheckOutline16=()=>null; export const IconCopyOutline16=()=>null;'],
+  ['components/base/IconButton.tsx', 'export const IconButton=()=>null;'],
+  ['components/base/icons.tsx', 'export const IconCheckOutline16=()=>null; export const IconCopyOutline16=()=>null; export const IconChevronDownOutline14=()=>null;'],
   ['components/base/toastState.ts', 'export const showToast=()=>{};'],
   ['utils/clipboard.ts', 'export const copyText=async()=>true;'],
   ['components/markdown/MermaidDiagram.tsx', 'export const MermaidDiagram=()=>null;'],
@@ -259,11 +260,13 @@ const attach = (tree, content = {}) => {
   refs[1].current = content
 }
 let tree = instance.render({ session, streaming: true, footer: null })
+const jumpButton = tree => find(tree, node => node.props?.tooltip === 'jumpToLatest')
 attach(tree)
 instance.effects()
 assert.equal(pendingFrames.size, 1)
 frame()
 assert.equal(top, 600)
+assert.equal(jumpButton(instance.render({ session, streaming: true, footer: null })), null)
 reads = 0; writes = 0
 height = 1400
 for (let index = 0; index < 20; index += 1) observers[0].callback()
@@ -282,8 +285,11 @@ frame()
 assert.equal(top, 800)
 observers[0].callback()
 assert.equal(pendingFrames.size, 0)
-top = 1100
-listeners.get('scroll')()
+tree = instance.render({ session, streaming: true, footer: null })
+jumpButton(tree).props.onClick()
+frame()
+assert.equal(top, 1100)
+assert.equal(jumpButton(instance.render({ session, streaming: true, footer: null })), null)
 client = 300
 observers[0].callback()
 frame()
@@ -311,7 +317,7 @@ attach(tree); instance.effects()
 assert.equal(pendingFrames.size, 1)
 instance.cleanup()
 assert.equal(pendingFrames.size, 0)
-checks.push('Actual MessageList coalesces 20 resize requests into one frame/read-write pass, respects upward reading, follows viewport resizing, preserves branch anchor, ignores branch selection while streaming, resumes on a new message and cancels work on unmount')
+checks.push('Actual MessageList coalesces 20 resize requests into one frame/read-write pass, lets the user pause and resume following while streaming, follows viewport resizing, preserves branch anchor, ignores branch selection while streaming, resumes on a new message and cancels work on unmount')
 
 // A long conversation should not mount every historical Markdown component on open.
 const longSession = { id: 'long-fixture', rootMessageId: 'long-0', messages: Array.from({ length: 240 }, (_, index) => ({
@@ -370,6 +376,14 @@ assert.deepEqual(globalThis.__historyTarget, { sessionId: null, messageId: null 
 assert.deepEqual(mountLong(), shownIds)
 assert.deepEqual(find(longTree, node => node.props?.message?.id === 'long-2').props.versions,
   { ids: ['long-2', 'long-2-alt'], index: 0 })
+jumpButton(longTree).props.onClick()
+assert.equal(mountLong().at(-1), 'long-239')
+frame()
+mountLong()
+assert.equal(jumpButton(longTree), null)
+globalThis.__historyTarget = { sessionId: longSession.id, messageId: 'long-2' }
+mountLong()
+mountLong()
 const laterSession = { ...longSession, messages: [...longSession.messages] }
 laterSession.messages[239] = { ...laterSession.messages[239], selectedChildId: 'long-240' }
 laterSession.messages.push({ ...laterSession.messages[239], id: 'long-240', parentId: 'long-239', selectedChildId: undefined })
@@ -377,7 +391,7 @@ mountLong({ ...longProps, session: laterSession })
 assert.equal(mountLong({ ...longProps, session: laterSession }).at(-1), 'long-240')
 longInstance.cleanup()
 delete globalThis.__historyTarget
-checks.push('Actual MessageList bounds the DOM on a 240-message chat, pages in both directions, centers an early search match, preserves sibling versions and returns to the live tail on new input')
+checks.push('Actual MessageList bounds the DOM on a 240-message chat, pages in both directions, centers an early search match, preserves sibling versions and returns to the live tail in one tap or on new input')
 
 const { useThrottleMarkdownRender } = await import(new URL('components/markdown/useThrottleMarkdownRender.ts', src))
 const { useThrottleMarkdownRender: baselineThrottle } = await import(baselineThrottleUrl)

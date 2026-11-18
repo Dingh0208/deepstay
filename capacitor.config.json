@@ -5,6 +5,7 @@
   "backgroundColor": "#ffffff",
   "android": {
     "allowMixedContent": false,
+    "loggingBehavior": "none",
     "adjustMarginsForEdgeToEdge": "auto"
   }
 }

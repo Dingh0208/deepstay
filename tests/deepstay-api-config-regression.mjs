@@ -53,12 +53,16 @@ for (const [base, path, expected] of [
   ['https://gateway.example.test', 'v1/models', 'https://gateway.example.test/v1/models'],
   ['https://gateway.example.test/v1', 'v1/models', 'https://gateway.example.test/v1/models'],
   ['https://gateway.example.test/proxy/v1/', 'v1/chat/completions', 'https://gateway.example.test/proxy/v1/chat/completions'],
+  ['https://gateway.example.test/proxy/v1/chat/completions///', 'v1/models', 'https://gateway.example.test/proxy/v1/models'],
+  ['https://gateway.example.test/proxy/v1/models', 'v1/chat/completions', 'https://gateway.example.test/proxy/v1/chat/completions'],
+  ['https://gateway.example.test/proxy/models', 'v1/models', 'https://gateway.example.test/proxy/models/v1/models'],
   ['https://api.deepseek.com', 'anthropic/v1/messages', 'https://api.deepseek.com/anthropic/v1/messages'],
   ['https://api.deepseek.com/v1', 'anthropic/v1/messages', 'https://api.deepseek.com/anthropic/v1/messages'],
   ['https://gateway.example.test/proxy/anthropic/v1', 'anthropic/v1/messages', 'https://gateway.example.test/proxy/anthropic/v1/messages'],
+  ['https://gateway.example.test/proxy/anthropic/v1/messages', 'anthropic/v1/messages', 'https://gateway.example.test/proxy/anthropic/v1/messages'],
 ]) assert.equal(apiEndpoint(base, path), expected)
 assert.deepEqual(getApiConnection(), { baseUrl: configured.apiBaseUrl, protocol: 'openai' })
-checks.push('Root and /v1 endpoints join once, reverse-proxy prefixes remain intact, DeepSeek Anthropic paths remain compatible and malformed/credential-bearing base URLs are rejected')
+checks.push('Root and /v1 endpoints join once, copied request URLs are accepted, reverse-proxy prefixes remain intact and credential-bearing base URLs are rejected')
 
 // The implementation promises old Android WebView support; run all network and
 // conversion cases without these newer built-ins instead of adding a polyfill.
@@ -81,8 +85,23 @@ assert.deepEqual(await fetchModels(configured.apiKey, configured.apiBaseUrl), co
 await verifyApiKey(configured.apiKey)
 responder = () => Response.json({ error: { message: 'Invalid credentials' } }, { status: 401 })
 await assert.rejects(fetchModels('invalid-fixture-key', configured.apiBaseUrl), error => error instanceof ApiError && error.kind === 'http' && error.status === 401)
-responder = () => Response.json({ unexpected: [] })
-await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl))
+for (const response of [new Response('Not found', { status: 404 }), new Response('Not supported', { status: 405 })]) {
+  responder = () => response
+  await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl), error =>
+    error instanceof ApiError && error.status === response.status && error.localMessage?.key === 'apiModelsUnsupported')
+}
+for (const response of [new Response('<html>wrong route</html>'), Response.json({ unexpected: [] }), Response.json({ data: [{ id: false }] })]) {
+  responder = () => response
+  await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl), error =>
+    error instanceof ApiError && error.kind === 'protocol' && error.localMessage?.key === 'apiModelsInvalid')
+}
+const { useDiagnosticLog, diagnosticText } = await import(new URL('services/diagnostics/log.ts', sourceRoot))
+responder = () => { throw new TypeError('raw failure containing https://gateway.example.test/proxy and fixture-private-key') }
+await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl), error =>
+  error instanceof ApiError && error.kind === 'network' && error.localMessage?.key === 'apiNetworkUnavailable')
+assert.equal(diagnosticText().includes('fixture-private-key'), false)
+assert.equal(diagnosticText().includes('gateway.example.test'), false)
+assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'network')
 const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout
 const timers = new Map()
 globalThis.setTimeout = (callback, delay) => { const token = {}; timers.set(token, { callback, delay }); return token }
@@ -96,18 +115,21 @@ try {
   const timeout = [...timers.values()].find(timer => timer.delay === 10_000)
   assert.ok(timeout, 'Models request must have a bounded timeout')
   timeout.callback()
-  await assert.rejects(timed)
+  await assert.rejects(timed, error => error instanceof ApiError && error.localMessage?.key === 'apiModelsTimeout')
+  assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'timeout')
   assert.equal(timers.size, 0)
+  const entriesBeforeCancellation = useDiagnosticLog.getState().entries.length
   const caller = new AbortController()
   const pending = fetchModels(configured.apiKey, configured.apiBaseUrl, caller.signal)
   caller.abort()
-  await assert.rejects(pending)
+  await assert.rejects(pending, error => error.name === 'AbortError')
+  assert.equal(useDiagnosticLog.getState().entries.length, entriesBeforeCancellation)
   assert.equal(timers.size, 0)
 } finally {
   globalThis.setTimeout = realSetTimeout
   globalThis.clearTimeout = realClearTimeout
 }
-checks.push('Model discovery and connection validation use the chosen URL and Bearer key only, omit ambient credentials, deduplicate model IDs and handle authorization, invalid JSON shape, caller abort and a ten-second timeout')
+checks.push('Model discovery distinguishes missing endpoints, invalid replies, offline/transport failures, caller cancellation and timeout; diagnostic events omit relay addresses, keys and raw exceptions')
 
 const encoder = new TextEncoder()
 const asSse = frames => frames.map(frame => typeof frame === 'string' ? `data: ${frame}\n\n` : `data: ${JSON.stringify(frame)}\n\n`).join('')
@@ -135,6 +157,7 @@ const body = {
 }
 const collect = async generator => { const output = []; for await (const item of generator) output.push(item); return output }
 const { applyEvent, getReplyText } = await import(new URL('services/chat/reply.ts', sourceRoot))
+const { describeReply } = await import(new URL('services/chat/describe.ts', sourceRoot))
 const renderEvents = events => {
   const indexes = new Map()
   let reply = { id: 'fixture-answer', role: 'assistant', model: configured.model, blocks: [], status: 'loading', createdAt: 1 }
@@ -151,6 +174,7 @@ responder = (url, init) => {
   requestBody = JSON.parse(init.body)
   assert.equal(requestBody.model, 'chosen-reasoner')
   assert.equal(requestBody.stream, true)
+  assert.equal('stream_options' in requestBody, false)
   for (const key of ['thinking', 'tools', 'safety_check', 'title']) assert.equal(key in requestBody, false, key)
   return streamedResponse([
     { id: 'chat-test', model: configured.model, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: '先思考' }, finish_reason: null }] },
@@ -282,6 +306,26 @@ responder = () => new Response(namedFrame({ type: 'error', error: { message: 'Sp
 await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, deepseek)), error =>
   error instanceof ApiError && error.kind === 'http' && error.status === 400 && error.message === 'Specific HTTP stream failure')
 checks.push('Valid responses mislabeled by the provider stream incrementally on DeepSeek and OpenAI; nested and HTTP error frames stay out of user notices while specific provider errors remain readable')
+
+let brokenInput
+responder = () => new Response(new ReadableStream({ start(controller) { brokenInput = controller } }), { headers: { 'Content-Type': 'text/event-stream' } })
+const brokenReply = streamMessage(configured.apiKey, body, new AbortController().signal)
+const firstBrokenEvent = brokenReply.next()
+await new Promise(resolve => realSetTimeout(resolve, 0))
+brokenInput.enqueue(encoder.encode(asSse([{ choices: [{ delta: { content: '收到一部分' } }] }])))
+const brokenEvents = [(await firstBrokenEvent).value, (await brokenReply.next()).value, (await brokenReply.next()).value]
+brokenInput.error(new TypeError('raw provider transport error'))
+await assert.rejects(brokenReply.next(), error => {
+  assert.equal(error.kind, 'interrupted')
+  assert.equal(error.localMessage?.key, 'replyInterrupted')
+  const partial = renderEvents(brokenEvents)
+  assert.equal(getReplyText(partial), '收到一部分')
+  assert.equal(describeReply({ ...partial, status: 'error', error }).text, error.message)
+  assert.equal(error.message.includes('raw provider transport error'), false)
+  return true
+})
+assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'stream')
+checks.push('Transport failure during a stream preserves already received text and shows an actionable interruption message without exposing raw exception text')
 
 const { getContextLengthError } = await import(new URL('services/api/errors.ts', sourceRoot))
 const overflow = 'user input too long, 70668 tokens exceeds max 32768 tokens (request_id: fixture)'

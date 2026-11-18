@@ -4,6 +4,11 @@ declare const styles: {
   readonly "navigation": string;
   readonly "navItem": string;
   readonly "navItemActive": string;
+  readonly "navIcon": string;
+  readonly "diagnosticActions": string;
+  readonly "diagnosticList": string;
+  readonly "diagnosticEntry": string;
+  readonly "diagnosticTime": string;
   readonly "content": string;
   readonly "cell": string;
   readonly "row": string;

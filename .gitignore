@@ -10,6 +10,8 @@ build/
 !.env.example
 tmp/
 release/
+/docs/project-history/
+/test-data/private/
 *.jks
 *.keystore
 signing.properties

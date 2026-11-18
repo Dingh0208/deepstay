@@ -27,6 +27,7 @@ import { CollapsedSider } from '../components/sider/CollapsedSider.js'
 import { closeMobileSider, useMobileSiderSwipe } from '../components/sider/mobileSiderState.js'
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import { hasOwn } from '../utils/object.js'
+import { useChatTypography } from './useChatTypography.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -56,6 +57,7 @@ export const App = () => {
   const activeId = useChatStore((state) => state.activeId)
 
   usePreventPageScroll(isMobile)
+  useChatTypography()
 
   useEffect(() => {
     document.documentElement.lang = locale

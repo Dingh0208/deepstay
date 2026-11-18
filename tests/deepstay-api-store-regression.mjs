@@ -197,6 +197,7 @@ const image = id => ({ id, serverId: `file-api-${id}`, name: `${id}.png`, size: 
 const badImage = image('unsupported')
 const goodImage = image('supported')
 const badOnly = image('unsupported-only')
+const unclassifiedImage = image('unsupported-unclassified')
 const openImageHistory = async (id, questions) => {
   const summary = { id, title: id, createdAt: 1, updatedAt: questions.length * 2 }
   const messages = questions.flatMap(({ content, files }, i) => [
@@ -212,7 +213,7 @@ const openImageHistory = async (id, questions) => {
   await store.openHistoryMatch(id, null)
 }
 const imageRequests = []
-const rejected = [badImage.serverId, badOnly.serverId]
+const rejected = [badImage.serverId, badOnly.serverId, unclassifiedImage.serverId]
 let invalidIndex = false
 let errorAfterContent = false
 globalThis.fetch = async (_url, init) => {
@@ -265,11 +266,19 @@ assert.equal(repaired.messages.at(-1).status, 'done')
 assert.equal(repaired.messages.at(-1).blocks[0].text, '新回答')
 checks.push('A text-only send with rejected historical images retries only the offending references and preserves the original files, valid image and question in IndexedDB')
 
+const beforeFollowUp = imageRequests.length
+drafts.setDraftText(imageHistory, '继续刚才的对话')
+assert.equal(store.sendMessage(imageHistory), true)
+await waitIdle()
+assert.equal(imageRequests.length, beforeFollowUp + 1)
+assert.deepEqual(imageRequests.at(-1)[1].content, imageRequests[2][1].content)
+checks.push('Later sends do not resubmit confirmed rejected historical image references on the same connection')
+
 const currentImage = 'image-error-in-current-turn'
 await openImageHistory(currentImage, [{ content: '当前问题', files: [badImage] }])
 store.regenerateReply(currentImage)
 await waitIdle()
-assert.equal(imageRequests.length, 4)
+assert.equal(imageRequests.length, beforeFollowUp + 2)
 const currentRejected = (await db.loadSession(currentImage)).messages.at(-1)
 assert.equal(currentRejected.status, 'error')
 assert.equal(currentRejected.error.localMessage.key, 'replyUnsupportedImage')
@@ -277,11 +286,11 @@ checks.push('An image attached to the current question is never retried without 
 
 invalidIndex = true
 const unknownSource = 'image-error-with-nonimage-index'
-await openImageHistory(unknownSource, [{ content: '这是真实的文字块索引', files: [badImage] }])
+await openImageHistory(unknownSource, [{ content: '这是真实的文字块索引', files: [unclassifiedImage] }])
 drafts.setDraftText(unknownSource, '好')
 assert.equal(store.sendMessage(unknownSource), true)
 await waitIdle()
-assert.equal(imageRequests.length, 5)
+assert.equal(imageRequests.length, beforeFollowUp + 3)
 assert.equal((await db.loadSession(unknownSource)).messages.at(-1).error.localMessage.key, 'replyUnsupportedImage')
 checks.push('A validation path pointing at a text block cannot remove an image from the request')
 
@@ -290,12 +299,75 @@ errorAfterContent = true
 drafts.setDraftText(unknownSource, '继续')
 assert.equal(store.sendMessage(unknownSource), true)
 await waitIdle()
-assert.equal(imageRequests.length, 6)
+assert.equal(imageRequests.length, beforeFollowUp + 4)
 const partial = (await db.loadSession(unknownSource)).messages.at(-1)
 assert.equal(partial.status, 'error')
 assert.equal(partial.blocks[0].text, '已收到的部分')
 assert.equal(partial.error.localMessage.key, 'replyUnsupportedImage')
 checks.push('An image error after the response begins preserves the partial reply and cannot start a new request')
+
+const pureText = 'no-image-request'
+await openImageHistory(pureText, [{ content: '这里整段聊天从未发过图', files: [] }])
+let pureTextRequests = 0
+globalThis.fetch = async (_url, init) => {
+  pureTextRequests += 1
+  const body = JSON.parse(init.body)
+  assert.ok(body.messages.every(message => typeof message.content === 'string' ||
+    message.content.every(block => block.type !== 'image')))
+  return Response.json({ error: { message: 'messages[0].content[0]: You have uploaded an invalid image.' } }, { status: 422 })
+}
+drafts.setDraftText(pureText, '好')
+assert.equal(store.sendMessage(pureText), true)
+await waitIdle()
+assert.equal(pureTextRequests, 1)
+const noImageError = (await db.loadSession(pureText)).messages.at(-1).error
+assert.equal(noImageError.localMessage.key, 'replyImageErrorWithoutAttachment')
+checks.push('A provider image rejection on an actual text-only request does not accuse users of attaching an image or secretly repeat the same request')
+
+const { exportArchive } = await import(new URL('services/chat/history/exportArchive.ts', sourceRoot))
+const { importHistory } = await import(new URL('services/chat/backup.ts', sourceRoot))
+const importedImageSource = 'imported-image-source'
+const importedImage = image('bad-import')
+await openImageHistory(importedImageSource, [{ content: '归档里有文字还有历史图片', files: [importedImage] }])
+await db.saveFiles([{ id: importedImage.id, blob: new Blob([
+  Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+], { type: 'image/png' }) }])
+const archive = await exportArchive([await db.loadSession(importedImageSource)])
+assert.equal(await importHistory(new File([archive], 'image-history.zip', { type: 'application/zip' })), 1)
+const importedId = store.useChatStore.getState().activeId
+assert.notEqual(importedId, importedImageSource)
+const originalImportedAttachment = (await db.loadSession(importedId)).messages[0].files[0]
+assert.equal(originalImportedAttachment.serverId, null)
+let uploads = 0
+const importedRequests = []
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith('/files')) {
+    uploads += 1
+    assert.equal(init.body.get('file').type, 'image/png')
+    return Response.json({ id: 'file-api-imported-history' })
+  }
+  const body = JSON.parse(init.body)
+  importedRequests.push(body)
+  const images = body.messages.flatMap(message => typeof message.content === 'string' ? [] :
+    message.content.filter(block => block.type === 'image'))
+  if (images.length) {
+    assert.deepEqual(images.map(block => block.source.file_id), ['file-api-imported-history'])
+    return Response.json({ error: { message: 'You have uploaded an unsupported image.' } }, { status: 400 })
+  }
+  return officialReply(body)
+}
+drafts.setDraftText(importedId, '继续导入的聊天')
+assert.equal(store.sendMessage(importedId), true)
+await waitIdle()
+assert.equal(uploads, 1)
+assert.equal(importedRequests.length, 2)
+assert.ok(importedRequests[1].messages.some(message => message.content === '归档里有文字还有历史图片'))
+assert.equal(importedRequests[1].messages.at(-1).content, '继续导入的聊天')
+const afterImportReply = await db.loadSession(importedId)
+assert.equal(afterImportReply.messages.at(-1).status, 'done')
+assert.equal(afterImportReply.messages[0].files[0].id, originalImportedAttachment.id)
+assert.equal((await db.loadFile(originalImportedAttachment.id)).size, 8)
+checks.push('A real import with an unindexed historical image rejection can continue without compression, while retaining its original image and text')
 
 // A real request can be rejected even when the local tokenizer estimate differs from the provider.
 settings.setApiConnection({ ...changedB, model: 'length-limit-fixture' })

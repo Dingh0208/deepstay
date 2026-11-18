@@ -86,7 +86,7 @@ try {
   const progress = []
   const snapshot = emptySnapshot()
   const first = await prepareContextMemory(optionsFor({ snapshot, memory: { fixed: '昵称：小鹿。' }, onProgress: value => progress.push(value) }))
-  assert.ok(requests.length > 0 && requests.length <= 2)
+  assert.equal(requests.length, 1)
   assert.equal(snapshot.segments.length, requests.length)
   assert.ok(first.history.length > 0 && first.history.length % 2 === 0)
   assert.deepEqual(first.history, history.slice(-first.history.length))
@@ -97,7 +97,7 @@ try {
     assert.equal(url, 'https://qa-memory.example.test/v1/chat/completions')
     assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer memory-fixture-key')
     assert.equal(body.model, 'qa-model')
-    assert.equal(body.max_tokens, 4096)
+    assert.equal(body.max_tokens, 2048)
     assert.ok(!('tools' in body))
     assert.ok(!('thinking' in body))
     assert.ok(body.messages[0].content.includes('角色扮演'))
@@ -105,13 +105,25 @@ try {
   }
   assertWithinBudget(requestOf(first))
   assert.ok(estimateRequestTokens(requestOf(first)) < estimateRequestTokens({ system: '', messages: toRequestMessages(history, question), tools: [] }) / 2)
-  checks.push('Long chats use at most two bounded structured extractions with the captured URL/key/model, commit each segment, preserve complete recent rounds and original logs, and fit the final request budget')
+  assert.ok(first.systemMemory.includes(history[0].content), 'Keep the original opening words alongside memory')
+  checks.push('Long chats use one bounded extraction with the selected URL/key/model, preserve the original opening and complete recent rounds, and fit the final request budget')
+
+  const burstSnapshot = structuredClone(snapshot)
+  const burstHistory = [...history]
+  const beforeBurst = requests.length
+  for (let index = 0; index < 4; index++) {
+    burstHistory.push(...round(750 + index, '补充一段原话。'.repeat(300), '继续说，我听着。'.repeat(300)))
+    const burst = await prepareContextMemory(optionsFor({ history: burstHistory, snapshot: burstSnapshot }))
+    assertWithinBudget(requestOf(burst))
+    assert.equal(requests.length, beforeBurst + Number(index === 3), 'Repeated compression requires four newly completed turns as well as pressure')
+  }
+  checks.push('A burst of oversized turns keeps reply requests bounded and makes no further extraction until four new turns are complete')
 
   const savedSegmentCount = snapshot.segments.length
   const afterInitialExtraction = requests.length
   const agingHistory = [...history]
   const reusedProgress = []
-  for (let index = 0; index < 3; index++) {
+  for (let index = 0; index < 16; index++) {
     agingHistory.push(...round(800 + index, '好的。', '我在。'))
     const reused = await prepareContextMemory(optionsFor({ history: agingHistory, snapshot, onProgress: value => reusedProgress.push(value) }))
     assert.ok(reused.systemMemory.includes('历史分段脉络'))
@@ -126,7 +138,7 @@ try {
   agingHistory.push(...moreRounds(810))
   await prepareContextMemory(optionsFor({ snapshot, history: agingHistory }))
   assert.ok(requests.length > beforeAppend)
-  assert.ok(requests.length - beforeAppend <= 2)
+  assert.equal(requests.length - beforeAppend, 1)
   const appended = snapshot.segments.flatMap(segment => segment.sources).filter(source => !priorSources.has(`${source.messageId}:${source.start}:${source.end}`))
   assert.ok(appended.length > 0)
   const edited = structuredClone(agingHistory)
@@ -171,13 +183,21 @@ try {
   const coreSection = continuity.systemMemory.split('[当前路径核心记忆]\n')[1].split('\n\n')[0]
   assert.ok(coreSection.includes('当前称呼为小禾'))
   assert.ok(!coreSection.includes('用户喜欢小鹿这一称呼'))
+  const afterContinuity = requests.length
+  const nextContinuity = await prepareContextMemory(optionsFor({
+    history: [...continuityHistory, ...round(218, '好。', '我在。')], snapshot: continuitySnapshot,
+  }))
+  assert.equal(requests.length, afterContinuity)
+  assert.ok(nextContinuity.systemMemory.includes('[当前路径核心记忆]'))
+  assert.ok(nextContinuity.systemMemory.includes('当前称呼为小禾'))
+  assert.ok(!nextContinuity.systemMemory.includes('部分历史尚未整理'))
   const branchBHistory = structuredClone(continuityHistory)
   branchBHistory[16] = round(208)[0]
   const branchB = await prepareContextMemory(optionsFor({ history: branchBHistory, snapshot: structuredClone(continuitySnapshot) }))
   const branchBCore = branchB.systemMemory.split('[当前路径核心记忆]\n')[1].split('\n\n')[0]
   assert.ok(branchBCore.includes('用户喜欢小鹿这一称呼'))
   assert.ok(!branchBCore.includes('当前称呼为小禾'))
-  checks.push('Evidence-backed user preferences, an assistant roleplay promise and a user correction survive extraction into core memory; the correction applies only on the branch whose original text supports it')
+  checks.push('Evidence-backed preferences, promises and branch-specific corrections become core memory and keep their status when a fully covered checkpoint is reused')
   respond = () => extraction()
 
   const ledgerHistory = Array.from({ length: 12 }, (_, index) => round(600 + index)).flat()
@@ -219,14 +239,14 @@ try {
   const hugeOriginal = JSON.stringify(hugeHistory)
   const beforeHuge = requests.length
   const huge = await prepareContextMemory(optionsFor({ history: hugeHistory, question: { ...question, content: '纸鸢山的散步约在什么时候？' } }))
-  assert.equal(requests.length - beforeHuge, 2)
+  assert.equal(requests.length - beforeHuge, 1)
   assert.ok(huge.systemMemory.includes('纸鸢山约好周六散步'))
   assert.ok(huge.systemMemory.includes('部分历史尚未整理'))
   assert.ok(!huge.systemMemory.includes('[当前路径核心记忆]'))
   assert.equal(JSON.stringify(hugeHistory), hugeOriginal)
   assert.ok(requests.slice(beforeHuge).every(request => request.body.messages[1].content.length < 15000))
   assertWithinBudget({ system: huge.systemMemory, messages: toRequestMessages(huge.history, question), tools: [] })
-  checks.push('An imported message exceeding sixteen batches can continue after only two extractions; middle-history evidence is recovered directly from original text and incomplete coverage cannot claim a current core state')
+  checks.push('An imported message exceeding sixteen batches can continue after one extraction; middle-history evidence is recovered directly from original text and incomplete coverage cannot claim a current core state')
 
   // This exercises bounded model input for an already-loaded 80 MiB session, not paged storage.
   const hugeMiddle = '我们在星灯桥约定十一月十九日见面。'
@@ -236,11 +256,11 @@ try {
   const beforeEightyMiB = requests.length
   const large = await prepareContextMemory(optionsFor({ history: largeHistory, question: { ...question, content: '星灯桥约定的见面日期是哪天？' } }))
   assert.equal(largeHistory[0].content.length, eightyMiB)
-  assert.equal(requests.length - beforeEightyMiB, 2)
+  assert.equal(requests.length - beforeEightyMiB, 1)
   assert.ok(large.systemMemory.includes(hugeMiddle))
   assert.ok(requests.slice(beforeEightyMiB).every(request => estimateContextTokens(request.body.messages[1].content) < 8000))
   assertWithinBudget({ system: large.systemMemory, messages: toRequestMessages(large.history, question), tools: [] })
-  checks.push('An already-loaded 80 MiB single-message session resumes with two small extraction requests and recovers a middle-file date; this does not validate mobile heap capacity or implement paged session storage')
+  checks.push('An already-loaded 80 MiB single-message session resumes with one bounded extraction and recovers a middle-file date; this does not validate mobile heap capacity or implement paged session storage')
 
   // Derived data from another session or from an unselected branch must never enter a prompt.
   const isolatedSnapshot = structuredClone(snapshot)
@@ -284,11 +304,18 @@ try {
   }
   const incomplete = optionsFor({ sessionId: 'partially-extracted', history: hugeHistory })
   const partialBefore = requests.length
-  respond = () => requests.length === partialBefore + 1 ? extraction('第一段已整理。') : stream('invalid')
+  const verifiedEvent = '用户在会话开场提到首段。'
+  respond = () => extraction('抽样片段已整理。', [{
+    kind: 'event', actor: 'user', realm: 'self_report', key: '开场', text: verifiedEvent,
+    sources: [{ messageId: 'u-100', quote: '首段。' }], supersedes: [],
+  }])
   const partial = await prepareContextMemory(incomplete)
-  assert.ok(partial.systemMemory.includes('第一段已整理'))
+  assert.ok(partial.systemMemory.includes('抽样片段已整理'))
   assert.ok(partial.systemMemory.includes('部分历史尚未整理'))
-  assert.equal(requests.length, partialBefore + 2)
+  assert.ok(partial.systemMemory.includes('[当前路径已核实的历史记录]'))
+  assert.ok(partial.systemMemory.includes(verifiedEvent))
+  assert.ok(!partial.systemMemory.includes('[当前路径核心记忆]'))
+  assert.equal(requests.length, partialBefore + 1)
   assert.equal(incomplete.snapshot.segments.length, 1)
   respond = () => extraction()
   const clockNow = Date.now
@@ -300,7 +327,7 @@ try {
     Date.now = clockNow
   }
   assert.ok(requests.length > beforeRetry, 'An expired cooldown must allow extraction again')
-  await assert.rejects(prepareContextMemory(optionsFor({ onCommit: async () => false })), fail)
+  await assert.rejects(prepareContextMemory(optionsFor({ sessionId: 'stale-write', onCommit: async () => false })), fail)
   assert.equal(JSON.stringify(history), original)
   assert.equal(JSON.stringify(hugeHistory), hugeOriginal)
   checks.push('Recoverable extraction errors preserve verified segments, use bounded recent turns and source recall, and skip repeat extraction during cooldown. Authentication, quota, network and stale commit failures remain explicit.')
@@ -315,13 +342,15 @@ try {
   assert.equal(requests.length - beforeCancel, 1)
   assert.equal(committedBeforeStop.segments.length, 1)
   const firstStoppedId = committedBeforeStop.segments[0].id
+  const beforeStoppedRetry = requests.length
   await prepareContextMemory(optionsFor({ snapshot: committedBeforeStop }))
+  assert.equal(requests.length, beforeStoppedRetry)
   assert.equal(committedBeforeStop.segments.filter(segment => segment.id === firstStoppedId).length, 1)
   const abort = new AbortController()
   let release
   const fetched = new Promise(resolve => { release = resolve })
   respond = ({ init }) => { release(); return new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })) }
-  const pending = prepareContextMemory(optionsFor({ signal: abort.signal }))
+  const pending = prepareContextMemory(optionsFor({ sessionId: 'stop-during-request', signal: abort.signal }))
   await fetched
   abort.abort()
   await assert.rejects(pending, error => error.name === 'AbortError')
@@ -356,6 +385,8 @@ try {
       history: [],
       systemMemory: '[用户固定记忆]\n' + fixed,
       requiredSystemMemory: '[用户固定记忆]\n' + fixed,
+      active: true,
+      compaction: 'notNeeded',
     })
   }
   assert.equal(requests.length, beforeBudget)
@@ -383,7 +414,7 @@ try {
   const beforeProtectedBudget = requests.length
   const tightQuestion = { ...question, content: '问'.repeat(14750) }
   const tightContext = await prepareContextMemory(optionsFor({ snapshot: protectedSnapshot, question: tightQuestion }))
-  assert.deepEqual(tightContext, { history: [], systemMemory: '', requiredSystemMemory: '' })
+  assert.deepEqual(tightContext, { history: [], systemMemory: '', requiredSystemMemory: '', active: true, compaction: 'notNeeded' })
   assertWithinBudget({ system: tightContext.systemMemory, messages: toRequestMessages(tightContext.history, tightQuestion), tools: [] })
   assert.equal(requests.length, beforeProtectedBudget)
   checks.push('Selected role settings, boundaries and corrections remain in normal requests; when they cannot fit together, optional derived memory yields to the current turn')
@@ -406,6 +437,7 @@ try {
   }
   const continuationPrefix = { ...round(999, '接着讲我们的旅途。', '尚未讲完的正文。')[1], model: 'deepseek-v4-pro', prefix: true, thinking: true, status: 'done', stopReason: 'max_tokens', latestReminder: '原回复的提醒快照', blocks: [{ type: 'thinking', thinking: '原思考', signature: 'continue-signature' }, { type: 'text', text: '尚未讲完的正文。' }] }
   await db.saveSession({ id: 'chat-continue', title: '续写测试', createdAt: 1, updatedAt: 1, messages: [...structuredClone(history), round(999, '接着讲我们的旅途。')[0], continuationPrefix], contextMemory: { fixed: '保持此会话旅途设定。' } })
+  await db.saveSession({ id: 'chat-manual', title: '手动压缩测试', createdAt: 1, updatedAt: 1, messages: structuredClone(history) })
   await store.initChat()
   const wait = async predicate => {
     const deadline = Date.now() + 10000
@@ -414,6 +446,51 @@ try {
       await new Promise(resolve => setTimeout(resolve, 5))
     }
   }
+
+  settings.setContextMemoryEnabled(false)
+  respond = request => isExtraction(request)
+    ? extraction('手动整理的历史。')
+    : stream('我在听，慢慢说。')
+  store.selectSession('chat-manual')
+  await wait(() => store.useChatStore.getState().sessionCache['chat-manual'])
+  const manualId = 'chat-manual'
+  const sendManualFixture = async text => {
+    const start = requests.length
+    drafts.setDraftText(manualId, text)
+    assert.equal(store.sendMessage(manualId), true)
+    await wait(() => !store.useChatStore.getState().streaming[manualId])
+    assert.equal(requests.length - start, 1, 'Manual mode must never make an automatic extraction request')
+    assert.equal(isExtraction(requests[start]), false)
+    assert.equal(requests[start].body.messages.at(-1).content, text)
+    return requests[start].body.messages
+  }
+  const fullMessages = await sendManualFixture('继续聊吧。')
+  assert.ok(fullMessages.some(message => message.content === history[0].content))
+  await wait(async () => (await db.loadSession(manualId)).messages.at(-1).status === 'done')
+  const sourceBeforeCommand = await db.loadSession(manualId)
+  const beforeCommand = requests.length
+  const manualProgress = []
+  const unsubscribe = store.useChatStore.subscribe(state => {
+    if (state.contextProgress[manualId]?.manual) manualProgress.push(state.contextProgress[manualId])
+  })
+  try {
+    assert.equal(await store.compactSession(manualId), 'saved')
+  } finally {
+    unsubscribe()
+  }
+  assert.equal(requests.length - beforeCommand, 1)
+  assert.equal(isExtraction(requests[beforeCommand]), true)
+  assert.ok(manualProgress.some(value => value.completed === 1 && value.total === 1))
+  assert.deepEqual(await db.loadSession(manualId), sourceBeforeCommand, 'Manual compaction must not create or mutate a chat turn')
+  assert.equal((await db.loadMemorySnapshot(manualId)).segments.length, 1)
+  const compressedMessages = await sendManualFixture('嗯。')
+  assert.ok(compressedMessages.length < fullMessages.length)
+  assert.ok(compressedMessages.some(message => message.role === 'system' && message.content.includes('手动整理的历史')))
+  assert.ok(compressedMessages.some(message => message.role === 'assistant' && message.content === '我在听，慢慢说。'))
+  assert.equal(settings.useSettings.getState().contextMemoryEnabled, false)
+  settings.setContextMemoryEnabled(true)
+  checks.push('With auto off the real store sends full history, a manual compaction makes one request and preserves every stored message, then chat reuses its checkpoint without another model call')
+
   const sent = []
   respond = request => {
     if (isExtraction(request)) return extraction('本段日常分享。')

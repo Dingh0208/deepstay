@@ -33,7 +33,10 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       return { text: message || translate('uploadFileStatusFailed') }
     }
     if (kind === 'network') {
-      return { text: translate('commonNetworkErrorToast') }
+      return { text: localMessage && isTranslationKey(localMessage.key) ? message : translate('commonNetworkErrorToast') }
+    }
+    if (kind === 'interrupted') {
+      return { text: message || translate('replyInterrupted') }
     }
     switch (classifyStatus(status)) {
       case 'unauthorized':

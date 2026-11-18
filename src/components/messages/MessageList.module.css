@@ -12,6 +12,24 @@
   display: contents;
 }
 
+.footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 10;
+  flex-shrink: 0;
+  margin-top: auto;
+}
+
+.footer .jumpToLatest {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-button-elevated-fill);
+  box-shadow: 0 2px 6px var(--dsw-alias-border-l2);
+}
+
 @media not all and (min-width: 768px) {
   .container {
     overflow: hidden;
@@ -26,6 +44,11 @@
     overflow-y: auto;
     overscroll-behavior-y: contain;
     scrollbar-color: var(--scroll-color) transparent;
+  }
+
+  .footer {
+    position: relative;
+    margin-top: 0;
   }
 }
 

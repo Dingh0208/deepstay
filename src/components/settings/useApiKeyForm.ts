@@ -91,11 +91,10 @@ export const useApiKeyForm = () => {
 
   const error = failure === null ? null
     : classifyApiError(failure) === 'unauthorized' ? t('apiKeyInvalid')
-      : classifyApiError(failure) === 'network' ? t('commonNetworkErrorToast')
+      : failure instanceof ApiError && failure.localMessage
+        ? t(failure.localMessage.key, failure.localMessage.params)
         : t('apiKeyVerificationFailed', {
-          message: failure instanceof ApiError && failure.localMessage
-            ? t(failure.localMessage.key, failure.localMessage.params)
-            : failure instanceof Error ? failure.message : String(failure),
+          message: failure instanceof Error ? failure.message : String(failure),
         })
   return {
     value, setValue: (next: string) => changeConnection(() => setValue(next)),

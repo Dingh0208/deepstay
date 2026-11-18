@@ -2,6 +2,7 @@ package xyz.infralyx.deepstay;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.net.Uri;
 import android.util.Base64;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.JSObject;
@@ -14,6 +15,31 @@ import java.io.OutputStream;
 
 @CapacitorPlugin(name = "LocalFiles")
 public class LocalFilesPlugin extends Plugin {
+    @PluginMethod
+    public void getFontScale(PluginCall call) {
+        call.resolve(new JSObject().put("scale", getContext().getResources().getConfiguration().fontScale));
+    }
+
+    @PluginMethod
+    public void shareDiagnostics(PluginCall call) {
+        String text = call.getString("text");
+        if (text == null || text.length() > 65536) {
+            call.reject("Invalid diagnostic data");
+            return;
+        }
+        getActivity().runOnUiThread(() -> {
+            try {
+                Intent send = new Intent(Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(Intent.EXTRA_TEXT, text);
+                getActivity().startActivity(Intent.createChooser(send, null));
+                call.resolve();
+            } catch (RuntimeException error) {
+                call.reject("Unable to share diagnostics", error);
+            }
+        });
+    }
+
     @PluginMethod
     public void save(PluginCall call) {
         if (call.getString("data") == null || call.getString("name") == null) {

@@ -23,7 +23,7 @@ globalThis.localStorage = { getItem: key => saved.get(key) ?? null, setItem: (ke
 Object.defineProperty(globalThis, 'navigator', { value: { language: 'zh-CN' }, configurable: true })
 globalThis.__API_ORIGIN__ = 'https://api.deepseek.com'
 const settings = await import(new URL('services/settings.ts', root))
-const { prepareContextMemory, estimateContextTokens, estimateRequestTokens, assertContextBudget, CONTEXT_INPUT_BUDGET } = await import(new URL('services/chat/contextMemory.ts', root))
+const { prepareContextMemory, estimateContextTokens, estimateRequestTokens, CONTEXT_INPUT_BUDGET } = await import(new URL('services/chat/contextMemory.ts', root))
 const { toRequestMessages } = await import(new URL('services/chat/reply.ts', root))
 const { memoryFingerprint, MEMORY_VERSION } = await import(new URL('services/chat/memoryRecords.ts', root))
 const { ApiError } = await import(new URL('services/api/client.ts', root))
@@ -56,6 +56,7 @@ const optionsFor = (overrides = {}) => {
 }
 const isExtraction = request => (request.body.system ?? request.body.messages[0].content).includes('你只负责整理已有聊天记录')
 const requestOf = context => ({ system: context.systemMemory, messages: toRequestMessages(context.history, question), tools: [] })
+const assertWithinBudget = request => assert.ok(estimateRequestTokens(request) <= CONTEXT_INPUT_BUDGET)
 
 try {
   assert.equal(settings.useSettings.getState().contextMemoryEnabled, false)
@@ -102,37 +103,40 @@ try {
     assert.ok(body.messages[0].content.includes('角色扮演'))
     assert.ok(body.messages[1].content.includes('[本段原文]'))
   }
-  assertContextBudget(requestOf(first))
+  assertWithinBudget(requestOf(first))
   assert.ok(estimateRequestTokens(requestOf(first)) < estimateRequestTokens({ system: '', messages: toRequestMessages(history, question), tools: [] }) / 2)
   checks.push('Long chats use at most two bounded structured extractions with the captured URL/key/model, commit each segment, preserve complete recent rounds and original logs, and fit the final request budget')
 
-  // Catch up over subsequent sends. Once covered, old segments must not incur extraction again.
-  let caughtUp = first
-  let passes = 0
-  while (passes++ < 20) {
-    const before = requests.length
-    caughtUp = await prepareContextMemory(optionsFor({ snapshot, memory: { fixed: '昵称：小鹿。' } }))
-    assert.ok(requests.length - before <= 2)
-    if (requests.length === before) break
+  const savedSegmentCount = snapshot.segments.length
+  const afterInitialExtraction = requests.length
+  const agingHistory = [...history]
+  const reusedProgress = []
+  for (let index = 0; index < 3; index++) {
+    agingHistory.push(...round(800 + index, '好的。', '我在。'))
+    const reused = await prepareContextMemory(optionsFor({ history: agingHistory, snapshot, onProgress: value => reusedProgress.push(value) }))
+    assert.ok(reused.systemMemory.includes('历史分段脉络'))
+    assert.ok(reused.systemMemory.includes('部分历史尚未整理'))
   }
-  assert.ok(passes < 20)
-  const afterCatchup = requests.length
-  await prepareContextMemory(optionsFor({ snapshot }))
-  assert.equal(requests.length, afterCatchup)
+  assert.equal(requests.length, afterInitialExtraction)
+  assert.equal(snapshot.segments.length, savedSegmentCount)
+  assert.deepEqual(reusedProgress, [])
   const priorSources = new Set(snapshot.segments.flatMap(segment => segment.sources.map(source => `${source.messageId}:${source.start}:${source.end}`)))
   const beforeAppend = requests.length
-  await prepareContextMemory(optionsFor({ snapshot, history: [...history, ...round(14), ...round(15)] }))
+  const moreRounds = (first) => Array.from({ length: 6 }, (_, index) => round(first + index)).flat()
+  agingHistory.push(...moreRounds(810))
+  await prepareContextMemory(optionsFor({ snapshot, history: agingHistory }))
+  assert.ok(requests.length > beforeAppend)
   assert.ok(requests.length - beforeAppend <= 2)
   const appended = snapshot.segments.flatMap(segment => segment.sources).filter(source => !priorSources.has(`${source.messageId}:${source.start}:${source.end}`))
   assert.ok(appended.length > 0)
-  assert.ok(appended.every(source => !priorSources.has(`${source.messageId}:${source.start}:${source.end}`)))
-  const edited = structuredClone(history)
+  const edited = structuredClone(agingHistory)
   edited[0].content = '用户明确编辑了昵称。' + edited[0].content
+  edited.push(...moreRounds(820))
   const beforeEdit = requests.length
   await prepareContextMemory(optionsFor({ snapshot, history: edited }))
   assert.ok(requests.length > beforeEdit)
   assert.ok(requests.slice(beforeEdit).some(request => request.body.messages[1].content.includes('用户明确编辑了昵称')))
-  checks.push('Stable source ranges are reused without extra calls after coverage; newly aged turns are processed incrementally and edited source text is re-extracted')
+  checks.push('Successive short turns reuse verified segments without an extraction request or progress status; new aged history triggers bounded extraction and newly invalidated source text is re-extracted')
 
   // Return evidence-backed facts through the actual extraction/parser/prompt chain.
   const continuityHistory = Array.from({ length: 18 }, (_, index) => round(200 + index)).flat()
@@ -143,6 +147,12 @@ try {
   continuityHistory[3].blocks[0].text = promise + continuityHistory[3].blocks[0].text
   continuityHistory[16].content = correction + continuityHistory[16].content
   const continuitySnapshot = emptySnapshot()
+  for (const message of continuityHistory) {
+    if (['u-200', 'a-201', 'u-208'].includes(message.id)) continue
+    const text = message.role === 'user' ? message.content : message.blocks[0].text
+    const source = { messageId: message.id, fingerprint: await memoryFingerprint(message), start: 0, end: text.length }
+    continuitySnapshot.segments.push({ id: `continuity-${message.id}`, sessionId: 'fixture-chat', sources: [source], summary: '以前已整理。', provider: 'openai:https://archive.example.test', model: 'qa-model', createdAt: 1, extractorVersion: MEMORY_VERSION })
+  }
   respond = ({ body }) => {
     const chunk = body.messages[1].content
     const source = chunk.split('[本段原文]\n')[1]
@@ -150,16 +160,10 @@ try {
     const records = []
     if (source.includes(nickname)) records.push({ kind: 'preference', actor: 'user', realm: 'self_report', key: '称呼', text: '用户喜欢小鹿这一称呼，边界是不要叫宝贝。', sources: [{ messageId: 'u-200', quote: nickname }], supersedes: [] })
     if (source.includes(promise)) records.push({ kind: 'promise', actor: 'assistant', realm: 'roleplay', key: '复盘约定', text: '助手承诺周五陪伴复盘，仍未完成。', sources: [{ messageId: 'a-201', quote: promise }], supersedes: [] })
-    if (source.includes(correction)) records.push({ kind: 'correction', actor: 'user', realm: 'self_report', key: '称呼', text: '用户明确更正当前称呼为小禾。', sources: [{ messageId: 'u-208', quote: correction }], supersedes: known.filter(record => record.key === '称呼' && record.kind === 'preference').map(record => record.id) })
+    if (source.includes(correction)) records.push({ kind: 'correction', actor: 'user', realm: 'self_report', key: '称呼', text: '用户明确更正当前称呼为小禾。', sources: [{ messageId: 'u-208', quote: correction }], supersedes: source.includes(nickname) ? ['@0'] : known.filter(record => record.key === '称呼' && record.kind === 'preference').map(record => record.id) })
     return extraction('本段记录称呼、互动边界与未完成约定，以原文为准。', records)
   }
-  let continuity
-  for (let pass = 0; pass < 20; pass++) {
-    const before = requests.length
-    continuity = await prepareContextMemory(optionsFor({ history: continuityHistory, snapshot: continuitySnapshot }))
-    if (requests.length === before) break
-    assert.ok(pass < 19)
-  }
+  const continuity = await prepareContextMemory(optionsFor({ history: continuityHistory, snapshot: continuitySnapshot }))
   assert.ok(continuitySnapshot.records.some(record => record.kind === 'preference' && record.actor === 'user'))
   assert.ok(continuitySnapshot.records.some(record => record.kind === 'promise' && record.actor === 'assistant' && record.realm === 'roleplay'))
   const correctionRecord = continuitySnapshot.records.find(record => record.kind === 'correction')
@@ -187,7 +191,7 @@ try {
     const content = message.role === 'user' ? message.content : message.blocks[0].text
     const source = { messageId: message.id, fingerprint: await memoryFingerprint(message), start: 0, end: content.length }
     ledgerSources.set(message.id, source)
-    if (message.id !== 'u-601') ledgerSnapshot.segments.push({ id: `covered-${message.id}`, sessionId: 'fixture-chat', sources: [source], summary: '已整理片段。', provider: 'openai:https://qa-memory.example.test', model: 'qa-model', createdAt: 1, extractorVersion: MEMORY_VERSION })
+    if (message.id !== 'u-601') ledgerSnapshot.segments.push({ id: `covered-${message.id}`, sessionId: 'fixture-chat', sources: [source], summary: '已整理片段。', provider: 'openai:https://archive.example.test', model: 'qa-model', createdAt: 1, extractorVersion: MEMORY_VERSION })
   }
   for (let index = 0; index < 24; index++) ledgerSnapshot.records.push({ id: `setting-${index}`, sessionId: 'fixture-chat', kind: 'setting', actor: 'user', realm: 'roleplay', key: `人物设定${index}`, text: `人物设定${index}。` + '虚构角色细节'.repeat(30), sources: [ledgerSources.get('u-600')], supersedes: [], extractedAt: 100 + index, extractorVersion: MEMORY_VERSION })
   ledgerSnapshot.records.push({ id: 'old-color', sessionId: 'fixture-chat', kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '用户偏好红色。', sources: [{ ...ledgerSources.get('u-600'), end: colorBefore.length }], supersedes: [], extractedAt: 1, extractorVersion: MEMORY_VERSION })
@@ -221,7 +225,7 @@ try {
   assert.ok(!huge.systemMemory.includes('[当前路径核心记忆]'))
   assert.equal(JSON.stringify(hugeHistory), hugeOriginal)
   assert.ok(requests.slice(beforeHuge).every(request => request.body.messages[1].content.length < 15000))
-  assertContextBudget({ system: huge.systemMemory, messages: toRequestMessages(huge.history, question), tools: [] })
+  assertWithinBudget({ system: huge.systemMemory, messages: toRequestMessages(huge.history, question), tools: [] })
   checks.push('An imported message exceeding sixteen batches can continue after only two extractions; middle-history evidence is recovered directly from original text and incomplete coverage cannot claim a current core state')
 
   // This exercises bounded model input for an already-loaded 80 MiB session, not paged storage.
@@ -235,7 +239,7 @@ try {
   assert.equal(requests.length - beforeEightyMiB, 2)
   assert.ok(large.systemMemory.includes(hugeMiddle))
   assert.ok(requests.slice(beforeEightyMiB).every(request => estimateContextTokens(request.body.messages[1].content) < 8000))
-  assertContextBudget({ system: large.systemMemory, messages: toRequestMessages(large.history, question), tools: [] })
+  assertWithinBudget({ system: large.systemMemory, messages: toRequestMessages(large.history, question), tools: [] })
   checks.push('An already-loaded 80 MiB single-message session resumes with two small extraction requests and recovers a middle-file date; this does not validate mobile heap capacity or implement paged session storage')
 
   // Derived data from another session or from an unselected branch must never enter a prompt.
@@ -250,20 +254,56 @@ try {
   checks.push('Session and selected-branch scope filters derived segments before they enter the model prompt')
 
   const fail = error => error instanceof ApiError && error.localMessage?.key === 'contextMemoryFailed'
-  const failSnapshot = emptySnapshot()
-  respond = () => new Response('{"error":{"message":"fixture failure"}}', { status: 401, headers: { 'content-type': 'application/json' } })
-  await assert.rejects(prepareContextMemory(optionsFor({ snapshot: failSnapshot })), fail)
-  respond = () => stream('{"summary":"unfinished","records":[]}', 'length')
-  await assert.rejects(prepareContextMemory(optionsFor()), fail)
-  respond = () => stream('not JSON')
-  await assert.rejects(prepareContextMemory(optionsFor()), fail)
-  respond = () => extraction('假引用', [{ kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '喜欢蓝色', sources: [{ messageId: 'u-0', quote: '原文没有这句话' }], supersedes: [] }])
-  await assert.rejects(prepareContextMemory(optionsFor()), fail)
+  const errorResponse = (status, message) => Response.json({ error: { message } }, { status })
+  for (const status of [401, 402, 429]) {
+    respond = () => errorResponse(status, 'fixture failure')
+    await assert.rejects(prepareContextMemory(optionsFor({ sessionId: `credential-${status}` })), error => error instanceof ApiError && error.status === status)
+  }
+  respond = () => { throw new Error('fixture network error') }
+  await assert.rejects(prepareContextMemory(optionsFor({ sessionId: 'network-failure' })), error => error instanceof ApiError && error.kind === 'network')
+  for (const [id, response] of [
+    ['truncated', () => stream('{"summary":"unfinished","records":[]}', 'length')],
+    ['invalid-json', () => stream('not JSON')],
+    ['unsupported-evidence', () => extraction('假引用', [{ kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '喜欢蓝色', sources: [{ messageId: 'u-0', quote: '原文没有这句话' }], supersedes: [] }])],
+    ['length-rejected', () => errorResponse(400, 'user input too long, 70668 tokens exceeds max 32768 tokens')],
+    ['server-failure', () => errorResponse(503, 'fixture busy')],
+  ]) {
+    respond = response
+    const failOptions = optionsFor({ sessionId: id, history: hugeHistory, question: { ...question, content: '纸鸢山的散步约在什么时候？' } })
+    const beforeFailure = requests.length
+    const fallback = await prepareContextMemory(failOptions)
+    assert.ok(fallback.systemMemory.includes('纸鸢山约好周六散步'))
+    assert.ok(fallback.systemMemory.includes('部分历史尚未整理'))
+    assert.ok(!fallback.systemMemory.includes('[当前路径核心记忆]'))
+    assert.deepEqual(fallback.history, hugeHistory.slice(-4))
+    assert.equal(failOptions.snapshot.segments.length, 0)
+    assert.equal(failOptions.snapshot.records.length, 0)
+    assert.equal(requests.length, beforeFailure + 1)
+    await prepareContextMemory(failOptions)
+    assert.equal(requests.length, beforeFailure + 1, 'Another send during cooldown must reuse the local fallback')
+  }
+  const incomplete = optionsFor({ sessionId: 'partially-extracted', history: hugeHistory })
+  const partialBefore = requests.length
+  respond = () => requests.length === partialBefore + 1 ? extraction('第一段已整理。') : stream('invalid')
+  const partial = await prepareContextMemory(incomplete)
+  assert.ok(partial.systemMemory.includes('第一段已整理'))
+  assert.ok(partial.systemMemory.includes('部分历史尚未整理'))
+  assert.equal(requests.length, partialBefore + 2)
+  assert.equal(incomplete.snapshot.segments.length, 1)
   respond = () => extraction()
+  const clockNow = Date.now
+  const beforeRetry = requests.length
+  try {
+    Date.now = () => clockNow() + 5 * 60_000
+    await prepareContextMemory(optionsFor({ sessionId: 'invalid-json', history: hugeHistory }))
+  } finally {
+    Date.now = clockNow
+  }
+  assert.ok(requests.length > beforeRetry, 'An expired cooldown must allow extraction again')
   await assert.rejects(prepareContextMemory(optionsFor({ onCommit: async () => false })), fail)
-  assert.equal(failSnapshot.segments.length, 0)
   assert.equal(JSON.stringify(history), original)
-  checks.push('HTTP/truncation/invalid JSON/unsupported evidence and stale commit rejection fail explicitly without changing source logs')
+  assert.equal(JSON.stringify(hugeHistory), hugeOriginal)
+  checks.push('Recoverable extraction errors preserve verified segments, use bounded recent turns and source recall, and skip repeat extraction during cooldown. Authentication, quota, network and stale commit failures remain explicit.')
 
   const cancel = new AbortController()
   const committedBeforeStop = emptySnapshot()
@@ -293,25 +333,42 @@ try {
   checks.push('Stopping extraction cancels its request, pre-cancelled tasks do no work, and completed segments survive a stop and are not duplicated on retry')
 
   respond = () => extraction()
-  const tooLarge = error => error.localMessage?.key === 'contextMemoryTooLarge'
   const beforeBudget = requests.length
-  await assert.rejects(prepareContextMemory(optionsFor({ history: [], question: { ...question, content: '字'.repeat(20000) } })), tooLarge)
-  const longPrefix = { ...round(99)[1], prefix: true, blocks: [{ type: 'text', text: '续'.repeat(17000) }] }
-  await assert.rejects(prepareContextMemory(optionsFor({ history: [], prefix: longPrefix })), tooLarge)
-  const longThinking = { ...longPrefix, thinking: true, blocks: [{ type: 'thinking', thinking: '思'.repeat(17000), signature: 'fixture-signature' }] }
-  await assert.rejects(prepareContextMemory(optionsFor({ history: [], prefix: longThinking })), tooLarge)
+  const longQuestion = { ...question, content: '字'.repeat(20000) }
+  const longPrefix = { ...round(99)[1], prefix: true, thinking: true, blocks: [
+    { type: 'thinking', thinking: '思'.repeat(9000), signature: 'fixture-signature' },
+    { type: 'text', text: '续'.repeat(9000) },
+  ] }
+  const document = { id: 'doc', serverId: null, name: 'history.pdf', size: 1280, isImage: false, mimeType: 'application/pdf' }
+  const fixed = '会话设定：小鹿。'
+  const progressWhileOversized = []
+  for (const overrides of [
+    { question: longQuestion },
+    { prefix: longPrefix },
+    { question: { ...question, files: [document] }, connection: { baseUrl: 'https://api.deepseek.com', protocol: 'deepseek' } },
+    { question: { ...question, files: [{ ...document, serverId: 'file-doc' }] }, connection: { baseUrl: 'https://api.deepseek.com', protocol: 'deepseek' } },
+    { requestOverhead: 30_000 },
+  ]) {
+    const context = await prepareContextMemory(optionsFor({
+      memory: { fixed }, onProgress: value => progressWhileOversized.push(value), ...overrides,
+    }))
+    assert.deepEqual(context, {
+      history: [],
+      systemMemory: '[用户固定记忆]\n' + fixed,
+      requiredSystemMemory: '[用户固定记忆]\n' + fixed,
+    })
+  }
   assert.equal(requests.length, beforeBudget)
-  assert.throws(() => assertContextBudget({ system: '提醒'.repeat(9000), messages: [], tools: [] }), tooLarge)
-  assert.throws(() => assertContextBudget({ system: '', messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'file', file_id: 'unknown-content' } }] }], tools: [] }), tooLarge)
+  assert.deepEqual(progressWhileOversized, [])
   assert.ok(estimateContextTokens('中文') > estimateContextTokens('en'))
   assert.equal(CONTEXT_INPUT_BUDGET, 24000)
-  checks.push('Current question, continuation text/thinking, system reminders and unknown document content are included in complete-request limits before sending')
+  checks.push('A long current question, a continuation with long text and thinking, a current document or oversized request overhead skips optional history and extraction, preserves fixed memory and defers to the provider limit')
 
   const largeCurrent = { ...question, content: '我们约好散步。'.repeat(2100) }
   const largeCurrentContext = await prepareContextMemory(optionsFor({ question: largeCurrent,
     history: [...round(880, '散步约定。' + '散步细节。'.repeat(2000), '我在听。'), ...history] }))
   assert.equal(toRequestMessages(largeCurrentContext.history, largeCurrent).slice(-1)[0].content, largeCurrent.content)
-  assertContextBudget({ system: largeCurrentContext.systemMemory, messages: toRequestMessages(largeCurrentContext.history, largeCurrent), tools: [] })
+  assertWithinBudget({ system: largeCurrentContext.systemMemory, messages: toRequestMessages(largeCurrentContext.history, largeCurrent), tools: [] })
   checks.push('A large current question that fits the input budget is retained in full while optional recalled history yields room')
 
   const protectedSnapshot = emptySnapshot()
@@ -324,9 +381,12 @@ try {
   const protectedContext = await prepareContextMemory(optionsFor({ snapshot: protectedSnapshot }))
   for (const kind of ['setting', 'boundary', 'correction']) assert.ok(protectedContext.systemMemory.includes(`${kind}必须保留。`))
   const beforeProtectedBudget = requests.length
-  await assert.rejects(prepareContextMemory(optionsFor({ snapshot: protectedSnapshot, question: { ...question, content: '问'.repeat(14750) } })), tooLarge)
+  const tightQuestion = { ...question, content: '问'.repeat(14750) }
+  const tightContext = await prepareContextMemory(optionsFor({ snapshot: protectedSnapshot, question: tightQuestion }))
+  assert.deepEqual(tightContext, { history: [], systemMemory: '', requiredSystemMemory: '' })
+  assertWithinBudget({ system: tightContext.systemMemory, messages: toRequestMessages(tightContext.history, tightQuestion), tools: [] })
   assert.equal(requests.length, beforeProtectedBudget)
-  checks.push('Selected role settings, boundaries and corrections remain in the request; when they cannot fit with the current question, preparation stops instead of silently discarding them')
+  checks.push('Selected role settings, boundaries and corrections remain in normal requests; when they cannot fit together, optional derived memory yields to the current turn')
 
   // Exercise the real store, IndexedDB, adapter and stream parser with isolated chats.
   await import('fake-indexeddb/auto')
@@ -378,17 +438,26 @@ try {
   assert.ok(sent[0].messages.length < history.length)
   checks.push('The real store persists source-checked derived memory for chat A, sends only A fixed memory with a bounded recent tail, preserves original logs, and leaves chat B unchanged')
 
-  respond = request => isExtraction(request) ? stream('invalid extraction') : (sent.push(request.body), stream('must not send'))
+  respond = request => isExtraction(request) ? stream('invalid extraction') : (sent.push(request.body), stream('原文续聊成功'))
   store.selectSession('chat-failure')
   await wait(() => store.useChatStore.getState().sessionCache['chat-failure'])
-  drafts.setDraftText('chat-failure', '继续我们的聊天')
-  assert.equal(store.sendMessage('chat-failure'), true)
-  await wait(() => !store.useChatStore.getState().streaming['chat-failure'])
-  assert.equal(sent.length, 1)
-  const failed = store.useChatStore.getState().sessionCache['chat-failure'].messages.at(-1)
-  assert.equal(failed.status, 'error')
-  assert.equal(failed.error.localMessage.key, 'contextMemoryFailed')
-  checks.push('The real store blocks the main chat call when memory preparation fails and exposes a retryable conversation error')
+  const beforeFallback = requests.length
+  for (const message of ['继续我们的聊天', '1']) {
+    drafts.setDraftText('chat-failure', message)
+    assert.equal(store.sendMessage('chat-failure'), true)
+    await wait(() => !store.useChatStore.getState().streaming['chat-failure'])
+    const reply = store.useChatStore.getState().sessionCache['chat-failure'].messages.at(-1)
+    assert.equal(reply.status, 'done')
+    assert.equal(reply.blocks[0].text, '原文续聊成功')
+    assert.equal(sent.at(-1).messages.at(-1).content, message)
+  }
+  assert.equal(sent.length, 3)
+  assert.equal(requests.slice(beforeFallback).filter(isExtraction).length, 1)
+  const fallbackSnapshot = await db.loadMemorySnapshot('chat-failure')
+  assert.equal(fallbackSnapshot.segments.length, 0)
+  assert.equal(fallbackSnapshot.records.length, 0)
+  assert.deepEqual(fallbackSnapshot.session.messages.slice(0, history.length).map(({id})=>id), history.map(({id})=>id))
+  checks.push('An unusable summary is not saved, the real store continues with bounded local history, and the next short send does not call the failed summary again')
 
   const deepseekStream = text => new Response([
     { type: 'message_start', message: { id: 'continue-fixture', model: 'deepseek-v4-pro' } },

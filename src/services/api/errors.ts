@@ -54,6 +54,43 @@ export const isRetryableApiError = (error: unknown): boolean => {
   )
 }
 
+/** 只有明确的 token 超限才适合缩短上下文后重试。 */
+export const getContextLengthError = (
+  error: unknown
+): { maxInputTokens?: number; inputTokens?: number } | null => {
+  if (!(error instanceof ApiError)) {
+    return null
+  }
+  const { status, kind, providerCode } = error
+  if (
+    kind !== 'stream' &&
+    !(kind === 'http' && (status === 400 || status === 413 || status === 422)) &&
+    !(kind === 'protocol' && status === 200)
+  ) {
+    return null
+  }
+  const message = error.message.trim()
+  const explicitLimit =
+    /^user input too long,\s*([\d,]+) tokens? exceeds? max ([\d,]+) tokens?\b/i.exec(message) ??
+    /^prompt is too long:\s*([\d,]+) tokens?\s*>\s*([\d,]+) maximum\b/i.exec(message)
+  if (explicitLimit) {
+    const inputTokens = Number(explicitLimit[1].replace(/,/g, ''))
+    const maxInputTokens = Number(explicitLimit[2].replace(/,/g, ''))
+    return Number.isSafeInteger(inputTokens) &&
+      Number.isSafeInteger(maxInputTokens) &&
+      maxInputTokens > 0 &&
+      inputTokens > maxInputTokens
+      ? { inputTokens, maxInputTokens }
+      : {}
+  }
+  // OpenAI 报出的上下文窗口也包含输出预算，不能直接作为输入上限。
+  return providerCode === 'context_length_exceeded' ||
+    /^(?:maximum )?context[ _]length[ _]exceeded\b/i.test(message) ||
+    /^this model's maximum context length is [\d,]+ tokens?[.\s]+however,\s*you requested\b/i.test(message)
+    ? {}
+    : null
+}
+
 /** 服务端判定附件失效的情况：本地有原件时重新上传即可自愈 */
 export type FileErrorCode = 'fileIdMissing' | 'fileDataMissing' | 'invalidFileId'
 

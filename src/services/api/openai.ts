@@ -107,7 +107,10 @@ export async function* streamOpenAiMessage(
       throw new ApiError('protocol', 'Invalid OpenAI stream event')
     }
     if (isRecord(value.error)) {
-      throw streamError(typeof value.error.message === 'string' ? value.error.message : undefined)
+      throw streamError(
+        typeof value.error.message === 'string' ? value.error.message : undefined,
+        value.error.code
+      )
     }
     if (event === 'error') {
       throw streamError()

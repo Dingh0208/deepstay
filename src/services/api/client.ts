@@ -162,7 +162,7 @@ export async function* streamMessage(
       }
     }
     if (isErrorBody(payload)) {
-      throw streamError(payload.error.message)
+      throw streamError(payload.error.message, payload.error.code)
     }
     if (eventName === 'error') {
       throw streamError(payload === undefined ? data : undefined)

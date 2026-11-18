@@ -6,6 +6,7 @@ import type { CreateMessageRequest } from '../api/types.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import {
   extractFileIds,
+  getContextLengthError,
   getFileErrorCode,
   getUnsupportedImageError,
   isRetryableApiError,
@@ -24,10 +25,12 @@ import {
 import { createLatestReminder } from './latestReminder.js'
 import { useHistoryTarget } from './historySearch.js'
 import {
-  assertContextBudget,
+  CONTEXT_INPUT_BUDGET,
   estimateContextTokens,
+  estimateRequestTokens,
   prepareContextMemory,
 } from './contextMemory.js'
+import { fitRequestHistory, getRetryInputBudget } from './contextLimit.js'
 import { memoryText } from './memoryRecords.js'
 import type { MemoryState } from './memoryTypes.js'
 import {
@@ -57,6 +60,8 @@ const SAFETY_CHECK = { level: 'high' } as const
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
 const FILE_RETRY_BASE_DELAY = 1000
+// Reuse a confirmed input budget on the same API configuration during this app session.
+let learnedContextLimit: { route: string; key: string; budget: number } | undefined
 // 让浏览器先处理交互和绘制，再准备请求或继续处理缓冲中的数据。
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
 
@@ -1085,6 +1090,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const connection = getApiConnection()
   const apiKey = settings.apiKey ?? ''
   const model = initial.model ?? settings.model
+  const contextRoute = JSON.stringify([connection.baseUrl, connection.protocol, model, initial.thinking, initial.search])
+  let inputBudget = learnedContextLimit?.route === contextRoute && learnedContextLimit.key === apiKey
+    ? learnedContextLimit.budget
+    : undefined
+  let retriedContextLimit = false
+  let attachmentRetries = 0
   const extras = supportsDeepSeekExtras(connection)
   const latestReminder = request.prefix
     ? request.prefix.latestReminder
@@ -1106,6 +1117,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   streamFlushes.set(sessionId, flush)
   let contextPrepared = false
   let systemMemory = ''
+  let requiredSystem = SYSTEM_PROMPT
   let sourceConflict = false
   let sourceState: MemoryState | undefined
   // 接口拒绝的历史图片只在本次生成的请求中省略。
@@ -1117,11 +1129,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
 
   try {
     await yieldToBrowser()
-    for (let attempt = 0; ; attempt += 1) {
+    for (;;) {
       /** 附件补齐前出错属于上传失败，请求还没有发出 */
       let preparing = false
       let receivedContent = false
-      let messages: CreateMessageRequest['messages'] = []
+      let submitted: CreateMessageRequest | undefined
       try {
         if (controller.signal.aborted) {
           throw controller.signal.reason
@@ -1231,6 +1243,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
           request = { ...request, history: context.history }
           systemMemory = context.systemMemory
+          if (context.requiredSystemMemory) {
+            requiredSystem = [SYSTEM_PROMPT, context.requiredSystemMemory].join('\n\n')
+          }
           set((state) => ({
             contextProgress: Object.fromEntries(
               Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)
@@ -1259,7 +1274,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
                 return files.length === message.files.length ? message : { ...message, files }
               })
             : prepared.history
-        messages = toRequestMessages(
+        const messages = toRequestMessages(
           history,
           prepared.question,
           prepared.prefix,
@@ -1267,7 +1282,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           latestReminder,
           !extras
         )
-        const body: CreateMessageRequest = {
+        let body: CreateMessageRequest = {
           model,
           system: [SYSTEM_PROMPT, systemMemory].filter(Boolean).join('\n\n'),
           messages,
@@ -1276,9 +1291,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           tools: extras ? serverTools(initial.search ?? false) : [],
           ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
-        if (settings.contextMemoryEnabled) {
-          assertContextBudget(body)
+        if (inputBudget !== undefined || settings.contextMemoryEnabled) {
+          body = fitRequestHistory(body, inputBudget ?? CONTEXT_INPUT_BUDGET, requiredSystem)
         }
+        submitted = body
         const events = streamMessage(apiKey, body, controller.signal, connection)
         const blockIndexes = new Map<number, number>()
         let eventsSinceYield = 0
@@ -1323,6 +1339,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             await yieldToBrowser()
           }
         }
+        if (retriedContextLimit && inputBudget !== undefined) {
+          learnedContextLimit = { route: contextRoute, key: apiKey, budget: inputBudget }
+        }
         reply = settleReply(reply, 'done', Date.now())
         break
       } catch (error) {
@@ -1339,8 +1358,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           })
           break
         }
+        const lengthError = submitted ? getContextLengthError(error) : null
+        if (lengthError && submitted && !receivedContent && !retriedContextLimit) {
+          const budget = getRetryInputBudget(estimateRequestTokens(submitted), lengthError)
+          if (fitRequestHistory(submitted, budget, requiredSystem) !== submitted) {
+            retriedContextLimit = true
+            inputBudget = budget
+            continue
+          }
+        }
+        const messages = submitted?.messages ?? []
         const unsupportedImage = extras ? getUnsupportedImageError(error) : null
-        if (attempt < FILE_RETRY_LIMIT && !receivedContent && unsupportedImage?.location) {
+        if (attachmentRetries < FILE_RETRY_LIMIT && !receivedContent && unsupportedImage?.location) {
           // 以实际发送的消息为准，提醒和续写前缀也可能占用索引。
           const { messageIndex, blockIndex } = unsupportedImage.location
           const message = messages[messageIndex]
@@ -1355,6 +1384,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               !excludedHistoryImageIds.has(block.source.file_id)
             ) {
               excludedHistoryImageIds.add(block.source.file_id)
+              attachmentRetries += 1
               continue
             }
           }
@@ -1362,11 +1392,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
         if (
           extras &&
-          attempt < FILE_RETRY_LIMIT &&
+          attachmentRetries < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
         ) {
-          await waitForRetry(attempt, controller.signal)
+          await waitForRetry(attachmentRetries++, controller.signal)
           if (controller.signal.aborted) {
             reply = settleReply(reply, 'stopped', Date.now())
             break
@@ -1381,7 +1411,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             kind: error.kind,
             message: error.message,
             status: error.status,
-            localMessage: unsupportedImage ? { key: 'replyUnsupportedImage' } : error.localMessage,
+            localMessage: lengthError
+              ? { key: 'replyContextLimit' }
+              : unsupportedImage
+                ? { key: 'replyUnsupportedImage' }
+                : error.localMessage,
           })
         } else {
           reply = settleReply(reply, 'error', Date.now(), {

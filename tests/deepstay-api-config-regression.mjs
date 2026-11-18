@@ -283,6 +283,35 @@ await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortCon
   error instanceof ApiError && error.kind === 'http' && error.status === 400 && error.message === 'Specific HTTP stream failure')
 checks.push('Valid responses mislabeled by the provider stream incrementally on DeepSeek and OpenAI; nested and HTTP error frames stay out of user notices while specific provider errors remain readable')
 
+const { getContextLengthError } = await import(new URL('services/api/errors.ts', sourceRoot))
+const overflow = 'user input too long, 70668 tokens exceeds max 32768 tokens (request_id: fixture)'
+const lengthCode = 'context_length_exceeded'
+const lengthCases = [
+  [deepseek, () => Response.json({ error: { message: overflow } }, { status: 400 }), { inputTokens: 70668, maxInputTokens: 32768 }],
+  [deepseek, () => new Response(overflow, { status: 400 }), { inputTokens: 70668, maxInputTokens: 32768 }],
+  [getApiConnection(), () => Response.json({ error: {
+    message: "This model's maximum context length is 8,192 tokens. However, you requested 9,216 tokens.",
+  } }, { status: 400 }), {}],
+  [getApiConnection(), () => Response.json({ error: { code: lengthCode, message: 'Input rejected.' } }, { status: 400 }), {}],
+  [getApiConnection(), () => Response.json({ error: { code: lengthCode, message: 'Input rejected.' } }), {}],
+  [deepseek, () => new Response(namedFrame({ type: 'error', error: { code: lengthCode, message: 'Input rejected.' } }),
+    { status: 400, headers: { 'Content-Type': 'text/event-stream' } }), {}],
+  [getApiConnection(), () => new Response(asSse([{ error: { code: lengthCode, message: 'Input rejected.' } }]),
+    { headers: { 'Content-Type': 'text/event-stream' } }), {}],
+  [deepseek, () => Response.json({ error: { message: 'prompt is too long: 70668 tokens > 32768 maximum' } }, { status: 400 }), { inputTokens: 70668, maxInputTokens: 32768 }],
+  [deepseek, () => Response.json({ error: { message: 'Unsupported image' } }, { status: 400 }), null],
+  [getApiConnection(), () => Response.json({ error: { message: 'Request body is too large' } }, { status: 413 }), null],
+  [getApiConnection(), () => Response.json({ error: { code: lengthCode, message: overflow } }, { status: 429 }), null],
+]
+for (const [connection, response, expected] of lengthCases) {
+  responder = response
+  await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, connection)), error => {
+    assert.deepEqual(getContextLengthError(error), expected)
+    return true
+  })
+}
+checks.push('Input limit classification preserves explicit provider budgets and recognizes structured context length errors while keeping unrelated HTTP failures distinct')
+
 const { supportsDeepSeekExtras } = await import(new URL('services/api/connection.ts', sourceRoot))
 assert.equal(supportsDeepSeekExtras({ baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }), true)
 assert.equal(supportsDeepSeekExtras({ baseUrl: configured.apiBaseUrl, protocol: 'openai' }), false)

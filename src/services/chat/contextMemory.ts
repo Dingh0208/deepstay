@@ -4,6 +4,7 @@ import {
   supportsDeepSeekExtras,
   type ApiConnection,
 } from '../api/connection.js'
+import { classifyApiError, getContextLengthError } from '../api/errors.js'
 import type { CreateMessageRequest } from '../api/types.js'
 import { estimateMemoryTokens, recallMemory } from './memoryRecall.js'
 import {
@@ -29,10 +30,10 @@ import type { AssistantMessage, ContextMemory, Message, UserMessage } from './ty
 export const CONTEXT_INPUT_BUDGET = 24_000
 export const estimateContextTokens = estimateMemoryTokens
 const BATCH_TOKENS = 6_000
+const EXTRACTION_COOLDOWN_MS = 5 * 60_000
+const extractionRetryAt = new Map<string, number>()
 const inputTokens = (text: string) =>
   text.length > CONTEXT_INPUT_BUDGET * 3 ? CONTEXT_INPUT_BUDGET + 1 : estimateContextTokens(text)
-const contextError = (key: 'contextMemoryFailed' | 'contextMemoryTooLarge') =>
-  new ApiError('protocol', { key })
 const checkAbort = (signal: AbortSignal) => {
   if (signal.aborted) {
     throw signal.reason ?? new DOMException('Aborted', 'AbortError')
@@ -69,14 +70,6 @@ export const estimateRequestTokens = (
     0
   )
 
-export const assertContextBudget = (
-  request: Pick<CreateMessageRequest, 'system' | 'messages' | 'tools'>
-) => {
-  if (estimateRequestTokens(request) > CONTEXT_INPUT_BUDGET) {
-    throw contextError('contextMemoryTooLarge')
-  }
-}
-
 type PrepareOptions = {
   sessionId: string
   history: Message[]
@@ -99,7 +92,7 @@ const EXTRACTION_SYSTEM = `你只负责整理已有聊天记录，不能继续�
 records最多12项，空时用[]。只提取重要称呼、关系/角色设定、稳定偏好和边界、明确情绪及原因、共同事件、承诺和未完成事项、用户明确更正。区分现实自述、角色扮演和假设。助手不能替用户声明偏好；承诺不能当作已经发生。没有日期不要补日期，没有明确更正的矛盾保留不确定。不要诊断或推测身份。
 sources必须来自本段原文，quote逐字引用且能在该消息分片内唯一找到。偏好、边界、更正仅引用用户原话。更正必须由用户提出，仅在明确修正已有记录时kind用correction，supersedes填提供的旧记录ID；同一输出里更正前序记录时可填"@0"表示records数组第0项，以此类推，不能引用后面的项。其他情况[]。不要输出隐藏思考。摘要仅概括本段，不改写已有摘要。`
 
-const extract = async (chunk: string, options: PrepareOptions): Promise<string> => {
+const extract = async (chunk: string, options: PrepareOptions): Promise<string | null> => {
   const controller = new AbortController()
   const abort = () => controller.abort()
   options.signal.addEventListener('abort', abort, { once: true })
@@ -134,17 +127,23 @@ const extract = async (chunk: string, options: PrepareOptions): Promise<string> 
         complete = event.delta.stop_reason === 'end_turn'
       }
       if (text.length > 24_000) {
-        throw contextError('contextMemoryFailed')
+        return null
       }
     }
     checkAbort(options.signal)
-    if (!complete || !text.trim()) {
-      throw contextError('contextMemoryFailed')
-    }
-    return text.trim()
-  } catch {
+    return complete ? text.trim() || null : null
+  } catch (error) {
     checkAbort(options.signal)
-    throw contextError('contextMemoryFailed')
+    if (
+      controller.signal.aborted ||
+      classifyApiError(error) === 'serverBusy' ||
+      getContextLengthError(error) ||
+      (error instanceof ApiError &&
+        (error.kind === 'interrupted' || error.kind === 'protocol'))
+    ) {
+      return null
+    }
+    throw error
   } finally {
     controller.abort()
     clearTimeout(timer)
@@ -185,19 +184,22 @@ const boundedRecords = (records: MemoryRecord[], budget: number): MemoryRecord[]
 /** Builds a bounded send snapshot. Original messages and legacy fixed memory are untouched. */
 export const prepareContextMemory = async (
   options: PrepareOptions
-): Promise<{ history: Message[]; systemMemory: string }> => {
+): Promise<{ history: Message[]; systemMemory: string; requiredSystemMemory: string }> => {
   const { sessionId, history, question, prefix, snapshot, signal } = options
   checkAbort(signal)
   const fixed = fixedPrompt(options.memory?.fixed ?? '')
   const textOnly = !supportsDeepSeekExtras(options.connection)
-  const rounds = getContextRounds(history)
+  // Reserve space for current attachments that will receive their file IDs during upload.
+  const estimatedQuestion = textOnly
+    ? question
+    : { ...question, files: question.files.map((file) => file.serverId ? file : { ...file, serverId: file.id }) }
   const overhead = options.requestOverhead ?? 256
   const requestSize = (messages: Message[], system: string) =>
     estimateRequestTokens({
       system,
       messages: toRequestMessages(
         messages,
-        question,
+        estimatedQuestion,
         prefix,
         options.thinking ?? prefix?.thinking ?? false,
         prefix?.latestReminder,
@@ -205,11 +207,17 @@ export const prepareContextMemory = async (
       ),
       tools: [],
     }) + overhead
-  if (requestSize([], fixed) > CONTEXT_INPUT_BUDGET - 1_024) {
-    throw contextError('contextMemoryTooLarge')
+  const budget = CONTEXT_INPUT_BUDGET - 512
+  const requiredSize = requestSize([], fixed)
+  const requiredOnly = { history: [], systemMemory: fixed, requiredSystemMemory: fixed }
+  const shortSystemMemory = fixed ? `${fixed}\n\n${NOTICE}` : ''
+  let total = requestSize([], shortSystemMemory)
+  if (total > budget) {
+    return requiredOnly
   }
+
+  const rounds = getContextRounds(history)
   // Stop counting once compression is required; do not serialize a huge imported history.
-  let total = requestSize([], fixed)
   let previousReminder: string | undefined
   const roundSize = (round: Message[]) => {
     const messages = toRequestMessages(
@@ -241,7 +249,7 @@ export const prepareContextMemory = async (
   let oversized = false
   for (let index = 0; index < rounds.length; index += 1) {
     total += roundSize(rounds[index])
-    if (total > CONTEXT_INPUT_BUDGET - 512) {
+    if (total > budget) {
       oversized = true
       break
     }
@@ -251,16 +259,13 @@ export const prepareContextMemory = async (
     }
   }
   if (!oversized) {
-    return { history, systemMemory: fixed ? `${fixed}\n\n${NOTICE}` : '' }
+    return { history, systemMemory: shortSystemMemory, requiredSystemMemory: fixed }
   }
 
-  options.onProgress?.({ completed: 0, total: 0 })
   let recentCount = 0
   while (recentCount < Math.min(8, rounds.length)) {
-    const size =
-      requestSize(rounds.slice(rounds.length - recentCount - 1).flat(), fixed) -
-      requestSize([], fixed)
-    if (size > 12_000 || requestSize([], fixed) + size > CONTEXT_INPUT_BUDGET - 8_000) {
+    const size = requestSize(rounds.slice(rounds.length - recentCount - 1).flat(), fixed)
+    if (size - requiredSize > 12_000 || size > CONTEXT_INPUT_BUDGET - 8_000) {
       break
     }
     recentCount += 1
@@ -313,12 +318,22 @@ export const prepareContextMemory = async (
       segment.sources.length > 0 &&
       segment.sources.every((source) => isMemorySourceValid(source, fingerprints))
   )
+  const provider = `${options.connection.protocol}:${normalizeApiBaseUrl(options.connection.baseUrl)}`
   const covered = new Map<string, { start: number; end: number }[]>()
+  let latestPosition = -1
+  let latestEnd = 0
   for (const segment of segments) {
     for (const source of segment.sources) {
       const spans = covered.get(source.messageId) ?? []
       spans.push(source)
       covered.set(source.messageId, spans)
+      if (segment.provider === provider && segment.model === options.model) {
+        const position = sourceOrder.get(source.messageId) ?? -1
+        if (position > latestPosition || (position === latestPosition && source.end > latestEnd)) {
+          latestPosition = position
+          latestEnd = source.end
+        }
+      }
     }
   }
 
@@ -327,6 +342,7 @@ export const prepareContextMemory = async (
   let batchSize = 0
   let batchCount = 0
   let scanned = 0
+  let newlyAgedTokens = 0
   const selected: (typeof batch)[] = []
   const saveBatch = () => {
     batchCount += 1
@@ -340,6 +356,7 @@ export const prepareContextMemory = async (
   }
   for (const message of older) {
     const text = memoryText(message)
+    const position = sourceOrder.get(message.id) ?? -1
     const spans = (covered.get(message.id) ?? []).sort((a, b) => a.start - b.start || b.end - a.end)
     let spanIndex = 0
     for (let start = 0; start < text.length; ) {
@@ -355,7 +372,13 @@ export const prepareContextMemory = async (
         spanIndex += 1
       }
       if (!spans[spanIndex] || spans[spanIndex].start > start || spans[spanIndex].end < end) {
-        const size = estimateContextTokens(text.slice(start, end)) + 100
+        const tokens = estimateContextTokens(text.slice(start, end))
+        const size = tokens + 100
+        if (position > latestPosition || (position === latestPosition && end > latestEnd)) {
+          newlyAgedTokens += position === latestPosition && start < latestEnd
+            ? estimateContextTokens(text.slice(latestEnd, end))
+            : tokens
+        }
         if (batch.length && batchSize + size > BATCH_TOKENS) {
           saveBatch()
         }
@@ -373,12 +396,28 @@ export const prepareContextMemory = async (
   if (batch.length) {
     saveBatch()
   }
-  const provider = `${options.connection.protocol}:${normalizeApiBaseUrl(options.connection.baseUrl)}`
-  for (let index = 0; index < selected.length; index += 1) {
+  // Reuse verified memory while newly aged text is still shorter than an extraction batch.
+  const extractionKey = JSON.stringify([sessionId, provider, options.model])
+  const now = Date.now()
+  for (const [key, retryAt] of extractionRetryAt) {
+    if (retryAt <= now) {
+      extractionRetryAt.delete(key)
+    }
+  }
+  const planned =
+    !extractionRetryAt.has(extractionKey) &&
+    (latestPosition < 0 || newlyAgedTokens >= BATCH_TOKENS)
+      ? selected
+      : []
+  if (planned.length > 0) {
+    options.onProgress?.({ completed: 0, total: 0 })
+  }
+  let extracted = 0
+  for (let index = 0; index < planned.length; index += 1) {
     checkAbort(signal)
-    options.onProgress?.({ completed: index, total: selected.length })
+    options.onProgress?.({ completed: index, total: planned.length })
     const sources: MemorySlice[] = []
-    for (const slice of selected[index]) {
+    for (const slice of planned[index]) {
       sources.push({ ...(await sourceOf(slice.message)), start: slice.start, end: slice.end })
     }
     const refs = sources.map(({ message, fingerprint, start, end }) => ({
@@ -430,9 +469,13 @@ export const prepareContextMemory = async (
             `[${slice.message.role} · ${new Date(slice.message.createdAt).toISOString()} · ${slice.message.id}]\n${memoryText(slice.message).slice(slice.start, slice.end)}`
         )
         .join('\n\n')
+    const response = await extract(chunk, options)
+    if (response === null) {
+      break
+    }
     let result: ReturnType<typeof parseMemoryExtraction>
     try {
-      result = parseMemoryExtraction(await extract(chunk, options), {
+      result = parseMemoryExtraction(response, {
         sessionId,
         segmentId: id,
         sources,
@@ -440,8 +483,7 @@ export const prepareContextMemory = async (
         sourceOrder,
       })
     } catch {
-      checkAbort(signal)
-      throw contextError('contextMemoryFailed')
+      break
     }
     const segment: MemorySegment = {
       id,
@@ -455,17 +497,22 @@ export const prepareContextMemory = async (
     }
     checkAbort(signal)
     if (!(await options.onCommit({ segments: [segment], records: result.records }))) {
-      throw contextError('contextMemoryFailed')
+      throw new ApiError('protocol', { key: 'contextMemoryFailed' })
     }
     checkAbort(signal)
     segments.push(segment)
     rawRecords.push(...result.records)
     records = filterMemoryRecords(rawRecords, sessionId, orderedSources())
+    extracted += 1
   }
-  if (selected.length > 0) {
-    options.onProgress?.({ completed: selected.length, total: selected.length })
+  if (extracted > 0) {
+    options.onProgress?.({ completed: extracted, total: planned.length })
   }
-  const complete = batchCount <= selected.length
+  if (extracted < planned.length) {
+    extractionRetryAt.set(extractionKey, Date.now() + EXTRACTION_COOLDOWN_MS)
+  }
+  // An uncommitted batch could contain a correction, so do not claim older facts are current.
+  const complete = batchCount <= extracted
   const recordPosition = (record: MemoryRecord) =>
     Math.max(...record.sources.map((source) => sourceOrder.get(source.messageId) ?? -1))
   const mustKeep = (record: MemoryRecord) => ['setting', 'boundary', 'correction'].includes(record.kind)
@@ -533,7 +580,7 @@ export const prepareContextMemory = async (
       .filter(Boolean)
       .join('\n\n')
   let systemMemory = render()
-  while (requestSize(recent, systemMemory) > CONTEXT_INPUT_BUDGET - 512) {
+  while (requestSize(recent, systemMemory) > budget) {
     if (summaries.length) {
       summaries.shift()
     } else if (recalled) {
@@ -543,10 +590,10 @@ export const prepareContextMemory = async (
     } else if (recent.length) {
       recent.splice(0, 2)
     } else {
-      throw contextError('contextMemoryTooLarge')
+      return requiredOnly
     }
     systemMemory = render()
   }
   checkAbort(signal)
-  return { history: recent, systemMemory }
+  return { history: recent, systemMemory, requiredSystemMemory: fixed }
 }

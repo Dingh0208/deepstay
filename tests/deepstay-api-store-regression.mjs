@@ -297,6 +297,151 @@ assert.equal(partial.blocks[0].text, '已收到的部分')
 assert.equal(partial.error.localMessage.key, 'replyUnsupportedImage')
 checks.push('An image error after the response begins preserves the partial reply and cannot start a new request')
 
+// A real request can be rejected even when the local tokenizer estimate differs from the provider.
+settings.setApiConnection({ ...changedB, model: 'length-limit-fixture' })
+settings.setContextMemoryEnabled(false)
+const limitId = 'context-length-overflow'
+const limitHistory = Array.from({ length: 32 }, (_, index) => [
+  { role: 'user', id: 'limit-user-' + index, content: '旧问题 ' + index, files: [], createdAt: index },
+  { role: 'assistant', id: 'limit-answer-' + index, model: 'length-limit-fixture', status: 'done',
+    prefix: false, stopReason: 'end_turn', blocks: [{type:'text',text:'长回复。'.repeat(350)}], createdAt: index },
+]).flat()
+await db.saveSession({ id: limitId, title: '长度回归', createdAt: 0, updatedAt: 1, messages: limitHistory })
+store.useChatStore.setState(state => ({ sessions: [...state.sessions, { id: limitId, title: '长度回归', createdAt: 0, updatedAt: 1 }] }))
+await store.openHistoryMatch(limitId, null)
+const limitedRequests = []
+const rejectLength = () => Response.json({error:{message:'user input too long, 70668 tokens exceeds max 32768 tokens (request_id: fixture)'}},{status:400})
+globalThis.fetch = async (_url, init) => {
+  const body = JSON.parse(init.body)
+  limitedRequests.push(body)
+  if (body.messages.length > 25) return rejectLength()
+  return new Response('data: ' + JSON.stringify({choices:[{index:0, delta:{content:'成功续聊'}, finish_reason:'stop'}]}) + '\n\ndata: [DONE]\n\n',
+    { headers: { 'Content-Type': 'text/event-stream' } })
+}
+drafts.setDraftText(limitId, '1')
+assert.equal(store.sendMessage(limitId), true)
+await waitIdle()
+assert.equal(limitedRequests.length, 2)
+assert.ok(limitedRequests[1].messages.length < limitedRequests[0].messages.length)
+assert.equal(limitedRequests[1].messages.at(-1).content, '1')
+assert.ok(limitedRequests[1].messages.some(({content})=>content==='旧问题 31'))
+assert.ok(!limitedRequests[1].messages.some(({content})=>content==='旧问题 0'))
+assert.equal((await db.loadSession(limitId)).messages.at(-1).status, 'done')
+assert.deepEqual((await db.loadSession(limitId)).messages.slice(0, limitHistory.length).map(({id})=>id), limitHistory.map(({id})=>id))
+drafts.setDraftText(limitId, '再继续')
+assert.equal(store.sendMessage(limitId), true)
+await waitIdle()
+assert.equal(limitedRequests.length, 3, 'the same provider/model should reuse the successful budget')
+assert.equal(limitedRequests[2].messages.at(-1).content, '再继续')
+checks.push('An explicit provider length rejection retries once with fewer complete turns, preserves the latest question and local history, and reuses the smaller successful budget')
+
+settings.setApiConnection({ ...changedB, model: 'always-reject-length' })
+let repeatedRejections = 0
+globalThis.fetch = async () => { repeatedRejections += 1; return rejectLength() }
+drafts.setDraftText(limitId, '不能一直重试')
+assert.equal(store.sendMessage(limitId), true)
+await waitIdle()
+assert.equal(repeatedRejections, 2)
+assert.equal((await db.loadSession(limitId)).messages.at(-1).error.localMessage.key, 'replyContextLimit')
+store.newChat()
+drafts.setDraftText(null, '唯一的新消息')
+assert.equal(store.sendMessage(null), true)
+await waitIdle()
+assert.equal(repeatedRejections, 3, 'no shorter retry is possible with only the current question')
+checks.push('A repeated overflow stops after one retry, and an irreducible current question is sent only once')
+
+settings.setContextMemoryEnabled(true)
+const oversizedText = '这是要完整保留的本轮原文。'.repeat(1600)
+const oversizedId = 'overestimated-current-turn'
+const fixedMemory = '会话固定设定：住在有蓝色窗户的房子。'
+const oversizedSummary = { id: oversizedId, title: oversizedId, createdAt: 1, updatedAt: 2 }
+await db.saveSession({
+  ...oversizedSummary, messages: limitHistory.slice(0, 2), contextMemory: { fixed: fixedMemory },
+})
+store.useChatStore.setState(state => ({ sessions: [...state.sessions, oversizedSummary] }))
+await store.openHistoryMatch(oversizedId, null)
+const oversizedRequests = []
+globalThis.fetch = async (_url, init) => {
+  const body = JSON.parse(init.body)
+  oversizedRequests.push(body)
+  return officialReply(body)
+}
+settings.setApiConnection({
+  apiKey: 'fixture-only', apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek',
+  model: 'deepseek-v4-pro', models: ['deepseek-v4-pro'],
+})
+drafts.setDraftText(oversizedId, oversizedText)
+assert.equal(store.sendMessage(oversizedId), true)
+await waitIdle()
+assert.equal(oversizedRequests.length, 1, 'large current message goes directly to the provider without summary')
+assert.ok(oversizedRequests[0].system.includes(fixedMemory))
+assert.deepEqual(oversizedRequests[0].messages.filter(({role}) => role !== 'latest_reminder'),
+  [{ role: 'user', content: oversizedText }])
+const oversizedSaved = (await db.loadSession(oversizedId)).messages
+assert.equal(oversizedSaved.at(-1).status, 'done')
+assert.equal(oversizedSaved.at(-2).content, oversizedText)
+assert.deepEqual(oversizedSaved.slice(0, 2).map(({id}) => id), limitHistory.slice(0, 2).map(({id}) => id))
+
+store.newChat()
+globalThis.fetch = async (_url, init) => {
+  oversizedRequests.push(JSON.parse(init.body))
+  return rejectLength()
+}
+drafts.setDraftText(null, oversizedText)
+assert.equal(store.sendMessage(null), true)
+const rejectedOversizedId = store.useChatStore.getState().activeId
+await waitIdle()
+assert.equal(oversizedRequests.length, 2, 'the provider rejected the minimum possible request; do not retry')
+assert.equal(oversizedRequests[1].messages.at(-1).content, oversizedText)
+const rejectedOversized = (await db.loadSession(rejectedOversizedId)).messages
+assert.equal(rejectedOversized.at(-2).content, oversizedText)
+assert.equal(rejectedOversized.at(-1).error.localMessage.key, 'replyContextLimit')
+checks.push('A conservative estimate never blocks the current text or removes fixed memory; an irreducible request is sent once and preserves its full text even after provider rejection')
+
+const continuationId = 'large-continuation-with-current-document'
+const continuationSummary = { id: continuationId, title: continuationId, createdAt: 1, updatedAt: 4 }
+const document = { id: 'current-document', serverId: null, name: 'test.txt', isImage: false, size: 4, mimeType: 'text/plain' }
+await db.saveSession({
+  ...continuationSummary,
+  contextMemory: { fixed: fixedMemory },
+  messages: [
+    ...limitHistory.slice(0, 2),
+    { role: 'user', id: 'document-question', content: '接着说', files: [document], createdAt: 3 },
+    { role: 'assistant', id: 'partial-prefix', status: 'done', prefix: true, stopReason: 'max_tokens',
+      latestReminder: '本轮提醒', blocks: [{type:'text',text:oversizedText}], createdAt: 4 },
+  ],
+}, [{ id: document.id, blob: new Blob(['test'], { type: document.mimeType }) }])
+store.useChatStore.setState(state => ({ sessions: [...state.sessions, continuationSummary] }))
+await store.openHistoryMatch(continuationId, null)
+let docUploads = 0
+globalThis.fetch = async (url, init) => {
+  if (String(url).endsWith('/files')) {
+    docUploads += 1
+    assert.equal(await init.body.get('file').text(), 'test')
+    return Response.json({ id: 'uploaded-document' })
+  }
+  const body = JSON.parse(init.body)
+  oversizedRequests.push(body)
+  return officialReply(body)
+}
+store.continueReply(continuationId, 'partial-prefix')
+await waitIdle()
+assert.equal(docUploads, 1)
+assert.equal(oversizedRequests.length, 3)
+assert.ok(oversizedRequests[2].system.includes(fixedMemory))
+assert.deepEqual(oversizedRequests[2].messages, [
+  { role: 'latest_reminder', content: '本轮提醒' },
+  { role: 'user', content: [
+    { type: 'document', source: { type: 'file', file_id: 'uploaded-document' } },
+    { type: 'text', text: '接着说' },
+  ] },
+  { role: 'assistant', content: [{type:'text',text:oversizedText}] },
+])
+const continued = (await db.loadSession(continuationId)).messages.at(-1)
+assert.equal(continued.status, 'done')
+assert.equal(continued.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), oversizedText + '新回答')
+checks.push('Continuing an oversized prefix uploads and preserves the current document, keeps the whole prefix and reminder, and only omits optional old history')
+
 const evidence = { passed: true, runtime: process.version, checks,
   requests: requests.map(({ url, body }) => ({ url, model: body.model, messages: body.messages.length })),
   scope: 'Actual chat store, drafts, API clients, SSE, reply reducer and IndexedDB code using an isolated IndexedDB emulator and deterministic responses. No real keys, network or user records.' }

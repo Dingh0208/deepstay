@@ -18,6 +18,11 @@
 .title {
   max-width: 480px;
   padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -49,8 +54,8 @@
 .caveat {
   width: 100%;
   padding: 6px 0;
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 0.6875rem;
+  line-height: 1rem;
   text-align: center;
   color: var(--dsw-alias-label-tertiary);
   user-select: none;

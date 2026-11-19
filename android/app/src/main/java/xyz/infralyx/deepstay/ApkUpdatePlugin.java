@@ -1,6 +1,7 @@
 package xyz.infralyx.deepstay;
 
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.Signature;
@@ -34,6 +35,27 @@ public class ApkUpdatePlugin extends Plugin {
     private volatile boolean cancelled;
     private volatile HttpURLConnection activeConnection;
     private boolean downloading;
+
+    @PluginMethod
+    public void getInstallStatus(PluginCall call) {
+        try {
+            PackageInfo info = getContext().getPackageManager().getPackageInfo(
+                getContext().getPackageName(), 0);
+            SharedPreferences preferences = getContext().getSharedPreferences(
+                "deepstay_app_updates", android.content.Context.MODE_PRIVATE);
+            long lastUpdateTime = info.lastUpdateTime;
+            long firstInstallTime = info.firstInstallTime;
+            long seenUpdateTime = preferences.getLong("seen_update_time", 0L);
+            boolean updated = lastUpdateTime > firstInstallTime &&
+                lastUpdateTime > seenUpdateTime;
+            preferences.edit().putLong("seen_update_time", lastUpdateTime).apply();
+            JSObject result = new JSObject();
+            result.put("updated", updated);
+            call.resolve(result);
+        } catch (Exception error) {
+            call.reject("Unable to read application install status", error);
+        }
+    }
 
     private File updateFile() {
         return new File(new File(getContext().getCacheDir(), "updates"), "deepstay.apk");

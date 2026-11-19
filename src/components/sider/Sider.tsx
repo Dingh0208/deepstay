@@ -16,6 +16,7 @@ import { closeMobileSider, useMobileSider } from './mobileSiderState.js'
 import { SessionItem } from './SessionItem.js'
 import { FavoriteMessages } from './FavoriteMessages.js'
 import { openPlans } from '../platform/plansDialogState.js'
+import { useUpdateState } from '../../services/appUpdates.js'
 import styles from './Sider.module.css'
 
 const HISTORY_PAGE_SIZE = 50
@@ -27,6 +28,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const activeId = useChatStore((state) => state.activeId)
   const [now, setNow] = useState(Date.now)
   const locale = useSettings((state) => state.locale)
+  const hasUpdate = useUpdateState((state) => state.hasUpdate)
   const pinnedIds = useSettings((state) => state.pinnedSessionIds)
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds])
   const [showFavorites, setShowFavorites] = useState(false)
@@ -205,11 +207,16 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
           </span>
           <span className={styles.settingsLabel}>方案</span>
         </button>
-        <button type="button" className={styles.settings} onClick={() => openSettings('general')}>
+        <button type="button" className={styles.settings}
+          title={hasUpdate ? t('updateAutoAvailable') : undefined}
+          onClick={() => openSettings('general')}>
           <span className={styles.settingsIcon}>
             <IconSettingsOutline16 />
           </span>
-          <span className={styles.settingsLabel}>{t('settings')}</span>
+          <span className={styles.settingsLabel}>
+            {t('settings')}
+            {hasUpdate ? <span className={styles.updateDot} aria-hidden="true" /> : null}
+          </span>
         </button>
       </div>
       {deleting ? (
@@ -256,13 +263,12 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
 /** 移动端抽屉：浮在页面上方，点空白区域关闭。 */
 export const MobileSider = () => {
   const open = useMobileSider((state) => state.open)
-  if (!open) {
-    return null
-  }
   return (
     <>
-      <div className={styles.drawerMask} onClick={closeMobileSider} />
-      <div className={styles.drawer}>
+      <div className={clsx(styles.drawerMask, open && styles.drawerMaskOpen)} data-mobile-drawer-layer
+        aria-hidden="true" onClick={closeMobileSider} />
+      <div className={clsx(styles.drawer, open && styles.drawerOpen)} data-mobile-drawer-layer
+        data-mobile-drawer-panel aria-hidden={!open} {...(!open ? { inert: '' } : {})}>
         <Sider mobile />
       </div>
     </>

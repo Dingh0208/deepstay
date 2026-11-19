@@ -1,0 +1,60 @@
+.dialog {
+  width: 480px;
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+}
+
+.preview {
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+.frame {
+  position: relative;
+  overflow: hidden;
+  border-radius: 8px;
+  background: white;
+  outline: 1px solid var(--dsw-alias-border-l2);
+  touch-action: none;
+  cursor: grab;
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--dsw-alias-brand-primary);
+    outline-offset: 3px;
+  }
+
+  img {
+    position: absolute;
+    max-width: none;
+    pointer-events: none;
+    user-select: none;
+  }
+}
+
+.zoom {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+
+  input {
+    flex: 1;
+    min-width: 0;
+    height: 32px;
+    accent-color: var(--dsw-alias-button-primary-fill);
+  }
+
+  span {
+    min-width: 3.7em;
+    text-align: end;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.error {
+  color: var(--dsw-alias-state-error-primary);
+}

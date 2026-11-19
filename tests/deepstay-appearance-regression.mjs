@@ -51,26 +51,35 @@ try {
   globalThis.Image=class {
     naturalWidth=imageState.width
     naturalHeight=imageState.height
-    set src(_url) {queueMicrotask(()=>imageState.fail?this.onerror():this.onload())}
+    get src() {return this.url}
+    set src(url) {this.url=url;queueMicrotask(()=>imageState.fail?this.onerror():this.onload())}
   }
   globalThis.document={createElement(type) {
     assert.equal(type,'canvas')
-    return {width:0,height:0,getContext(){return {fillRect(){},drawImage:(_image,x,y,width,height)=>imageState.draws.push({x,y,width,height})}},toBlob(callback,type,quality){assert.equal(type,'image/jpeg');assert.equal(quality,0.86);callback(new Blob(['normalized-pixels'],{type}))}}
+    return {width:0,height:0,getContext(){return {fillRect(){},drawImage:(_image,...coordinates)=>imageState.draws.push(coordinates)}},toBlob(callback,type,quality){assert.equal(type,'image/jpeg');assert.equal(quality,0.86);callback(new Blob(['normalized-pixels'],{type}))}}
   }}
   const background=await import(service)
   await background.loadChatBackground()
   assert.equal(background.useChatBackground.getState().url,null)
-  const prepared=await background.prepareChatBackground(new File(['image'],'photo.jpg',{type:'image/jpeg'}))
+  const photo=await background.openChatBackground(new File(['image'],'photo.jpg',{type:'image/jpeg'}))
+  const left=background.getBackgroundCrop(photo,9/16,{x:0,y:0.5,zoom:1})
+  assert.deepEqual(left,{x:0,y:0,width:1701,height:3024})
+  const right=background.getBackgroundCrop(photo,9/16,{x:1,y:0.5,zoom:1})
+  assert.deepEqual(right,{x:2331,y:0,width:1701,height:3024})
+  const prepared=await background.encodeChatBackground(photo,right)
   assert.equal(prepared.type,'image/jpeg')
-  assert.deepEqual(imageState.draws[0],{x:0,y:0,width:2048,height:1536})
-  assert.ok(imageState.revoked.includes('blob:test-1'))
-  await assert.rejects(background.prepareChatBackground(new File(['text'],'not-image.txt',{type:'text/plain'})),/format/)
-  await assert.rejects(background.prepareChatBackground(new File([new Uint8Array(20*1024*1024+1)],'large.jpg',{type:'image/jpeg'})),/size/)
+  assert.deepEqual(imageState.draws[0],[2331,0,1701,3024,0,0,1152,2048])
+  const zoomed=background.getBackgroundCrop(photo,9/16,{x:0.5,y:0.5,zoom:2})
+  await background.encodeChatBackground(photo,zoomed)
+  assert.deepEqual(imageState.draws[1],[1590.75,756,850.5,1512,0,0,851,1512])
+  URL.revokeObjectURL(photo.src)
+  await assert.rejects(background.openChatBackground(new File(['text'],'not-image.txt',{type:'text/plain'})),/format/)
+  await assert.rejects(background.openChatBackground(new File([new Uint8Array(20*1024*1024+1)],'large.jpg',{type:'image/jpeg'})),/size/)
   imageState.fail=true
-  await assert.rejects(background.prepareChatBackground(new File(['bad'],'bad.png',{type:'image/png'})),/format/)
+  await assert.rejects(background.openChatBackground(new File(['bad'],'bad.png',{type:'image/png'})),/format/)
   assert.ok(imageState.revoked.includes('blob:test-2'))
   imageState.fail=false
-  checks.push('Image preparation rejects unsupported/oversized/corrupt inputs, scales a 4032px photo to2048px and releases temporary image URLs')
+  checks.push('A 4032px photo can select either edge or zoom in; the exact source rectangle is encoded with a 2048px bound, and unsupported, oversized and corrupt inputs are rejected')
 
   await background.setChatBackground(prepared)
   const firstUrl=background.useChatBackground.getState().url

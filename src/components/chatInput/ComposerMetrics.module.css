@@ -7,8 +7,8 @@
   width: 100%;
   padding-inline: 8px 0;
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 16px;
+  font-size: 0.75rem;
+  line-height: 1rem;
   font-variant-numeric: tabular-nums;
 }
 

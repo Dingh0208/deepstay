@@ -8,8 +8,8 @@
   border-radius: 4096px;
   border: 1px solid transparent;
   font: inherit;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 0.875rem;
+  line-height: 1.375rem;
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;

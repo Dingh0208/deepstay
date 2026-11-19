@@ -409,7 +409,19 @@ assert.deepEqual(find(longTree, node => node.props?.message?.id === 'long-2').pr
 jumpButton(longTree).props.onClick()
 assert.equal(mountLong().at(-1), 'long-239')
 frame()
-mountLong()
+const atBeginning = { ...longProps, jumpRequest: 1 }
+mountLong(atBeginning)
+const firstIds = mountLong(atBeginning)
+assert.equal(firstIds[0], 'long-0')
+assert.equal(firstIds.length, 24)
+assert.equal(top, 0)
+observers.at(-1).callback()
+assert.equal(pendingFrames.size, 0, 'A resize after jumping to the first message does not follow the latest reply')
+checks.push('Jumping to the first message replaces the window with the first 24 messages of the visible branch and preserves the top on resize')
+jumpButton(longTree).props.onClick()
+assert.equal(mountLong(atBeginning).at(-1), 'long-239')
+frame()
+mountLong(atBeginning)
 assert.equal(jumpButton(longTree), null)
 globalThis.__historyTarget = { sessionId: longSession.id, messageId: 'long-2' }
 mountLong()
@@ -422,6 +434,36 @@ assert.equal(mountLong({ ...longProps, session: laterSession }).at(-1), 'long-24
 longInstance.cleanup()
 delete globalThis.__historyTarget
 checks.push('Actual MessageList bounds the DOM on a 240-message chat, pages in both directions, centers an early search match, preserves sibling versions and returns to the live tail in one tap or on new input')
+
+const jumpRaceInstance = runner(MessageList)
+const jumpRaceProps = { ...longProps, jumpRequest: 0 }
+let jumpRaceTree
+const mountJumpRace = (props = jumpRaceProps) => {
+  jumpRaceTree = jumpRaceInstance.render(props)
+  attach(jumpRaceTree, {
+    querySelector(selector) {
+      const message = /^\[data-chat-message="([^"]+)"\]$/.exec(selector)?.[1]
+      const position = messageIds(jumpRaceTree).indexOf(message)
+      return position < 0 ? null : {
+        getBoundingClientRect: () => ({ top: position * 40 - top }),
+        scrollIntoView: () => { top = 123 },
+      }
+    },
+  })
+  jumpRaceInstance.effects()
+  return messageIds(jumpRaceTree)
+}
+globalThis.__historyTarget = { sessionId: longSession.id, messageId: 'long-2' }
+mountJumpRace()
+find(jumpRaceTree, node => node.props?.message?.id === 'long-2').props.onSelectVersion('long-2-alt', 80)
+globalThis.__historyTarget = { sessionId: longSession.id, messageId: 'long-239' }
+mountJumpRace({ ...jumpRaceProps, jumpRequest: 1 })
+assert.deepEqual(globalThis.__historyTarget, { sessionId: null, messageId: null })
+assert.equal(mountJumpRace({ ...jumpRaceProps, jumpRequest: 1 })[0], 'long-0')
+assert.equal(top, 0)
+jumpRaceInstance.cleanup()
+delete globalThis.__historyTarget
+checks.push('Jumping to the first message clears pending search and message-version scroll targets before they can move the viewport')
 
 const { useThrottleMarkdownRender } = await import(new URL('components/markdown/useThrottleMarkdownRender.ts', src))
 const { useThrottleMarkdownRender: baselineThrottle } = await import(baselineThrottleUrl)

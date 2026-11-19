@@ -23,7 +23,7 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.
 - English and Simplified Chinese, light and dark themes, mobile layouts, and local history import/export.
 - Deep thinking is off by default. Thinking content expands by default; set it to start collapsed in **Settings → Chat & AI**. Manual expansion survives streamed updates.
-- **Settings → Appearance** contains the theme, custom chat background, chat font and text size. Font and size can follow system settings.
+- **Settings → Appearance** contains the theme, background image crop, global font and text size with a live preview. Choose from 27 bundled fonts or follow system settings.
 - Custom API base URL, key and model; test the connection, load model IDs or enter one manually.
 - Search local and imported chat history from the sidebar, choose newest or oldest first, and jump to a matching message. Query the DeepSeek balance next to Fetch models in **Settings → Model API**.
 - On mobile, Enter inserts a newline; only the send button submits a message.

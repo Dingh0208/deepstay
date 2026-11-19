@@ -104,7 +104,7 @@
   padding: 10px 16px max(10px, env(safe-area-inset-bottom));
   border-top: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-bg-base);
-  font-size: 13px;
+  font-size: 0.8125rem;
 
   > span {
     margin-inline-end: auto;

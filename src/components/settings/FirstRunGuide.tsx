@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { useSettings } from '../../services/settings.js'
+import { useUpdateState } from '../../services/appUpdates.js'
 import { Button } from '../base/Button.js'
 import { Logo } from '../base/Logo.js'
 import { Modal } from '../base/Modal.js'
@@ -14,6 +15,7 @@ export const FirstRunGuide = () => {
   const t = useTranslate()
   const ready = useChatStore((state) => state.ready)
   const apiKey = useSettings((state) => state.apiKey)
+  const releaseNotesOpen = useUpdateState((state) => state.releaseNotesOpen)
   const [seen, setSeen] = useState(() => {
     try {
       return localStorage.getItem(GUIDE_KEY) === 'true'
@@ -30,7 +32,7 @@ export const FirstRunGuide = () => {
     }
   }
 
-  if (!ready || apiKey || seen) {
+  if (!ready || apiKey || seen || releaseNotesOpen) {
     return null
   }
 

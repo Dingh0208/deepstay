@@ -7,8 +7,51 @@ export type Locale = 'zh-CN' | 'en-US'
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ApiProtocol = 'deepseek' | 'openai'
-export type ChatFont = 'system' | 'serif' | 'mono'
+export const bundledChatFonts = [
+  { value: 'noto-sans-sc', label: 'Noto Sans SC' },
+  { value: 'noto-serif-sc', label: 'Noto Serif SC' },
+  { value: 'ma-shan-zheng', label: 'Ma Shan Zheng' },
+  { value: 'dm-sans', label: 'DM Sans' },
+  { value: 'inter', label: 'Inter' },
+  { value: 'lato', label: 'Lato' },
+  { value: 'lora', label: 'Lora' },
+  { value: 'manrope', label: 'Manrope' },
+  { value: 'montserrat', label: 'Montserrat' },
+  { value: 'nunito', label: 'Nunito' },
+  { value: 'open-sans', label: 'Open Sans' },
+  { value: 'oswald', label: 'Oswald' },
+  { value: 'pt-sans', label: 'PT Sans' },
+  { value: 'roboto', label: 'Roboto' },
+  { value: 'raleway', label: 'Raleway' },
+  { value: 'rubik', label: 'Rubik' },
+  { value: 'source-sans-3', label: 'Source Sans 3' },
+  { value: 'ubuntu', label: 'Ubuntu' },
+  { value: 'work-sans', label: 'Work Sans' },
+  { value: 'fira-sans', label: 'Fira Sans' },
+  { value: 'ibm-plex-sans', label: 'IBM Plex Sans' },
+  { value: 'noto-serif', label: 'Noto Serif' },
+  { value: 'pt-serif', label: 'PT Serif' },
+  { value: 'merriweather', label: 'Merriweather' },
+  { value: 'libre-baskerville', label: 'Libre Baskerville' },
+  { value: 'bitter', label: 'Bitter' },
+  { value: 'crimson-text', label: 'Crimson Text' },
+] as const
+
+export type ChatFont = 'system' | 'serif' | 'mono' | typeof bundledChatFonts[number]['value']
 export type ChatFontSize = 'system' | 'small' | 'normal' | 'large' | 'extraLarge'
+
+export const getChatFontFamily = (font: ChatFont): string => {
+  if (font === 'serif') {
+    return "'Noto Serif SC', 'Songti SC', SimSun, Georgia, serif"
+  }
+  if (font === 'mono') {
+    return 'ui-monospace, Consolas, "Roboto Mono", monospace'
+  }
+  const selected = bundledChatFonts.find((item) => item.value === font)
+  return selected
+    ? `"${selected.label}", 'Noto Sans SC', 'Microsoft YaHei', system-ui, sans-serif`
+    : "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif"
+}
 
 /** 本机设置，存 localStorage：API Key、语言、主题、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
 type Settings = {
@@ -103,7 +146,9 @@ const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide'
 
 const initialChatFont = (): ChatFont => {
   const saved = read(KEYS.chatFont)
-  return saved === 'serif' || saved === 'mono' ? saved : 'system'
+  return saved === 'serif' || saved === 'mono' || bundledChatFonts.some((font) => font.value === saved)
+    ? saved as ChatFont
+    : 'system'
 }
 
 const initialChatFontSize = (): ChatFontSize => {

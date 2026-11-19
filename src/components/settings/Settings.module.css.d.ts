@@ -14,6 +14,7 @@ declare const styles: {
   readonly "row": string;
   readonly "text": string;
   readonly "label": string;
+  readonly "fontPreview": string;
   readonly "uploadButton": string;
   readonly "locationCell": string;
   readonly "locationSelectors": string;

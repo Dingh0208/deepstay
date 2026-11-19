@@ -1,19 +1,229 @@
 :root {
-  --dsw-font-family:
-    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
-    'Open Sans', 'Helvetica Neue', sans-serif;
+  --dsw-font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,
+    Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+}
+
+@font-face {
+  font-family: 'Noto Sans SC';
+  src: url('../assets/fonts/noto-sans-sc.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Serif SC';
+  src: url('../assets/fonts/noto-serif-sc.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Ma Shan Zheng';
+  src: url('../assets/fonts/ma-shan-zheng.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'DM Sans';
+  src: url('../assets/fonts/dm-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Inter';
+  src: url('../assets/fonts/inter.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lato';
+  src: url('../assets/fonts/lato.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Lora';
+  src: url('../assets/fonts/lora.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Manrope';
+  src: url('../assets/fonts/manrope.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Montserrat';
+  src: url('../assets/fonts/montserrat.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Nunito';
+  src: url('../assets/fonts/nunito.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Open Sans';
+  src: url('../assets/fonts/open-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Oswald';
+  src: url('../assets/fonts/oswald.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'PT Sans';
+  src: url('../assets/fonts/pt-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/roboto.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Raleway';
+  src: url('../assets/fonts/raleway.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Rubik';
+  src: url('../assets/fonts/rubik.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Source Sans 3';
+  src: url('../assets/fonts/source-sans-3.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Ubuntu';
+  src: url('../assets/fonts/ubuntu.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Work Sans';
+  src: url('../assets/fonts/work-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Fira Sans';
+  src: url('../assets/fonts/fira-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'IBM Plex Sans';
+  src: url('../assets/fonts/ibm-plex-sans.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Noto Serif';
+  src: url('../assets/fonts/noto-serif.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'PT Serif';
+  src: url('../assets/fonts/pt-serif.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Merriweather';
+  src: url('../assets/fonts/merriweather.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Libre Baskerville';
+  src: url('../assets/fonts/libre-baskerville.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Bitter';
+  src: url('../assets/fonts/bitter.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Crimson Text';
+  src: url('../assets/fonts/crimson-text.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+:root {
   --ds-chat-font-family: var(--dsw-font-family);
   --ds-chat-scale: 1;
   --ds-chat-unit: calc(0.0625rem * var(--ds-chat-scale));
   font-variant-ligatures: no-contextual;
-}
-
-:root[data-chat-font='serif'] {
-  --ds-chat-font-family: 'Noto Serif CJK SC', 'Songti SC', SimSun, Georgia, serif;
-}
-
-:root[data-chat-font='mono'] {
-  --ds-chat-font-family: ui-monospace, Consolas, 'Roboto Mono', monospace;
 }
 
 body {
@@ -23,7 +233,7 @@ body {
   --ds-control-height-s: 32px;
   --ds-control-height-xs: 28px;
 
-  --ds-font-size-m: 14px;
+  --ds-font-size-m: 0.875rem;
 
   --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 
@@ -258,7 +468,7 @@ body {
 
   --dsw-font-markdown-code-block: calc(13 * var(--ds-chat-unit))/1.69 var(--ds-font-family-code);
 
-  --dsw-font-s-strong-14: 500 14px/22px var(--dsw-font-family);
+  --dsw-font-s-strong-14: 500 0.875rem/1.375rem var(--dsw-font-family);
 
-  --dsw-font-xs-13: 13px/20px var(--dsw-font-family);
+  --dsw-font-xs-13: 0.8125rem/1.25rem var(--dsw-font-family);
 }

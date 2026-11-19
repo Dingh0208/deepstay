@@ -60,6 +60,14 @@ export const UserMessage = memo(function UserMessage({
     }
   }, [editing, draft])
 
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current
+    if (editing && textarea) {
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+      textarea.scrollTop = textarea.scrollHeight
+    }
+  }, [editing])
+
   const sendEdit = () => {
     if (canSend && ensureApiKey() && editMessage(sessionId, message.id, draft.trim())) {
       stopReadAloud()

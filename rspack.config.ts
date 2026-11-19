@@ -10,6 +10,7 @@ const root = path.dirname(fileURLToPath(import.meta.url))
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
 ) as { version: string }
+const changelog = readFileSync(new URL('./CHANGELOG.md', import.meta.url), 'utf8')
 
 const cssLoader = {
   loader: 'builtin:lightningcss-loader',
@@ -84,9 +85,13 @@ export const createConfig = ({
     new rspack.DefinePlugin({
       __API_ORIGIN__: JSON.stringify(apiOrigin),
       __UPDATE_MANIFEST_URL__: JSON.stringify(process.env.DEEPSTAY_UPDATE_MANIFEST_URL ?? ''),
+      __CHANGELOG__: JSON.stringify(changelog),
     }),
     new rspack.CopyRspackPlugin({
-      patterns: [{ from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' }],
+      patterns: [
+        { from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' },
+        { from: path.resolve(root, 'src/assets/fonts/licenses'), to: 'static/fonts/licenses', toType: 'dir' },
+      ],
     }),
   ],
   performance: { hints: false },

@@ -15,10 +15,13 @@ declare const styles: {
   readonly "settings": string;
   readonly "settingsIcon": string;
   readonly "settingsLabel": string;
+  readonly "updateDot": string;
   readonly "collapsed": string;
   readonly "collapsedGroup": string;
   readonly "drawer": string;
+  readonly "drawerOpen": string;
   readonly "drawerMask": string;
+  readonly "drawerMaskOpen": string;
   readonly "mobile": string;
 };
 export = styles;

@@ -52,8 +52,8 @@ export const setChatBackground = async (blob: Blob | null): Promise<void> => {
   }
 }
 
-/** 限制本机图片的解码输入与保存尺寸，避免原始大照片反复占用聊天内存。 */
-export const prepareChatBackground = async (file: File): Promise<Blob> => {
+/** 打开裁剪用的本地原图；成功后由弹窗释放 URL。 */
+export const openChatBackground = async (file: File): Promise<HTMLImageElement> => {
   if (!/^image\/(jpeg|png|webp|gif|bmp)$/i.test(file.type)) {
     throw new Error('format')
   }
@@ -64,25 +64,50 @@ export const prepareChatBackground = async (file: File): Promise<Blob> => {
   try {
     const image = new Image()
     await new Promise<void>((resolve, reject) => {
-      image.onload = () => resolve()
+      image.onload = () => {
+        if (image.naturalWidth && image.naturalHeight) {
+          resolve()
+        } else {
+          reject(new Error('format'))
+        }
+      }
       image.onerror = () => reject(new Error('format'))
       image.src = url
     })
-    const ratio = Math.min(1, 2048 / Math.max(image.naturalWidth, image.naturalHeight))
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * ratio))
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * ratio))
-    const context = canvas.getContext('2d')
-    if (!context) {
-      throw new Error('canvas')
-    }
-    context.fillStyle = '#fff'
-    context.fillRect(0, 0, canvas.width, canvas.height)
-    context.drawImage(image, 0, 0, canvas.width, canvas.height)
-    return await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('canvas')), 'image/jpeg', 0.86)
-    })
-  } finally {
+    return image
+  } catch (error) {
     URL.revokeObjectURL(url)
+    throw error
   }
+}
+
+type CropRect = { x: number; y: number; width: number; height: number }
+export type BackgroundCrop = { x: number; y: number; zoom: number }
+
+export const getBackgroundCrop = (
+  { naturalWidth, naturalHeight }: Pick<HTMLImageElement, 'naturalWidth' | 'naturalHeight'>,
+  aspect: number,
+  { x, y, zoom }: BackgroundCrop
+): CropRect => {
+  const width = Math.min(naturalWidth, naturalHeight * aspect) / zoom
+  const height = width / aspect
+  return { x: (naturalWidth - width) * x, y: (naturalHeight - height) * y, width, height }
+}
+
+/** 保存选区并限制输出尺寸，聊天页无需再次解码原图。 */
+export const encodeChatBackground = async (image: HTMLImageElement, crop: CropRect): Promise<Blob> => {
+  const ratio = Math.min(1, 2048 / Math.max(crop.width, crop.height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(crop.width * ratio))
+  canvas.height = Math.max(1, Math.round(crop.height * ratio))
+  const context = canvas.getContext('2d')
+  if (!context) {
+    throw new Error('canvas')
+  }
+  context.fillStyle = '#fff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, canvas.width, canvas.height)
+  return await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('canvas')), 'image/jpeg', 0.86)
+  })
 }

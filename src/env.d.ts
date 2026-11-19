@@ -15,6 +15,7 @@ declare const __API_ORIGIN__: string
 
 /** COS / OSS HTTPS 版本清单地址；未配置时查询 GitHub Release。 */
 declare const __UPDATE_MANIFEST_URL__: string
+declare const __CHANGELOG__: string
 
 /** Prism 语言包通过副作用注册到全局 Prism */
 declare module 'prismjs/components/*' {}

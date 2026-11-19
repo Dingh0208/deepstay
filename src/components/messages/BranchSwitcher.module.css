@@ -11,8 +11,8 @@
 
 .count {
   color: var(--dsw-alias-label-tertiary);
-  font-size: 15px;
-  line-height: 18px;
+  font-size: 0.9375rem;
+  line-height: 1.125rem;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

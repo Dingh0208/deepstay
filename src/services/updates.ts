@@ -113,7 +113,7 @@ export const readAppRelease = (value: unknown): AppRelease | null => {
   }
 }
 
-/** 仅由用户点击触发，不携带 API Key 或账号凭证。 */
+/** 请求公开发布清单，不携带 API Key 或账号凭证。 */
 export const fetchLatestRelease = async (signal: AbortSignal): Promise<AppRelease | null> => {
   const controller = new AbortController()
   const abort = () => controller.abort()

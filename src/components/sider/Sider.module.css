@@ -32,7 +32,7 @@
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .historySearch:focus {
@@ -62,8 +62,8 @@
 .searchResult span,
 .searchResult time {
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
 }
 
 .searchControls {
@@ -77,7 +77,7 @@
     background: var(--dsw-specific-sidebar-fill);
     color: var(--dsw-alias-label-primary);
     font: inherit;
-    font-size: 12px;
+    font-size: 0.75rem;
   }
 }
 
@@ -104,7 +104,7 @@
   background: var(--dsw-alias-button-elevated-fill);
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 14px;
+  font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
   user-select: none;
@@ -178,8 +178,8 @@
   top: 0;
   z-index: 20;
   padding: 2px 10px;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 0.75rem;
+  line-height: 1.125rem;
   font-weight: 500;
   color: var(--dsw-alias-label-tertiary);
   background-color: var(--dsw-specific-sidebar-fill);
@@ -189,7 +189,7 @@
 .favoritesEmpty {
   padding: 0 10px;
   color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
+  font-size: 0.8125rem;
 }
 
 .favoriteRow {
@@ -255,10 +255,20 @@
   min-width: 0;
   margin-left: 4px;
   overflow: hidden;
-  font-size: 14px;
+  font-size: 0.875rem;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--dsw-alias-label-primary);
+}
+
+.updateDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-inline-start: 6px;
+  border-radius: 50%;
+  background: #e7b416;
+  vertical-align: 1px;
 }
 
 .collapsed {
@@ -291,6 +301,15 @@
   bottom: 0;
   left: 0;
   z-index: 800;
+  visibility: hidden;
+  transform: translateX(-100%);
+  transition: transform 240ms ease, visibility 0s linear 240ms;
+}
+
+.drawerOpen {
+  visibility: visible;
+  transform: translateX(0);
+  transition-delay: 0s;
 }
 
 .drawerMask {
@@ -298,7 +317,35 @@
   inset: 0;
   z-index: 799;
   background: rgba(25, 34, 58, 0.22);
-  backdrop-filter: blur(3px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.drawerMaskOpen {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+[data-drawer-gesture] {
+  .drawer {
+    visibility: visible;
+    transform: translateX(var(--drawer-translate));
+    transition: none;
+  }
+
+  .drawerMask {
+    opacity: var(--drawer-opacity);
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawer,
+  .drawerMask {
+    transition-duration: 0s;
+    transition-delay: 0s;
+  }
 }
 
 .mobile {
@@ -311,8 +358,8 @@
 
   .sectionHeader {
     padding: 4px 10px 3px;
-    font-size: 14px;
-    line-height: 22px;
+    font-size: 0.875rem;
+    line-height: 1.375rem;
   }
 
   .bottom {
@@ -336,7 +383,7 @@
 
   .settingsLabel {
     margin-left: 10px;
-    font-size: 16px;
-    line-height: 22px;
+    font-size: 1rem;
+    line-height: 1.375rem;
   }
 }

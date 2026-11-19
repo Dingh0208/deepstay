@@ -51,9 +51,11 @@ export const MessageList = ({
   session,
   streaming,
   footer,
+  jumpRequest = 0,
 }: {
   session: Session
   streaming: boolean
+  jumpRequest?: number
   footer: ((latestReply: AssistantReply | undefined) => React.ReactNode) | null
 }) => {
   const t = useTranslate()
@@ -152,6 +154,24 @@ export const MessageList = ({
     setHistoryWindow(null)
     scrollToBottom()
   }
+
+  const lastJumpRequest = useRef(jumpRequest)
+  useLayoutEffect(() => {
+    if (lastJumpRequest.current === jumpRequest) {
+      return
+    }
+    lastJumpRequest.current = jumpRequest
+    stickyRef.current = false
+    historyAnchorRef.current = null
+    restoreScrollRef.current = null
+    useHistoryTarget.setState({ sessionId: null, messageId: null })
+    setHistoryWindow({ start: 0, end: Math.min(messages.length, MESSAGE_PAGE_SIZE) })
+    setAtBottom(false)
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0
+      scrollTopRef.current = 0
+    }
+  }, [jumpRequest, messages.length])
 
   useEffect(
     () => () => {

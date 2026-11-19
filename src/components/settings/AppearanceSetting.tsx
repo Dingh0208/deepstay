@@ -3,11 +3,11 @@ import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 import { setThinkingCollapsed, useSettings } from '../../services/settings.js'
 import {
   loadChatBackground,
-  prepareChatBackground,
   setChatBackground,
   useChatBackground,
 } from '../../services/chatBackground.js'
 import { Button } from '../base/Button.js'
+import { BackgroundCropDialog } from './BackgroundCropDialog.js'
 import settingsStyles from './Settings.module.css'
 import styles from './AppearanceSetting.module.css'
 
@@ -37,21 +37,20 @@ export const ChatBackgroundSetting = () => {
   const t = useTranslate()
   const url = useChatBackground((state) => state.url)
   const inputRef = useRef<HTMLInputElement>(null)
+  const [file, setFile] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<TranslationKey | null>(null)
   useEffect(() => {
     void loadChatBackground().catch(() => setError('chatBackgroundSaveFailed'))
   }, [])
 
-  const change = async (file: File | null) => {
+  const reset = async () => {
     setBusy(true)
     setError(null)
     try {
-      await setChatBackground(file ? await prepareChatBackground(file) : null)
-    } catch (reason) {
-      setError(reason instanceof Error && reason.message === 'size' ? 'chatBackgroundTooLarge'
-        : reason instanceof Error && reason.message === 'format' ? 'chatBackgroundInvalid'
-          : 'chatBackgroundSaveFailed')
+      await setChatBackground(null)
+    } catch {
+      setError('chatBackgroundSaveFailed')
     } finally {
       setBusy(false)
     }
@@ -66,7 +65,7 @@ export const ChatBackgroundSetting = () => {
             {t(busy ? 'chatBackgroundSaving' : 'chatBackgroundChoose')}
           </Button>
           {url ? (
-            <Button variant="outlined" size="m" disabled={busy} onClick={() => void change(null)}>
+            <Button variant="outlined" size="m" disabled={busy} onClick={() => void reset()}>
               {t('chatBackgroundReset')}
             </Button>
           ) : null}
@@ -82,11 +81,13 @@ export const ChatBackgroundSetting = () => {
           const file = event.target.files?.[0]
           event.target.value = ''
           if (file) {
-            void change(file)
+            setError(null)
+            setFile(file)
           }
         }}
       />
       {error ? <div className={settingsStyles.error} role="status">{t(error)}</div> : null}
+      {file ? <BackgroundCropDialog file={file} onClose={() => setFile(null)} /> : null}
     </div>
   )
 }

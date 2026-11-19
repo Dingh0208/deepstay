@@ -1,9 +1,11 @@
 import clsx from 'clsx'
+import { useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
 import { useTranslate } from '../../i18n/index.js'
 import type { Session } from '../../services/chat/types.js'
 import { ChatInput } from '../chatInput/ChatInput.js'
 import { MessageList } from '../messages/MessageList.js'
+import { ConversationTitle } from './ConversationTitle.js'
 import { MobileHeader } from './MobileHeader.js'
 import { Welcome } from './Welcome.js'
 import styles from './SessionView.module.css'
@@ -20,6 +22,8 @@ export const SessionView = ({
 }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
+  const [jumpRequest, setJumpRequest] = useState(0)
+  const jumpToFirst = () => setJumpRequest((value) => value + 1)
   const title = session.title || t('untitledChat')
   if (session.messages.length === 0) {
     return <Welcome sessionId={session.id} />
@@ -27,18 +31,22 @@ export const SessionView = ({
   return (
     <div className={styles.view}>
       {isMobile ? (
-        <MobileHeader title={title} />
+        <MobileHeader key={session.id} title={title} onJumpToFirst={jumpToFirst} />
       ) : (
         <div className={styles.header}>
-          <div className={clsx(styles.title, siderCollapsed && styles.withCollapsedSider)}>
-            {title}
-          </div>
+          <ConversationTitle
+            key={session.id}
+            title={title}
+            className={clsx(styles.title, siderCollapsed && styles.withCollapsedSider)}
+            onJump={jumpToFirst}
+          />
         </div>
       )}
       <MessageList
         key={session.id}
         session={session}
         streaming={streaming}
+        jumpRequest={jumpRequest}
         footer={(latestReply) => (
           <div className={styles.inputContainer}>
             <ChatInput sessionId={session.id} latestReply={latestReply} />

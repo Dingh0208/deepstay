@@ -11,6 +11,12 @@
   flex: 1;
   min-width: 0;
   margin: 0 12px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;

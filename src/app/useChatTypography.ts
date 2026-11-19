@@ -1,6 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { useEffect } from 'react'
-import { useSettings } from '../services/settings.js'
+import { getChatFontFamily, useSettings } from '../services/settings.js'
 
 const device = registerPlugin<{ getFontScale(): Promise<{ scale: number }> }>('LocalFiles')
 const sizes = { small: 0.875, normal: 1, large: 1.125, extraLarge: 1.25 }
@@ -10,12 +10,17 @@ export const useChatTypography = () => {
   const size = useSettings((state) => state.chatFontSize)
 
   useEffect(() => {
-    document.documentElement.dataset.chatFont = font
+    document.documentElement.style.setProperty('--dsw-font-family', getChatFontFamily(font))
   }, [font])
 
   useEffect(() => {
-    const style = document.documentElement.style
-    style.setProperty('--ds-chat-scale', String(size === 'system' ? 1 : sizes[size]))
+    const root = document.documentElement
+    const style = root.style
+    const applyScale = (scale: number) => {
+      style.setProperty('--ds-ui-scale', String(scale))
+      style.setProperty('--ds-chat-scale', '1')
+    }
+    applyScale(size === 'system' ? 1 : sizes[size])
     if (size !== 'system' || Capacitor.getPlatform() !== 'android') {
       return
     }
@@ -25,7 +30,7 @@ export const useChatTypography = () => {
       try {
         const { scale } = await device.getFontScale()
         if (active && Number.isFinite(scale) && scale > 0) {
-          style.setProperty('--ds-chat-scale', String(scale))
+          applyScale(scale)
         }
       } catch {
         // Older native shells use the standard text size.

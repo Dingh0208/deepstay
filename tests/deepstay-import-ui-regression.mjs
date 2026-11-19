@@ -16,7 +16,7 @@ const mocks = new Map([
   ['../../services/chat/backup.js', 'export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=async()=>{}; export const importHistory=(...args)=>globalThis.__importHistory(...args);'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>true;'],
   ['../../services/chat/store.js', 'export const useChatStore=selector=>selector(globalThis.__chatState);'],
-  ['../../services/settings.js', 'export const isChineseBrowser=()=>false; export const setLocale=()=>{}; export const setThemePreference=()=>{}; export const setTtsVoice=()=>{}; export const setChatFont=()=>{}; export const setChatFontSize=()=>{}; export const useSettings=selector=>selector({locale:"zh-CN"});'],
+  ['../../services/settings.js', 'export const isChineseBrowser=()=>false; export const setLocale=()=>{}; export const setThemePreference=()=>{}; export const setTtsVoice=()=>{}; export const setChatFont=()=>{}; export const setChatFontSize=()=>{}; export const bundledChatFonts=[]; export const getChatFontFamily=()=>"system-ui"; export const useSettings=selector=>selector({locale:"zh-CN"});'],
   ['../../services/diagnostics/log.js', 'export const recordDiagnostic=()=>{};'],
   ['../../i18n/index.js', 'export const useTranslate=()=>globalThis.__translate;'],
   ['../base/Button.js', 'export const Button=()=>null;'],

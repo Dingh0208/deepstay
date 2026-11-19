@@ -2,6 +2,8 @@
   --app-screen-height: 100vh;
   --message-list-max-width: 840px;
   --message-list-padding-horizontal: 44px;
+  --ds-ui-scale: 1;
+  font-size: calc(16px * var(--ds-ui-scale));
 }
 
 @supports (height: 100dvh) {

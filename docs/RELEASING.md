@@ -1,6 +1,6 @@
 # deepstay Android 发布
 
-当前版本：`v0.1.7`（Android versionCode 8）。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
+当前版本：`v0.1.8`（Android versionCode 9）。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 本地构建
 
@@ -41,7 +41,7 @@ Web 资源按 Chromium/WebView 83+ 编译。浏览器/WebView 可独立于 Andro
 
 推送 `v版本号` 标签触发 Android CI，使用上述固定签名构建并直接发布为最新 GitHub Release；若同名 Release 已存在，则更新附件。推送标签前应完成版本、签名和产物检查。
 
-设置内的「检查更新」由用户点击触发，10 秒超时并比较版本号。Android 有新版时可在应用内下载，校验 SHA-256、包名和发布签名，再打开系统安装器确认更新。关闭设置保留当前下载状态。正式版使用 `ds.herohao.top` 更新源，GitHub 保留正式附件。服务器及 COS／OSS 源的配置与发布顺序见 [UPDATES.md](UPDATES.md)。检查失败不影响本机聊天。
+应用每次启动或重新进入前台时自动检查更新；发现新版时设置入口显示提示点。设置中的 deepstay 版本号可打开完整更新历史，升级后首次进入会展示最近三个版本。用户也可在设置中手动检查，检查请求 10 秒超时并比较版本号。Android 有新版时可在应用内下载，校验 SHA-256、包名和发布签名，再打开系统安装器确认更新。关闭设置保留当前下载状态。正式版使用 `ds.herohao.top` 更新源，GitHub 保留正式附件。服务器及 COS／OSS 源的配置与发布顺序见 [UPDATES.md](UPDATES.md)。检查失败不影响本机聊天。
 
 ## 发布流程
 

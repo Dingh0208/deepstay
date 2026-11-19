@@ -29,6 +29,8 @@ import { closeMobileSider, useMobileSiderSwipe } from '../components/sider/mobil
 import { MobileSider, Sider } from '../components/sider/Sider.js'
 import { hasOwn } from '../utils/object.js'
 import { useChatTypography } from './useChatTypography.js'
+import { bindAppUpdates } from '../services/appUpdates.js'
+import { ReleaseNotesDialog } from '../components/settings/ReleaseNotesDialog.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -78,12 +80,13 @@ export const App = () => {
 
   useEffect(() => { void initChat() }, [])
   useEffect(() => { void loadChatBackground().catch(() => {}) }, [])
+  useEffect(bindAppUpdates, [])
 
   return (
     <>
-      <div ref={frameRef} className={styles.frame}>
+      <div ref={frameRef} className={styles.frame} {...siderSwipe}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
-        <main className={styles.main} {...siderSwipe}>
+        <main className={styles.main}>
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>
@@ -97,7 +100,7 @@ export const App = () => {
               </Button>
             </div>
           ) : null}
-          <div className={styles.content}>
+          <div className={styles.content} data-chat-background-area="">
             {background ? (
               <div
                 className={styles.chatBackground}
@@ -148,6 +151,7 @@ export const App = () => {
       <SettingsDialog />
       <PlatformDialog />
       <FirstRunGuide />
+      <ReleaseNotesDialog />
       <Toast />
     </>
   )

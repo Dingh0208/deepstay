@@ -14,6 +14,30 @@
   overflow-wrap: anywhere;
 }
 
+.version {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-weight: 500;
+  text-align: start;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--dsw-alias-brand-text);
+  }
+
+  &:focus-visible {
+    border-radius: 2px;
+    outline: 2px solid var(--dsw-alias-brand-primary);
+    outline-offset: 3px;
+  }
+}
+
 .check {
   flex-shrink: 0;
   max-width: 100%;

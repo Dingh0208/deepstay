@@ -26,12 +26,15 @@ import {
   setThemePreference,
   setTtsVoice,
   useSettings,
+  bundledChatFonts,
+  getChatFontFamily,
+  type ChatFont,
   type ThemePreference,
 } from '../../services/settings.js'
 import { useTranslate, type TranslationKey, type TranslationMessage } from '../../i18n/index.js'
 import { Button } from '../base/Button.js'
 import { Modal } from '../base/Modal.js'
-import { Select } from '../base/Select.js'
+import { Select, type SelectOption } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatBackgroundSetting, ThinkingCollapseSetting } from './AppearanceSetting.js'
@@ -254,14 +257,22 @@ const TypographySetting = () => {
   const font = useSettings((state) => state.chatFont)
   const size = useSettings((state) => state.chatFontSize)
   const system = t('avatarMenuSettingsDialogThemeSelectSystemOption')
+  const chineseFonts = ['ma-shan-zheng', 'noto-sans-sc', 'noto-serif-sc']
+  const fontOptions: SelectOption<ChatFont>[] = [
+    { value: 'system', label: system },
+    { value: 'serif', label: t('chatFontSerif') },
+    { value: 'mono', label: t('chatFontMono') },
+    ...bundledChatFonts.map((item) => ({
+      value: item.value,
+      label: item.value === 'ma-shan-zheng' ? t('chatFontMaShanZheng') :
+        item.value === 'noto-sans-sc' ? t('chatFontNotoSansSC') :
+          item.value === 'noto-serif-sc' ? t('chatFontNotoSerifSC') : `${item.label} · ${t('chatFontLatin')}`,
+    })),
+  ]
   return (
     <>
       <SettingCell label={t('chatFont')} status={null} action={
-        <Select ariaLabel={t('chatFont')} value={font} onChange={setChatFont} options={[
-          { value: 'system', label: system },
-          { value: 'serif', label: t('chatFontSerif') },
-          { value: 'mono', label: t('chatFontMono') },
-        ]} />
+        <Select ariaLabel={t('chatFont')} value={font} onChange={setChatFont} options={fontOptions} />
       } />
       <SettingCell label={t('chatFontSize')} status={null} action={
         <Select ariaLabel={t('chatFontSize')} value={size} onChange={setChatFontSize} options={[
@@ -272,6 +283,14 @@ const TypographySetting = () => {
           { value: 'extraLarge', label: t('chatFontExtraLarge') },
         ]} />
       } />
+      <div className={styles.fontPreview} aria-live="polite">
+        <p style={{ fontFamily: getChatFontFamily(font) }}>
+          Aa 你好，DeepStay · 0123456789
+        </p>
+        {bundledChatFonts.some((item) => item.value === font) && !chineseFonts.includes(font) ? (
+          <small>{t('chatFontLatinFallback')}</small>
+        ) : null}
+      </div>
     </>
   )
 }

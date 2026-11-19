@@ -9,9 +9,11 @@ permissions:
   contents: write
 
 jobs:
-  android:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
     env:
       DEEPSTAY_UPDATE_MANIFEST_URL: ${{ vars.DEEPSTAY_UPDATE_MANIFEST_URL }}
     steps:
@@ -65,6 +67,34 @@ jobs:
         run: |
           UPDATE_DIRECTORY=$(node -e 'process.stdout.write(new URL(".", process.env.DEEPSTAY_UPDATE_MANIFEST_URL).href)')
           pnpm updates:manifest "$UPDATE_DIRECTORY"
+      - name: Save verified release artifacts
+        id: artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepstay-android-${{ github.run_attempt }}
+          path: release/*
+          if-no-files-found: error
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/deepstay-release.jks"
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DEEPSTAY_UPDATE_MANIFEST_URL: ${{ vars.DEEPSTAY_UPDATE_MANIFEST_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: release
+          merge-multiple: true
+      - name: Verify saved artifacts
+        run: |
+          cd release
+          sha256sum --check SHA256SUMS.txt
       - name: Publish domestic update
         if: env.DEEPSTAY_UPDATE_MANIFEST_URL != '' && vars.DEEPSTAY_UPDATE_DEPLOY_HOST != ''
         env:
@@ -83,22 +113,47 @@ jobs:
           printf '%s\n' "$UPDATE_SSH_KEY" > "$SSH_KEY"
           printf '%s\n' "$UPDATE_KNOWN_HOSTS" > "$KNOWN_HOSTS"
           chmod 600 "$SSH_KEY" "$KNOWN_HOSTS"
-          APK_NAME=$(node -p '"deepstay-" + require("./package.json").version + ".apk"')
+          VERSION=$(node -p 'require("./package.json").version')
+          APK_NAME="deepstay-${VERSION}.apk"
+          APK_SHA256=$(sha256sum "release/$APK_NAME" | cut -d ' ' -f1)
           APK_URL=$(node -p 'JSON.parse(require("fs").readFileSync("release/latest.json", "utf8")).apkUrl')
+          PUBLISHED_APK_NAME=$(node -p 'new URL(JSON.parse(require("fs").readFileSync("release/latest.json", "utf8")).apkUrl).pathname.split("/").pop()')
+          test "$APK_SHA256" = "$(node -p 'JSON.parse(require("fs").readFileSync("release/latest.json", "utf8")).sha256')"
+          test "$PUBLISHED_APK_NAME" = "deepstay-${VERSION}-${APK_SHA256}.apk"
+          APK_PART=".${APK_SHA256}.apk.part"
           MANIFEST_TMP=".latest-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.json"
-          SFTP=(sftp -b - -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$KNOWN_HOSTS" "deepstay-publisher@$DEPLOY_HOST")
-          printf 'cd /var/www/deepstay/updates\nput "release/%s" "%s"\nput release/latest.json "%s"\n' "$APK_NAME" "$APK_NAME" "$MANIFEST_TMP" | "${SFTP[@]}"
-          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 300 "$APK_URL" -o "$DOWNLOADED_APK"
-          test "$(sha256sum "$DOWNLOADED_APK" | cut -d ' ' -f1)" = "$(sha256sum "release/$APK_NAME" | cut -d ' ' -f1)"
-          printf 'cd /var/www/deepstay/updates\nrename "%s" latest.json\n' "$MANIFEST_TMP" | "${SFTP[@]}"
+          SFTP=(sftp -b - -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o UserKnownHostsFile="$KNOWN_HOSTS" "deepstay-publisher@$DEPLOY_HOST")
+          verify_apk() {
+            curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 300 -H 'Cache-Control: no-cache' "${APK_URL}?verify=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(date +%s%N)" -o "$DOWNLOADED_APK" &&
+              test "$(sha256sum "$DOWNLOADED_APK" | cut -d ' ' -f1)" = "$APK_SHA256"
+          }
+          if verify_apk; then
+            echo "Verified APK already published; skipping upload."
+          else
+            # Recover an interrupted legacy upload only after comparing its entire prefix.
+            LEGACY_APK="$RUNNER_TEMP/deepstay-legacy-prefix.apk"
+            LEGACY_LIST="$RUNNER_TEMP/deepstay-legacy-list.txt"
+            LEGACY_URL="${APK_URL%/*}/$APK_NAME?recovery=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            if curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 120 "$LEGACY_URL" -o "$LEGACY_APK" &&
+                printf 'cd /var/www/deepstay/updates\nls -aln\n' | "${SFTP[@]}" > "$LEGACY_LIST"; then
+              LEGACY_BYTES=$(wc -c < "$LEGACY_APK")
+              REMOTE_BYTES=$(awk -v name="$APK_NAME" '$1 ~ /^-/ && $9 == name {print $5}' "$LEGACY_LIST")
+              EXISTING_PART=$(awk -v name="$APK_PART" '$9 == name {print $9}' "$LEGACY_LIST")
+              if test -z "$EXISTING_PART" && test "$REMOTE_BYTES" = "$LEGACY_BYTES" &&
+                  test "$LEGACY_BYTES" -gt 0 && test "$LEGACY_BYTES" -lt "$(wc -c < "release/$APK_NAME")" &&
+                  cmp -n "$LEGACY_BYTES" "$LEGACY_APK" "release/$APK_NAME"; then
+                printf 'cd /var/www/deepstay/updates\nrename "%s" "%s"\n' "$APK_NAME" "$APK_PART" | "${SFTP[@]}" || echo "Legacy recovery unavailable; using regular upload."
+              fi
+            fi
+            rm -f "$LEGACY_APK" "$LEGACY_LIST"
+            printf 'cd /var/www/deepstay/updates\nreput "release/%s" "%s"\nrename "%s" "%s"\n' "$APK_NAME" "$APK_PART" "$APK_PART" "$PUBLISHED_APK_NAME" | "${SFTP[@]}"
+            verify_apk
+          fi
+          printf 'cd /var/www/deepstay/updates\nput release/latest.json "%s"\nrename "%s" latest.json\n' "$MANIFEST_TMP" "$MANIFEST_TMP" | "${SFTP[@]}"
           curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 30 -H 'Cache-Control: no-cache' "$DEEPSTAY_UPDATE_MANIFEST_URL" -o "$DOWNLOADED_MANIFEST"
           cmp release/latest.json "$DOWNLOADED_MANIFEST"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: deepstay-android
-          path: release/*
       - name: Publish release
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -107,6 +162,3 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" release/* --title "deepstay $GITHUB_REF_NAME" --generate-notes --latest
           fi
-      - name: Remove signing key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/deepstay-release.jks"

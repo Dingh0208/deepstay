@@ -51,6 +51,8 @@ const manifest = { version: 'v0.2.0', apkUrl: 'https://downloads.example.cn/deep
 assert.deepEqual(readUpdateManifest(manifest, manifestUrl), {
   version: '0.2.0', releaseUrl: release.html_url, apkUrl: manifest.apkUrl, apkSha256: hash,
 })
+const hashedApkUrl = `https://downloads.example.cn/deepstay/deepstay-0.2.0-${hash}.apk`
+assert.equal(readUpdateManifest({ ...manifest, apkUrl: hashedApkUrl }, manifestUrl).apkUrl, hashedApkUrl)
 assert.equal(readUpdateManifest({ ...manifest, version: '0.2.0+build.1' }, manifestUrl).version, '0.2.0+build.1')
 for (const invalid of [null, {}, { ...manifest, version: 'bad' }, { ...manifest, version: '0.2' },
   { ...manifest, version: '0.2.0-rc.1' }, { ...manifest, version: 'v0.2.0-beta' },

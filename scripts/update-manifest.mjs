@@ -11,11 +11,12 @@ if (!baseUrl || !baseUrl.endsWith('/') || new URL(baseUrl).protocol !== 'https:'
   throw new Error('Pass the public HTTPS update directory ending in /, such as https://downloads.example.com/deepstay/')
 }
 const apk = readFileSync(path.join(root, 'release', apkName))
+const sha256 = createHash('sha256').update(apk).digest('hex')
 const manifest = {
   version,
-  apkUrl: new URL(apkName, baseUrl).href,
-  sha256: createHash('sha256').update(apk).digest('hex'),
+  apkUrl: new URL(`deepstay-${version}-${sha256}.apk`, baseUrl).href,
+  sha256,
 }
 mkdirSync(path.join(root, 'release'), { recursive: true })
 writeFileSync(path.join(root, 'release', 'latest.json'), JSON.stringify(manifest, null, 2) + '\n')
-console.log(`Upload ${apkName} first, then latest.json to ${baseUrl}`)
+console.log(`Upload ${apkName} as ${new URL(manifest.apkUrl).pathname.split('/').pop()} first, then latest.json to ${baseUrl}`)

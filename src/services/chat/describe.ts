@@ -1,6 +1,7 @@
 import { isTranslationKey, translate } from '../../i18n/index.js'
 import { classifyStatus } from '../api/errors.js'
 import { looksLikeEventStream } from '../api/sse.js'
+import { hasReplyBody } from './reply.js'
 import type { AssistantMessage } from './types.js'
 
 export type Notice = {
@@ -8,7 +9,7 @@ export type Notice = {
   /** 模板答复使用正文样式；其余统一为红色错误提示。 */
   presentation?: 'response'
   /** 需要用户处理的问题附带的操作 */
-  action?: 'apiKey' | 'topUp'
+  action?: 'apiKey' | 'topUp' | 'regenerate'
 }
 
 const getTemplateText = (reply: AssistantMessage) =>
@@ -28,6 +29,9 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       localMessage && isTranslationKey(localMessage.key)
         ? translate(localMessage.key, localMessage.params)
         : readableReplyError(reply.error.message)
+    if (localMessage?.key === 'replyEmpty') {
+      return { text: message, action: 'regenerate' }
+    }
     // 历史补传错误刷新后仍需说明原因，恢复沿用附件卡片或重新生成。
     if (kind === 'upload') {
       return { text: message || translate('uploadFileStatusFailed') }
@@ -62,6 +66,15 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
   }
   if (template) {
     return { text: template, presentation: 'response' }
+  }
+  if ((reply.status === 'done' || reply.status === 'stopped') && !hasReplyBody(reply)) {
+    if (reply.status === 'done') {
+      const key = reply.stopReason === 'max_tokens' ? 'replyEmptyLimited' : 'replyEmpty'
+      return { text: translate(key), action: 'regenerate' }
+    }
+    if (reply.status === 'stopped') {
+      return { text: translate('replyStoppedBeforeAnswer'), action: 'regenerate' }
+    }
   }
   return null
 }

@@ -11,6 +11,7 @@ import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { compactSession, sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
+import type { AssistantMessage } from '../../services/chat/types.js'
 import { hasOwn } from '../../utils/object.js'
 import {
   addDraftFiles,
@@ -33,16 +34,25 @@ import { DraftAttachments } from './DraftAttachments.js'
 import { useVoiceInput } from './useVoiceInput.js'
 import { VoiceButton } from './VoiceButton.js'
 import { Spectrum } from './Spectrum.js'
+import { ComposerMetrics } from './ComposerMetrics.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
 
 /** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
-export const ChatInput = memo(function ChatInput({ sessionId }: { sessionId: string | null }) {
+type InputProps = { sessionId: string | null; latestReply?: AssistantMessage }
+
+export const ChatInput = memo(function ChatInput({ sessionId, latestReply }: InputProps) {
   // 切换目标时释放录音、转写和 DOM 状态；文字与附件由草稿服务保留。
-  return <Input key={sessionId === null ? 'new' : `session:${sessionId}`} sessionId={sessionId} />
+  return (
+    <Input
+      key={sessionId === null ? 'new' : `session:${sessionId}`}
+      sessionId={sessionId}
+      latestReply={latestReply}
+    />
+  )
 })
 
-const Input = ({ sessionId }: { sessionId: string | null }) => {
+const Input = ({ sessionId, latestReply }: InputProps) => {
   const t = useTranslate()
   const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
   const { text, attachments } = draft
@@ -51,8 +61,11 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   const streaming = useChatStore(
     (state) => sessionId !== null && hasOwn(state.streaming, sessionId)
   )
-  const manualProgress = useChatStore((state) =>
-    sessionId !== null && state.contextProgress[sessionId]?.manual === true
+  const contextProgress = useChatStore((state) =>
+    sessionId === null ? undefined : state.contextProgress[sessionId]
+  )
+  const empty = useChatStore(
+    (state) => sessionId === null || state.sessionCache[sessionId]?.messages.length === 0
   )
   const thinking = useSettings((state) => state.thinking)
   const importingHistory = useChatStore((state) => state.importingHistory)
@@ -148,22 +161,45 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
   const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
 
+  const runManualCompaction = (fromCommand = false) => {
+    const state = useChatStore.getState()
+    if (
+      state.importingHistory ||
+      voice.status !== 'idle' ||
+      (sessionId !== null && hasOwn(state.streaming, sessionId))
+    ) {
+      return
+    }
+    if (sessionId === null) {
+      showToast({ key: 'contextMemoryNotNeeded' })
+      return
+    }
+    if (!ensureApiKey()) {
+      return
+    }
+    if (fromCommand) {
+      setText('')
+    }
+    if (isMobile) {
+      textareaRef.current?.blur()
+    }
+    void compactSession(sessionId).then((result) => {
+      if (result === 'saved') {
+        showToast({ key: 'contextMemorySaved' })
+      }
+      if (result === 'notNeeded') {
+        showToast({ key: 'contextMemoryNotNeeded' })
+      }
+      if (result === 'failed') {
+        showToast({ key: 'contextMemoryManualFailed', type: 'error' })
+      }
+    })
+  }
+
   const send = () => {
     const draft = getDraft(sessionId)
     if (draft.text.trim() === '/compact' && !draft.attachments.length) {
-      if (useChatStore.getState().importingHistory || streaming || voice.status !== 'idle') {return}
-      if (!sessionId) {
-        showToast({ key: 'contextMemoryNotNeeded' })
-        return
-      }
-      if (!ensureApiKey()) {return}
-      setText('')
-      if (isMobile) {textareaRef.current?.blur()}
-      void compactSession(sessionId).then((result) => {
-        if (result === 'saved') {showToast({ key: 'contextMemorySaved' })}
-        if (result === 'notNeeded') {showToast({ key: 'contextMemoryNotNeeded' })}
-        if (result === 'failed') {showToast({ key: 'contextMemoryManualFailed', type: 'error' })}
-      })
+      runManualCompaction(true)
       return
     }
     if (!extras && attachments.length > 0) {
@@ -189,7 +225,16 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     }
   }
 
-  return (
+  const progress = contextProgress
+    ? contextProgress.total > 1
+      ? t('contextMemoryProgress', {
+          completed: contextProgress.completed,
+          total: contextProgress.total,
+        })
+      : t('contextMemoryCompressing')
+    : undefined
+
+  const composer = (
     <div
       className={clsx(styles.wrapper, sessionId === null ? styles.home : styles.session)}
       onClick={(event) => {
@@ -198,7 +243,9 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
         }
       }}
     >
-      {manualProgress ? <div role="status" className={styles.compactStatus}>{t('contextMemoryCompressing')}</div> : null}
+      {contextProgress?.manual ? (
+        <div role="status" className={styles.compactStatus}>{progress}</div>
+      ) : null}
       <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />
       <div className={styles.textareaWrapper}>
         <textarea
@@ -206,6 +253,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           className={clsx(styles.textarea, recording && isMobile && styles.textareaHidden)}
           placeholder={t('chatInputPlaceholderChat')}
           rows={2}
+          enterKeyHint="enter"
           // 移动端不自动聚焦，避免一打开就弹出键盘
           autoFocus={!isMobile}
           disabled={importingHistory}
@@ -325,5 +373,18 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       </div>
       {dragging ? <DragMask /> : null}
     </div>
+  )
+  return (
+    <>
+      {composer}
+      <ComposerMetrics
+        latestReply={latestReply}
+        empty={empty}
+        compactDisabled={empty || importingHistory || streaming || voice.status !== 'idle'}
+        progress={progress}
+        onCompact={() => runManualCompaction()}
+        onStop={sessionId !== null && contextProgress?.manual ? () => stopReply(sessionId) : undefined}
+      />
+    </>
   )
 }

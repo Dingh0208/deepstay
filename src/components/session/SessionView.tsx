@@ -39,12 +39,12 @@ export const SessionView = ({
         key={session.id}
         session={session}
         streaming={streaming}
-        footer={
+        footer={(latestReply) => (
           <div className={styles.inputContainer}>
-            <ChatInput sessionId={session.id} />
+            <ChatInput sessionId={session.id} latestReply={latestReply} />
             <div className={styles.caveat}>{t('contentCaveat')}</div>
           </div>
-        }
+        )}
       />
     </div>
   )

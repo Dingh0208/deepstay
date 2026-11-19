@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises'
 import { createRequire, registerHooks, stripTypeScriptTypes } from 'node:module'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import katex from 'katex'
 
 const app = new URL('../', import.meta.url)
 const src = new URL('src/', app)
@@ -17,13 +18,15 @@ const baselineThrottleCode = execFileSync('git', ['show', `${baselineRevision}:s
 const mocks = new Map([
   ['i18n/index.ts', 'export const useTranslate=()=>key=>key;'],
   ['app/viewport.ts', 'export const useIsMobile=()=>globalThis.__mobile;'],
-  ['services/chat/store.ts', 'export const selectMessageVersion=(...args)=>globalThis.__selection=args;'],
+  ['services/chat/store.ts', 'export const selectMessageVersion=(...args)=>globalThis.__selection=args; export const deleteMessages=()=>true;'],
+  ['services/settings.ts', 'export const addFavoriteMessages=()=>{};'],
   ['services/chat/historySearch.ts', 'export const useHistoryTarget=Object.assign(()=>globalThis.__historyTarget??{}, {setState:target=>globalThis.__historyTarget=target});'],
   ['components/search/searchPanelState.ts', 'export const closeSearchPanel=()=>{};'],
   ['components/messages/AssistantMessage.tsx', 'export const AssistantMessage=()=>null;'],
   ['components/messages/UserMessage.tsx', 'export const UserMessage=()=>null;'],
   ['components/base/IconButton.tsx', 'export const IconButton=()=>null;'],
-  ['components/base/icons.tsx', 'export const IconCheckOutline16=()=>null; export const IconCopyOutline16=()=>null; export const IconChevronDownOutline14=()=>null;'],
+  ['components/base/Modal.tsx', 'export const Modal=()=>null;'],
+  ['components/base/icons.tsx', 'export const IconCheckOutline16=()=>null; export const IconCopyOutline16=()=>null; export const IconChevronDownOutline14=()=>null; export const IconHeartOutline16=()=>null; export const IconTrashOutline16=()=>null;'],
   ['components/base/toastState.ts', 'export const showToast=()=>{};'],
   ['utils/clipboard.ts', 'export const copyText=async()=>true;'],
   ['components/markdown/MermaidDiagram.tsx', 'export const MermaidDiagram=()=>null;'],
@@ -44,7 +47,7 @@ const hooks = registerHooks({
     if (specifier === baselineUrl || specifier === baselineThrottleUrl) return { url: specifier, shortCircuit: true }
     if (context.parentURL?.startsWith(src.href)) {
       if (specifier === 'react') return { url: mockUrl(reactMock), shortCircuit: true }
-      if (specifier === 'react/jsx-runtime') return { url: mockUrl('export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx;'), shortCircuit: true }
+      if (specifier === 'react/jsx-runtime') return { url: mockUrl('export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'), shortCircuit: true }
       if (specifier.endsWith('.css')) return { url: mockUrl('export default {};'), shortCircuit: true }
       if (specifier.startsWith('.') && specifier.endsWith('.js')) {
         for (const extension of ['.ts', '.tsx']) {
@@ -115,8 +118,15 @@ const find = (node, predicate) => {
 }
 
 const { toMdAst } = await import(new URL('services/markdown/parse.ts', src))
+const { renderFormula } = await import(new URL('services/markdown/katex.ts', src))
 const checks = []
 const sources = [{ url: 'https://example.com', title: 'Fixture', siteName: 'example.com', index: 1, publishedAt: null, snippet: null, siteIcon: null }]
+const forumArray = String.raw`\begin{array}{l}
+\text{\scriptsize 第一条留言} \\
+\text{\tiny \textcolor{#A9A4CE}{几分钟前 \; ♡8}} \\
+\text{\scriptsize 共 9 条回复}
+\end{array}`
+const malformedForumBox = String.raw`\fcolorbox{#A9A4CE}{#ffffff}{${forumArray}}`
 const fixtures = [
   '你好，今天一起聊聊。\n\n第二段 **加粗** 与 *强调*。\n下一行。',
   '# 标题\n\n正文\n\n---\n\n后文',
@@ -131,10 +141,30 @@ const fixtures = [
   '[链接](https://example.com) ![图片](https://example.com/a.png) [citation:1]',
   '前文 $a+b$\n\n$$\na^2+b^2=c^2\n$$\n\n末尾',
   '前文 \\(x+y\\)\n\n\\[\na^2\n\\]\n\n末尾',
+  `前文\n\n${forumArray}\n\n末尾`,
   '<div>\nHTML\n\n</div>\n\n~~删除~~ <br> 末尾',
   '第一段\r\n\r\n第二段\r\n\r\n- 列表\r\n- 结尾',
   '😀 零宽\u200b字符与\t制表符\n\n尾部\n',
 ]
+const parse = value => toMdAst(value, { sources, disableLink: false })
+assert.throws(() => katex.renderToString(malformedForumBox, { strict: false }), /text mode/)
+for (const value of [forumArray, malformedForumBox, forumArray + '}', '$$\n' + malformedForumBox + '\n$$', '\\[\n' + forumArray + '\n\\]']) {
+  const ast = parse(value)
+  assert.equal(ast.children.length, 1)
+  assert.equal(ast.children[0].type, 'math')
+  const rendered = renderFormula(katex, ast.children[0].value, true)
+  assert.match(rendered, /class="mtable"/)
+  assert.match(rendered, /color:#A9A4CE/i)
+  assert.equal(rendered.includes('katex-error'), false)
+}
+const fencedTex = parse('```latex\n' + forumArray + '\n```').children[0]
+assert.equal(fencedTex.type, 'code')
+assert.equal(fencedTex.value, forumArray)
+assert.equal(parse('这里是源码：`\\begin{array}{l}`').children[0].children[1].type, 'inlineCode')
+assert.equal(parse(forumArray + '\n仍然保留这段普通说明').children[0].type, 'paragraph')
+assert.throws(() => renderFormula(katex, String.raw`\begin{array}{l}x`, true), /KaTeX parse error/)
+assert.equal(renderFormula(katex, 'x^2', false), katex.renderToString('x^2', { strict: false }))
+checks.push('Bare and malformed styled TeX arrays use KaTeX while explicit source code, prose, and ordinary math stay intact')
 let prefixes = 0
 for (const disableLink of [false, true]) {
   for (const text of fixtures) {

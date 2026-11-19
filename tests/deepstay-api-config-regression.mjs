@@ -34,12 +34,18 @@ assert.equal(settings.useSettings.getState().apiBaseUrl, 'https://api.deepseek.c
 assert.equal(settings.useSettings.getState().apiProtocol, 'deepseek')
 assert.equal(settings.useSettings.getState().model, 'deepseek-flash')
 assert.equal(settings.useSettings.getState().thinkingCollapsed, false)
+assert.equal(settings.useSettings.getState().showReplyTokenUsage, false)
 const configured = { apiKey: 'fixture-private-key', apiBaseUrl: 'https://gateway.example.test/proxy/v1', apiProtocol: 'openai', model: 'chosen-reasoner', models: ['chosen-reasoner', 'second-model'] }
 settings.setApiConnection(configured)
 settings.setThinkingCollapsed(true)
+settings.setShowReplyTokenUsage(true)
 const reloaded = await import(new URL('services/settings.ts?settings-reload', sourceRoot))
 for (const [key, value] of Object.entries(configured)) assert.deepEqual(reloaded.useSettings.getState()[key], value)
 assert.equal(reloaded.useSettings.getState().thinkingCollapsed, true)
+assert.equal(reloaded.useSettings.getState().showReplyTokenUsage, true)
+settings.setShowReplyTokenUsage(false)
+const disabled = await import(new URL('services/settings.ts?token-usage-disabled', sourceRoot))
+assert.equal(disabled.useSettings.getState().showReplyTokenUsage, false)
 checks.push('Fresh settings preserve the existing DeepSeek defaults and expanded thinking; custom URL, key, protocol, model list and collapse preference survive a cold reload')
 
 const { normalizeApiBaseUrl, apiEndpoint, getApiConnection } = await import(new URL('services/api/connection.ts', sourceRoot))
@@ -158,6 +164,7 @@ const body = {
 const collect = async generator => { const output = []; for await (const item of generator) output.push(item); return output }
 const { applyEvent, getReplyText } = await import(new URL('services/chat/reply.ts', sourceRoot))
 const { describeReply } = await import(new URL('services/chat/describe.ts', sourceRoot))
+const { getUsageTotal } = await import(new URL('services/api/usage.ts', sourceRoot))
 const renderEvents = events => {
   const indexes = new Map()
   let reply = { id: 'fixture-answer', role: 'assistant', model: configured.model, blocks: [], status: 'loading', createdAt: 1 }
@@ -194,18 +201,38 @@ assert.equal(rendered.blocks.filter(block => block.type === 'thinking').map(bloc
 assert.equal(getReplyText(rendered), '完整回答：你好，世界。')
 assert.equal(rendered.stopReason, 'end_turn')
 assert.equal(rendered.usage.output_tokens, 12)
+assert.equal(getUsageTotal(rendered.usage), 32)
 assert.equal(requestBody.messages.some(message => message.content === '上一答'), true)
 assert.equal(requestBody.messages.some(message => message.content === '用户补充的偏好'), true)
 assert.equal(requestBody.messages[requestBody.messages.length - 1].content, '当前问题')
 checks.push('Selected custom model and key reach only its OpenAI endpoint; chunked reasoning_content and content become complete existing reply blocks, preserve history and reminder text, consume trailing usage and finish once')
 
 responder = (_url, init) => {
-  assert.equal(JSON.parse(init.body).thinking.type, 'enabled')
+  const { thinking, stream_options } = JSON.parse(init.body)
+  assert.equal(thinking.type, 'enabled')
+  assert.equal(stream_options.include_usage, true)
   return streamedResponse([{ id: 'official-openai', choices: [{ delta: { content: '官方兼容响应' }, finish_reason: 'length' }] }, '[DONE]'])
 }
 const official = renderEvents(await collect(streamMessage('official-fixture-key', { ...body, model: 'deepseek-chat' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com', protocol: 'openai' })))
 assert.equal(getReplyText(official), '官方兼容响应')
 assert.equal(official.stopReason, 'max_tokens')
+assert.equal(getUsageTotal(official.usage), undefined)
+
+for (const [usage, expected] of [
+  [{ total_tokens: 25 }, 25],
+  [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 8 }, completion_tokens: 12 }, 32],
+  [{ prompt_tokens: 20, prompt_cache_hit_tokens: 8, completion_tokens: 12 }, 32],
+  [{ prompt_tokens: 20, completion_tokens: -1, total_tokens: '32' }, undefined],
+]) {
+  responder = () => streamedResponse([
+    { choices: [{ delta: { content: 'Token fixture' }, finish_reason: 'stop' }] },
+    { choices: [], usage },
+    '[DONE]',
+  ])
+  const reply = renderEvents(await collect(streamMessage(configured.apiKey, body, new AbortController().signal)))
+  assert.equal(getUsageTotal(reply.usage), expected)
+}
+assert.equal(getUsageTotal(applyEvent(rendered, { type: 'message_start', message: { id: 'continued', model: configured.model } }, 1200, new Map()).usage), undefined)
 
 for (const [frames, expectedKind] of [
   [[{ id: 'cut', choices: [{ delta: { content: '部分回答' }, finish_reason: null }] }], 'interrupted'],
@@ -239,18 +266,22 @@ responder = (url, init) => {
   assert.equal(new Headers(init.headers).get('x-api-key'), 'deepseek-fixture-key')
   assert.equal(JSON.parse(init.body).model, 'deepseek-v4-pro')
   return streamedResponse([
-    { type: 'message_start', message: { id: 'deepseek-test', model: 'deepseek-v4-pro' } },
+    { type: 'message_start', message: { id: 'deepseek-test', model: 'deepseek-v4-pro', usage: { input_tokens: 12, cache_read_input_tokens: 6, cache_creation_input_tokens: 2, output_tokens: 1 } } },
     { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
     { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '原协议完整回答' } },
     { type: 'content_block_stop', index: 0 },
-    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 12 } },
     { type: 'message_stop' },
   ])
 }
-const original = renderEvents(await collect(streamMessage('deepseek-fixture-key', { ...body, model: 'deepseek-v4-pro' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' })))
+const originalEvents = await collect(streamMessage('deepseek-fixture-key', { ...body, model: 'deepseek-v4-pro' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }))
+const original = renderEvents(originalEvents)
 assert.equal(getReplyText(original), '原协议完整回答')
 assert.equal(original.stopReason, 'end_turn')
+assert.equal(getUsageTotal(original.usage), 32)
+assert.equal(getUsageTotal(renderEvents(originalEvents.filter(event => event.type !== 'message_delta')).usage), undefined)
 checks.push('Existing DeepSeek Anthropic endpoint, x-api-key authentication, selected model and event-driven answer rendering continue to work')
+checks.push('Reply token visibility defaults off and survives reload; both protocols count cached input once, omit partial or malformed usage, and clear previous usage on continuation')
 
 const deepseek = { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }
 const namedFrame = frame => `event: ${frame.type}\r\ndata: ${JSON.stringify(frame)}\r\n\r\n`

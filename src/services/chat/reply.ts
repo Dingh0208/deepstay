@@ -79,7 +79,7 @@ export const applyEvent = (
     reply.status === 'streaming' ? reply : { ...reply, status: 'streaming' }
   switch (event.type) {
     case 'message_start':
-      return { ...next, usage: event.message.usage ?? next.usage }
+      return { ...next, usage: event.message.usage }
     case 'content_block_start': {
       blockIndexes.delete(event.index)
       const block = toReplyBlock(event.content_block, now)
@@ -129,7 +129,7 @@ export const applyEvent = (
         ...next,
         stopReason: event.delta.stop_reason,
         stopDetails: event.delta.stop_details,
-        usage: event.usage ?? next.usage,
+        usage: event.usage ? { ...next.usage, ...event.usage } : next.usage,
       }
     default:
       return next
@@ -145,23 +145,33 @@ export const settleReply = (
   status: Extract<ReplyStatus, 'done' | 'stopped' | 'error'>,
   now: number,
   error?: AssistantMessage['error']
-): AssistantMessage => ({
-  ...reply,
-  status,
-  error,
-  blocks: reply.blocks.flatMap((block): ReplyBlock[] => {
-    if (reply.stopReason === 'refusal' && (block.type === 'thinking' || block.type === 'text')) {
-      return []
-    }
-    return block.type === 'thinking' && block.startedAt !== undefined && block.endedAt === undefined
-      ? [{ ...block, endedAt: now }]
-      : [block]
-  }),
-})
+): AssistantMessage => {
+  const empty =
+    status === 'done' && reply.stopReason !== 'refusal' && reply.stopReason !== 'max_tokens' &&
+    !hasReplyBody(reply)
+  return {
+    ...reply,
+    status: empty ? 'error' : status,
+    error: empty ? { kind: 'protocol', message: '', localMessage: { key: 'replyEmpty' } } : error,
+    blocks: reply.blocks.flatMap((block): ReplyBlock[] => {
+      if (reply.stopReason === 'refusal' && (block.type === 'thinking' || block.type === 'text')) {
+        return []
+      }
+      return block.type === 'thinking' && block.startedAt !== undefined && block.endedAt === undefined
+        ? [{ ...block, endedAt: now }]
+        : [block]
+    }),
+  }
+}
 
 /** 回复里所有文本块拼起来，用于复制与判断是否有回答 */
 export const getReplyText = (reply: AssistantMessage) =>
   reply.blocks.map((block) => (block.type === 'text' ? block.text : '')).join('')
+
+export const hasVisibleReplyText = (text: string) => /[^\s\u200b-\u200f\u202a-\u202e\u2060-\u206f]/u.test(text)
+
+export const hasReplyBody = (reply: AssistantMessage) =>
+  reply.blocks.some((block) => block.type === 'text' && hasVisibleReplyText(block.text))
 
 /**
  * 只有正常达到输出上限或被停止的回复可续写，报错回复不能续写。
@@ -199,7 +209,7 @@ const isUsableReply = (message: Message): message is AssistantMessage =>
   (message.status === 'done' || message.status === 'stopped') &&
   message.stopReason !== 'refusal' &&
   !message.blocks.some((block) => block.type === 'text' && block.isTemplate) &&
-  message.blocks.some((block) => block.type === 'text' && block.text.length > 0)
+  hasReplyBody(message)
 
 /** 有文件时用内容块数组：先文件后文本，文件按 Files API 的 file_id 引用 */
 const toUserParam = ({ content, files }: UserMessage): MessageParam => {
@@ -288,7 +298,7 @@ export const getContextRounds = (history: Message[]): [UserMessage, AssistantMes
   const rounds: [UserMessage, AssistantMessage][] = []
   for (let i = 0; i + 1 < history.length; i++) {
     const [user, reply] = [history[i], history[i + 1]]
-    if (user.role === 'user' && isUsableReply(reply)) {
+    if (user.role === 'user' && isUsableReply(reply) && !reply.questionDeleted) {
       rounds.push([user, reply])
       i++
     }

@@ -116,9 +116,10 @@ try {
   const { toLocalSession } = await import(new URL('services/chat/history/toLocal.ts', sourceRoot))
   const session = { id: 'compat-session', title: '兼容记录', createdAt: now, updatedAt: now + 3, rootMessageId: 'u1', messages: [
     { ...user, selectedChildId: 'a2', parentId: null }, { ...answer, parentId: 'u1' },
-    { ...answer, id: 'a2', parentId: 'u1', createdAt: now + 2, blocks: [{ type: 'text', text: '选中的分支 — 尾部完整' }] },
+    { ...answer, id: 'a2', parentId: 'u1', createdAt: now + 2, usage: { total_tokens: 42 }, blocks: [{ type: 'text', text: '选中的分支 — 尾部完整' }] },
   ] }
   const file = toSessionFile(session, () => null)
+  assert.equal(file.messages[2].accumulated_token_usage, 42)
   const originalMessageOrder = file.messages.map(message => message.id)
   file.messages.reverse()
   const reversedInput = file.messages.map(message => message.id)
@@ -135,6 +136,7 @@ try {
   await store.initChat()
   assert.equal(store.useChatStore.getState().ready, true)
   assert.equal(store.useChatStore.getState().initError, false)
+  assert.equal(branches.getVisibleMessages(await db.loadSession(session.id))[1].usage.total_tokens, 42)
   const archive = await backup.exportHistory()
   assert.ok(archive.blob.size > 0)
   assert.equal(await backup.importHistory(new File([archive.blob], archive.name, { type: 'application/zip' })), 1)
@@ -144,9 +146,11 @@ try {
   assert.equal(restored.title, session.title)
   assert.equal(restored.messages.length, 3)
   assert.equal(branches.getVisibleMessages(restored)[1].blocks[0].text, '选中的分支 — 尾部完整')
+  assert.equal(branches.getVisibleMessages(restored)[1].usage, undefined)
   assert.equal(local.get('chat-demo:api-key'), 'compatibility-fixture-key')
   assert.equal(networkRequests, 0)
   checks.push('Actual database/store cold initialization and ZIP export/import retain all three messages, selected branch and API Key with zero network calls')
+  checks.push('IndexedDB preserves provider-reported reply usage; ZIP export records the total and ZIP import does not fabricate per-request usage from cumulative archive counts')
   const evidence = { passed: true, runtime: process.version, missingAPIs: absent.map(([, key]) => key), checks, networkRequests,
     scope: 'Actual TypeScript modules with four native APIs removed. In-memory IndexedDB emulator only; no device/browser data or network. Test dependency own-key calls use an equivalent private adapter, not an application polyfill.' }
   await writeFile(new URL('./deepstay-compat-evidence.json', import.meta.url), JSON.stringify(evidence, null, 2) + '\n')

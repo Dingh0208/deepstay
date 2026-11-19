@@ -35,6 +35,8 @@ const settings = await import(new URL('services/settings.ts', sourceRoot))
 const store = await import(new URL('services/chat/store.ts', sourceRoot))
 const drafts = await import(new URL('services/chat/drafts.ts', sourceRoot))
 const db = await import(new URL('services/chat/db.ts', sourceRoot))
+const { getReplyMetrics, getTokenRate } = await import(new URL('services/chat/replyMetrics.ts', sourceRoot))
+const { estimateRequestParts, estimateRequestTokens } = await import(new URL('services/chat/contextMemory.ts', sourceRoot))
 const checks = [], requests = []
 const encoder = new TextEncoder()
 globalThis.fetch = async (url, init) => {
@@ -84,10 +86,22 @@ const unsubscribeReasoning = store.useChatStore.subscribe((state) => {
 // This change occurs before prepareFiles' awaited work settles. The first turn
 // must remain a coherent URL/key/model snapshot; the next turn uses the new one.
 settings.setApiConnection(changedB)
+settings.setGeneration({
+  system: '保持角色设定',
+  temperature: 0.7,
+  topP: 0.9,
+  maxTokens: 640,
+  contextTokens: 2048,
+  frequencyPenalty: 0,
+  presencePenalty: -0.3,
+  stop: ['结束标记', '结束标记'],
+})
 await waitIdle()
 unsubscribeReasoning()
 if (requests.length === 0) console.log(store.useChatStore.getState().sessionCache[firstId].messages[1])
 assert.equal(requests.length, 1)
+assert.equal(requests[0].body.max_tokens, undefined)
+assert.notEqual(requests[0].body.messages[0].content, '保持角色设定')
 const first = store.useChatStore.getState().sessionCache[firstId]
 assert.equal(first.messages[1].model, originalA.model)
 assert.equal(first.messages[1].status, 'done')
@@ -103,6 +117,19 @@ assert.equal(requests.length, 2)
 assert.equal(requests[1].body.messages.some(message => message.content === '第一条问题'), true)
 assert.equal(requests[1].body.messages.some(message => message.content === '第一个供应商完整回答'), true)
 assert.equal(requests[1].body.messages[requests[1].body.messages.length - 1].content, '继续对话')
+assert.deepEqual(requests[1].body.messages[0], { role: 'system', content: '保持角色设定' })
+const { temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop, stream } = requests[1].body
+assert.deepEqual(
+  { temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop, stream },
+  { temperature: 0.7, top_p: 0.9, max_tokens: 640, frequency_penalty: 0, presence_penalty: -0.3, stop: ['结束标记'], stream: true }
+)
+assert.equal(requests[1].body.contextTokens, undefined)
+const { useSettings: reloadedSettings } = await import(new URL('services/settings.ts?generation-reload', sourceRoot))
+assert.equal(reloadedSettings.getState().generation.contextTokens, 2048)
+assert.equal(reloadedSettings.getState().generation.system, '保持角色设定')
+settings.setGeneration({})
+assert.equal(saved.has('deepstay:generation'), false)
+checks.push('Generation settings persist locally and are snapshotted per send; OpenAI receives only the configured request fields and streaming stays enabled')
 const second = store.useChatStore.getState().sessionCache[firstId]
 assert.equal(second.messages[3].model, changedB.model)
 assert.equal(second.messages[3].status, 'done')
@@ -369,6 +396,44 @@ assert.equal(afterImportReply.messages[0].files[0].id, originalImportedAttachmen
 assert.equal((await db.loadFile(originalImportedAttachment.id)).size, 8)
 checks.push('A real import with an unindexed historical image rejection can continue without compression, while retaining its original image and text')
 
+settings.setApiConnection({ ...changedB, model: 'window-budget-fixture' })
+settings.setContextMemoryEnabled(false)
+const windowId = 'one-million-token-window'
+const oldest = '往'.repeat(680_000)
+const recent = '近'.repeat(20_000)
+const windowHistory = [
+  { role: 'user', id: 'old-q', content: '最早的提问', files: [], createdAt: 1 },
+  { role: 'assistant', id: 'old-a', status: 'done', blocks: [{ type: 'text', text: oldest }], createdAt: 2 },
+  { role: 'user', id: 'recent-q', content: '近期提问', files: [], createdAt: 3 },
+  { role: 'assistant', id: 'recent-a', status: 'done', blocks: [{ type: 'text', text: recent }], createdAt: 4 },
+]
+await db.saveSession({ id: windowId, title: '窗口验收', createdAt: 1, updatedAt: 4, messages: windowHistory })
+store.useChatStore.setState(state => ({ sessions: [...state.sessions, { id: windowId, title: '窗口验收', createdAt: 1, updatedAt: 4 }] }))
+await store.openHistoryMatch(windowId, null)
+const windowRequests = []
+globalThis.fetch = async (_url, init) => {
+  windowRequests.push(JSON.parse(init.body))
+  return new Response('data: {"choices":[{"index":0,"delta":{"content":"已收到"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    { headers: { 'Content-Type': 'text/event-stream' } })
+}
+drafts.setDraftText(windowId, '在默认窗口继续')
+assert.equal(store.sendMessage(windowId), true)
+await waitIdle()
+assert.equal(windowRequests.length, 1)
+assert.ok(!windowRequests[0].messages.some(({content}) => content === oldest))
+assert.ok(windowRequests[0].messages.some(({content}) => content === recent))
+assert.equal(windowRequests[0].messages.at(-1).content, '在默认窗口继续')
+settings.setGeneration({ contextTokens: 4096 })
+drafts.setDraftText(windowId, '在自定义窗口继续')
+assert.equal(store.sendMessage(windowId), true)
+await waitIdle()
+assert.equal(windowRequests.length, 2)
+assert.ok(!windowRequests[1].messages.some(({content}) => content === recent))
+assert.equal(windowRequests[1].messages.at(-1).content, '在自定义窗口继续')
+assert.equal((await db.loadSession(windowId)).messages[1].blocks[0].text.length, oldest.length)
+settings.setGeneration({})
+checks.push('The one-million-token default retains eligible history beyond 24k; default and custom windows crop only the outbound copy')
+
 // A real request can be rejected even when the local tokenizer estimate differs from the provider.
 settings.setApiConnection({ ...changedB, model: 'length-limit-fixture' })
 settings.setContextMemoryEnabled(false)
@@ -398,6 +463,15 @@ assert.ok(limitedRequests[1].messages.length < limitedRequests[0].messages.lengt
 assert.equal(limitedRequests[1].messages.at(-1).content, '1')
 assert.ok(limitedRequests[1].messages.some(({content})=>content==='旧问题 31'))
 assert.ok(!limitedRequests[1].messages.some(({content})=>content==='旧问题 0'))
+const [limitedSystem, ...fitMessages] = limitedRequests[1].messages
+assert.deepEqual((await db.loadSession(limitId)).messages.at(-1).metrics, estimateRequestParts({
+  system: limitedSystem.content,
+  tools: [],
+  messages: fitMessages.map(({ role, content }) => ({
+    role: role === 'system' ? 'latest_reminder' : role,
+    content: role === 'assistant' ? [{ type: 'text', text: content }] : content,
+  })),
+}))
 assert.equal((await db.loadSession(limitId)).messages.at(-1).status, 'done')
 assert.deepEqual((await db.loadSession(limitId)).messages.slice(0, limitHistory.length).map(({id})=>id), limitHistory.map(({id})=>id))
 drafts.setDraftText(limitId, '再继续')
@@ -513,6 +587,132 @@ const continued = (await db.loadSession(continuationId)).messages.at(-1)
 assert.equal(continued.status, 'done')
 assert.equal(continued.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), oversizedText + '新回答')
 checks.push('Continuing an oversized prefix uploads and preserves the current document, keeps the whole prefix and reminder, and only omits optional old history')
+
+const { describeReply } = await import(new URL('services/chat/describe.ts', sourceRoot))
+const { canContinueReply, getContextRounds } = await import(new URL('services/chat/reply.ts', sourceRoot))
+const { buildReplyView } = await import(new URL('services/chat/view.ts', sourceRoot))
+settings.setContextMemoryEnabled(false)
+const blankStart = { type: 'message_start', message: { id: 'blank-fixture', model: 'deepseek-v4-pro', usage: { input_tokens: 10 } } }
+const blankStop = { type: 'message_stop' }
+const blankDelta = (stop_reason = 'end_turn') => ({ type: 'message_delta', delta: { stop_reason, stop_sequence: null }, usage: { output_tokens: 5 } })
+const textFrame = text => ({ type: 'content_block_start', index: 0, content_block: { type: 'text', text } })
+const thinkingFrame = { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '继续推理' } }
+const sseReply = frames => new Response(frames.map(payload => `data: ${JSON.stringify(payload)}\n\n`).join(''),
+  { headers: { 'Content-Type': 'text/event-stream' } })
+for (const [content, delta, withStop] of [
+  [[], blankDelta(), true],
+  [[textFrame('')], blankDelta(), true],
+  [[textFrame(' \n\t\u200b')], blankDelta(), true],
+  [[thinkingFrame], blankDelta(), false],
+]) {
+  store.newChat()
+  let attempts = 0
+  globalThis.fetch = async () => {
+    attempts++
+    return attempts === 1
+      ? sseReply([blankStart, ...content, delta, ...(withStop ? [blankStop] : [])])
+      : sseReply([blankStart, textFrame('一次重新生成就看到了。'), blankDelta(), blankStop])
+  }
+  drafts.setDraftText(null, '往下翻剩下的回复')
+  assert.equal(store.sendMessage(null), true)
+  const id = store.useChatStore.getState().activeId
+  await waitIdle()
+  const failed = (await db.loadSession(id)).messages.at(-1)
+  assert.equal(failed.status, 'error')
+  assert.equal(failed.error.localMessage.key, 'replyEmpty')
+  assert.equal(describeReply(failed).action, 'regenerate')
+  assert.equal(buildReplyView(failed, false).answer, null)
+  assert.equal(attempts, 1)
+  assert.equal(describeReply({ ...failed, status: 'done', error: undefined }).action, 'regenerate')
+  store.regenerateReply(id, failed.id)
+  store.regenerateReply(id, failed.id)
+  await waitIdle()
+  const recovered = (await db.loadSession(id)).messages
+  assert.equal(attempts, 2)
+  assert.equal(recovered.filter(({ role }) => role === 'user').length, 1)
+  assert.equal(recovered.at(-1).status, 'done')
+  assert.equal(recovered.at(-1).blocks[0].text, '一次重新生成就看到了。')
+  assert.deepEqual(getContextRounds(recovered.slice(0, 2)), [])
+}
+for (const [content, reason, notice, resumable] of [
+  [[textFrame('不能显示的内容'), thinkingFrame], 'refusal', { presentation: 'response' }, false],
+  [[thinkingFrame], 'max_tokens', { action: 'regenerate' }, true],
+  [[textFrame('已经生成的部分正文')], 'max_tokens', null, true],
+]) {
+  store.newChat()
+  globalThis.fetch = async () => sseReply([blankStart, ...content, blankDelta(reason), blankStop])
+  drafts.setDraftText(null, '检查终止原因')
+  assert.equal(store.sendMessage(null), true)
+  const id = store.useChatStore.getState().activeId
+  await waitIdle()
+  const reply = (await db.loadSession(id)).messages.at(-1)
+  assert.equal(reply.status, 'done')
+  assert.equal(reply.stopReason, reason)
+  assert.equal(canContinueReply(reply), resumable)
+  const actual = describeReply(reply)
+  if (notice === null) assert.equal(actual, null)
+  else for (const [key, value] of Object.entries(notice)) assert.equal(actual[key], value)
+  if (reason === 'refusal') assert.deepEqual(reply.blocks, [])
+}
+assert.equal(describeReply(stopped.messages.at(-1)).text, '已停止生成，尚未收到正文。')
+checks.push('Usage-only, empty, whitespace/invisible and reasoning-only replies show an explicit recovery action; one user action issues one request, and refusal/limited replies retain their stop semantics')
+
+assert.equal(getTokenRate({ output_tokens: 30 }, 1500), 20)
+assert.equal(getTokenRate({ output_tokens: 30 }, 0), undefined)
+assert.equal(getTokenRate({ output_tokens: 0 }, 1500), undefined)
+assert.equal(getTokenRate({ total_tokens: 30 }, 1500), undefined)
+const actualUsage = getReplyMetrics({ usage: { total_tokens: 42 } })
+assert.equal(actualUsage.context.occupied, 42)
+assert.equal(actualUsage.context.input, undefined)
+assert.equal(actualUsage.context.reported, true)
+store.newChat()
+let metricRequest
+let sendText
+const streamMetricResponse = () => {
+  const start = { ...blankStart, message: { ...blankStart.message, usage: { input_tokens: 15, cache_creation_input_tokens: 2, cache_read_input_tokens: 3 } } }
+  const delta = { ...blankDelta(), usage: { output_tokens: 12 } }
+  return new Response(new ReadableStream({
+    start(controller) {
+      const send = (...frames) => controller.enqueue(encoder.encode(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join('')))
+      sendText = () => {
+        send({ ...textFrame('实际正文'), index: 1 }, delta, blankStop)
+        controller.close()
+      }
+      send(start, thinkingFrame)
+    },
+  }), { headers: { 'Content-Type': 'text/event-stream' } })
+}
+globalThis.fetch = async (_url, init) => {
+  metricRequest = JSON.parse(init.body)
+  return streamMetricResponse()
+}
+const sawReasoning = new Promise((resolve) => {
+  const unsubscribe = store.useChatStore.subscribe((state) => {
+    const reply = state.sessionCache[state.activeId]?.messages.at(-1)
+    if (reply?.blocks?.some(block => block.type === 'thinking')) {
+      unsubscribe()
+      resolve()
+    }
+  })
+})
+drafts.setDraftText(null, '记录流式速度')
+assert.equal(store.sendMessage(null), true)
+const metricId = store.useChatStore.getState().activeId
+await sawReasoning
+assert.equal(getReplyMetrics(store.useChatStore.getState().sessionCache[metricId].messages.at(-1)).tokensPerSecond, undefined)
+await new Promise(resolve => setTimeout(resolve, 160))
+sendText()
+await waitIdle()
+const metricReply = (await db.loadSession(metricId)).messages.at(-1)
+const metrics = getReplyMetrics(metricReply)
+assert.ok(metrics.tokensPerSecond > 0 && metrics.tokensPerSecond <= 100)
+assert.deepEqual(metrics.context, {
+  ...estimateRequestParts(metricRequest), input: 20, output: 12, occupied: 32, reported: true,
+})
+const estimateOnly = getReplyMetrics({ ...metricReply, usage: undefined })
+assert.equal(estimateOnly.context.occupied, estimateRequestTokens(metricRequest))
+assert.equal(estimateOnly.context.reported, false)
+checks.push('Stream rate waits for measured provider output and separated content frames; stored request metrics count cache once and describe the actual payload after a history-limit retry')
 
 const evidence = { passed: true, runtime: process.version, checks,
   requests: requests.map(({ url, body }) => ({ url, model: body.model, messages: body.messages.length })),

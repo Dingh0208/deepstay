@@ -6,12 +6,15 @@ import {
   getVisibleMessages,
   type MessageVersions,
 } from '../../services/chat/branches.js'
-import { selectMessageVersion } from '../../services/chat/store.js'
+import { deleteMessages, selectMessageVersion } from '../../services/chat/store.js'
 import { useHistoryTarget } from '../../services/chat/historySearch.js'
-import type { Message, Session } from '../../services/chat/types.js'
+import type { AssistantMessage as AssistantReply, Message, Session } from '../../services/chat/types.js'
+import { addFavoriteMessages } from '../../services/settings.js'
 import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
-import { IconChevronDownOutline14 } from '../base/icons.js'
+import { IconChevronDownOutline14, IconHeartOutline16, IconTrashOutline16 } from '../base/icons.js'
+import { Modal } from '../base/Modal.js'
+import { showToast } from '../base/toastState.js'
 import { closeSearchPanel } from '../search/searchPanelState.js'
 import { AssistantMessage } from './AssistantMessage.js'
 import { UserMessage } from './UserMessage.js'
@@ -51,7 +54,7 @@ export const MessageList = ({
 }: {
   session: Session
   streaming: boolean
-  footer: React.ReactNode
+  footer: ((latestReply: AssistantReply | undefined) => React.ReactNode) | null
 }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
@@ -64,8 +67,20 @@ export const MessageList = ({
   const restoreScrollRef = useRef<{ messageId: string; top: number } | null>(null)
   const historyAnchorRef = useRef<{ messageId: string; top: number } | null>(null)
   const messages = useMemo(() => getVisibleMessages(session), [session])
+  let latestReply: AssistantReply | undefined
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]
+    if (message.role === 'assistant') {
+      latestReply = message
+      break
+    }
+  }
   const [historyWindow, setHistoryWindow] = useState<MessageWindow | null>(null)
   const [atBottom, setAtBottom] = useState(true)
+  const [selected, setSelected] = useState<Set<string> | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const chooseMessages = useCallback((id: string) => setSelected(new Set([id])), [])
   const previousVersions = useRef<ReadonlyMap<string, MessageVersions>>(new Map())
   const previousLastMessageId = useRef<string>()
   const lastMessageId = messages[messages.length - 1]?.id
@@ -100,6 +115,8 @@ export const MessageList = ({
     }
     const node = contentRef.current?.querySelector<HTMLElement>(`[data-chat-message="${CSS.escape(searchTarget.messageId)}"]`)
     if (node) {
+      setSelected(null)
+      setConfirmDelete(false)
       stickyRef.current = false
       setHistoryWindow({ start, end })
       node.scrollIntoView({ block: 'center' })
@@ -276,6 +293,31 @@ export const MessageList = ({
 
   const lastIndex = messages.length - 1
   const uploadRetryId = getUploadRetryId(messages, streaming)
+  const favoriteSelected = () => {
+    if (selected?.size && !streaming) {
+      addFavoriteMessages(session.id, [...selected])
+      setSelected(null)
+      showToast({ key: 'messagesFavorited' })
+    }
+  }
+  const deleteSelected = async () => {
+    if (!selected?.size || streaming || deleting) {
+      return
+    }
+    setDeleting(true)
+    try {
+      if (await deleteMessages(session.id, [...selected])) {
+        setSelected(null)
+        setConfirmDelete(false)
+      } else {
+        showToast({ key: 'messageDeleteFailed', type: 'error' })
+      }
+    } catch {
+      showToast({ key: 'messageDeleteFailed', type: 'error' })
+    } finally {
+      setDeleting(false)
+    }
+  }
   return (
     <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
       <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
@@ -287,9 +329,8 @@ export const MessageList = ({
           ) : null}
           {shown.map((message, offset) => {
             const index = start + offset
-            return message.role === 'user' ? (
+            const content = message.role === 'user' ? (
               <UserMessage
-                key={message.id}
                 sessionId={session.id}
                 message={message}
                 retryUploadId={uploadRetryId}
@@ -298,10 +339,10 @@ export const MessageList = ({
                 busy={streaming}
                 versions={versions.get(message.id) ?? EMPTY_VERSIONS}
                 onSelectVersion={selectVersion}
+                onMultiSelect={selected ? undefined : chooseMessages}
               />
             ) : (
               <AssistantMessage
-                key={message.id}
                 sessionId={session.id}
                 message={message}
                 isLast={index === lastIndex}
@@ -309,7 +350,34 @@ export const MessageList = ({
                 busy={streaming}
                 versions={versions.get(message.id) ?? EMPTY_VERSIONS}
                 onSelectVersion={selectVersion}
+                onMultiSelect={selected ? undefined : chooseMessages}
               />
+            )
+            return (
+              <div key={message.id} className={selected ? styles.selectableMessage : undefined}>
+                <div aria-hidden={selected ? true : undefined} {...(selected ? { inert: '' } : {})}>{content}</div>
+                {selected ? (
+                  <label className={styles.messageCheckbox}>
+                    <input
+                      type="checkbox"
+                      aria-label={t(message.role === 'user' ? 'selectUserMessage' : 'selectAssistantMessage', { number: index + 1 })}
+                      checked={selected.has(message.id)}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked
+                        setSelected((previous) => {
+                          const next = new Set(previous)
+                          if (checked) {
+                            next.add(message.id)
+                          } else {
+                            next.delete(message.id)
+                          }
+                          return next
+                        })
+                      }}
+                    />
+                  </label>
+                ) : null}
+              </div>
             )
           })}
           {end < messages.length ? (
@@ -330,8 +398,33 @@ export const MessageList = ({
             onClick={jumpToLatest}
           />
         )}
-        {footer}
+        <div hidden={selected !== null}>{footer?.(latestReply)}</div>
+        {selected ? (
+          <div className={styles.selectionBar} role="group" aria-label={t('messageMultiSelect')}>
+            <span role="status">{t('messagesSelected', { count: selected.size })}</span>
+            <Button size="s" variant="outlined" onClick={() => setSelected(null)}>{t('cancel')}</Button>
+            <Button size="s" className={styles.selectionAction} disabled={!selected.size || streaming} onClick={favoriteSelected}>
+              <IconHeartOutline16 /> {t('favoriteAction')}
+            </Button>
+            <Button size="s" variant="dangerOutlined" className={styles.selectionAction}
+              disabled={!selected.size || streaming} onClick={() => setConfirmDelete(true)}>
+              <IconTrashOutline16 /> {t('delete')}
+            </Button>
+          </div>
+        ) : null}
       </div>
+      {confirmDelete && selected ? (
+        <Modal title={t('deleteMessagesTitle')} onClose={() => { if (!deleting) { setConfirmDelete(false) } }}
+          footer={
+            <>
+              <Button variant="outlined" disabled={deleting} onClick={() => setConfirmDelete(false)}>{t('cancel')}</Button>
+              <Button variant="danger" disabled={deleting} onClick={() => void deleteSelected()}>{t('delete')}</Button>
+            </>
+          }
+        >
+          {t('deleteMessagesConfirmation', { count: selected.size })}
+        </Modal>
+      ) : null}
     </div>
   )
 }

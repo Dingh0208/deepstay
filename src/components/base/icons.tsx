@@ -1,3 +1,22 @@
+export const IconHeartOutline16 = ({ filled = false }: { filled?: boolean }) => (
+  <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true">
+    <path
+      d="M8 13.6 2.5 8.4a3.35 3.35 0 0 1 4.7-4.8l.8.8.8-.8a3.35 3.35 0 0 1 4.7 4.8L8 13.6Z"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth={1.3}
+      strokeLinejoin="round"
+    />
+  </svg>
+)
+
+export const IconListCheckOutline16 = () => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="m1.75 4.75 1.5 1.5 2.5-2.5m-4 7 1.5 1.5 2.5-2.5M8 5h6m-6 6h6"
+      stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+)
+
 export const IconCheckOutline16 = () => (
   <svg width={16} height={16} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
     <path

@@ -3,7 +3,9 @@ import clsx from 'clsx'
 import { memo } from 'react'
 import { useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
-import { IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
+import { getUsageTotal } from '../../services/api/usage.js'
+import { IconListCheckOutline16, IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
+import { useIsMobile } from '../../app/viewport.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
 import { continueReply, regenerateReply, useChatStore } from '../../services/chat/store.js'
@@ -37,6 +39,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   busy,
   versions,
   onSelectVersion,
+  onMultiSelect,
 }: {
   sessionId: string
   message: AssistantMessageType
@@ -45,10 +48,15 @@ export const AssistantMessage = memo(function AssistantMessage({
   busy: boolean
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
+  onMultiSelect?: (id: string) => void
 }) {
   const t = useTranslate()
+  const isMobile = useIsMobile()
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const apiProtocol = useSettings((state) => state.apiProtocol)
+  const showReplyTokenUsage = useSettings((state) => state.showReplyTokenUsage)
+  const locale = useSettings((state) => state.locale)
+  const tokenUsage = showReplyTokenUsage && !streaming ? getUsageTotal(message.usage) : undefined
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
   const contextProgress = useChatStore((state) => {
     const progress = state.contextProgress[sessionId]
@@ -63,18 +71,26 @@ export const AssistantMessage = memo(function AssistantMessage({
   const responseText = [answer?.text, notice?.presentation === 'response' ? notice.text : null]
     .filter(Boolean)
     .join('\n\n')
-  const copyText = responseText || notice?.text
+  const copyText = responseText || (notice?.action === 'regenerate' ? undefined : notice?.text)
   const waiting = streaming && !contextProgress && view.steps.length === 0 && !view.answer && !message.thinking
   const summaryEntry = `${message.id}-summary`
+  const canRegenerate = !busy && !refused && !message.questionDeleted
   const regenerate = () => {
-    if (busy || refused) {
+    if (!canRegenerate) {
       return
     }
     stopReadAloud()
     regenerateReply(sessionId, message.id)
   }
+  const select = onMultiSelect && !busy ? () => onMultiSelect(message.id) : undefined
   return (
-    <div data-chat-message={message.id} className={styles.message}>
+    <MessageActions
+      className={styles.message}
+      messageId={message.id}
+      text={streaming ? undefined : copyText}
+      onRegenerate={canRegenerate ? regenerate : undefined}
+      onMultiSelect={select}
+    >
       {contextProgress ? (
         <div className={clsx(styles.waiting, styles.compressionStatus)} role="status">
           {contextProgress.total > 0
@@ -91,16 +107,14 @@ export const AssistantMessage = memo(function AssistantMessage({
         />
       )}
       {answer ? (
-        <MessageActions text={streaming ? undefined : copyText} onRegenerate={busy || refused ? undefined : regenerate}>
-          <Markdown
-            className="ds-assistant-message-main-content"
-            content={answer.markdown}
-            loading={streaming}
-            cacheKey={message.id}
-            disableLink={false}
-            sources={view.sources}
-          />
-        </MessageActions>
+        <Markdown
+          className="ds-assistant-message-main-content"
+          content={answer.markdown}
+          loading={streaming}
+          cacheKey={message.id}
+          disableLink={false}
+          sources={view.sources}
+        />
       ) : null}
       {waiting ? (
         <div className={styles.waiting}>
@@ -122,6 +136,14 @@ export const AssistantMessage = memo(function AssistantMessage({
           <IconWarningOutline16 />
           <span>
             {notice.text}
+            {notice.action === 'regenerate' && canRegenerate ? (
+              <>
+                {' '}
+                <button type="button" className={styles.noticeAction} onClick={regenerate}>
+                  {t('regenerate')}
+                </button>
+              </>
+            ) : null}
             {notice.action === 'apiKey' ? (
               <>
                 {' '}
@@ -167,20 +189,28 @@ export const AssistantMessage = memo(function AssistantMessage({
       {streaming ? null : (
         <div className={styles.bottom}>
           <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
-          <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
+          {tokenUsage === undefined ? null : (
+            <span className={styles.tokenUsage}>
+              {t('replyTokenUsage', { count: tokenUsage.toLocaleString(locale) })}
+            </span>
+          )}
+          <div className={clsx(styles.actions, (isLast || (isMobile && !copyText)) && styles.alwaysShow)}>
             {copyText ? <CopyButton text={copyText} /> : null}
             {responseText && !refused && extras ? (
               <ReadAloudButton messageId={message.id} text={responseText} />
             ) : null}
-            <IconButton
+            {message.questionDeleted || notice?.action === 'regenerate' ? null : <IconButton
               icon={<IconRefreshOutline16 />}
               tooltip={t('regenerate')}
               tooltipPlacement="bottom"
-              disabled={busy || refused}
+              disabled={!canRegenerate}
               onClick={regenerate}
-            />
+            />}
+            {select && (!isMobile || !copyText) ? (
+              <IconButton icon={<IconListCheckOutline16 />} tooltip={t('messageMultiSelect')} tooltipPlacement="bottom" onClick={select} />
+            ) : null}
           </div>
-          {isLast && apiProtocol === 'deepseek' && canContinueReply(message) ? (
+          {isLast && !message.questionDeleted && apiProtocol === 'deepseek' && canContinueReply(message) ? (
             <Button
               variant="outlined"
               size="s"
@@ -196,6 +226,6 @@ export const AssistantMessage = memo(function AssistantMessage({
           ) : null}
         </div>
       )}
-    </div>
+    </MessageActions>
   )
 })

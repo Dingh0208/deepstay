@@ -53,6 +53,8 @@ export type ChatMessage = {
   id: number
   /** null 表示该会话的第一条 */
   parent_id: number | null
+  /** Deepstay 单条删除后重接的消息；对回复表示原提问已被删除。 */
+  deepstay_relinked?: true
   role: ChatRole
   status: ChatMessageStatus
   thinking_enabled: boolean

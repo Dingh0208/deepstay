@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import { useTranslate } from '../../i18n/index.js'
 import { copyText } from '../../utils/clipboard.js'
 import { useDismiss, VIEWPORT_PADDING } from '../base/anchored.js'
-import { IconCopyOutline16, IconEditOutline16, IconRefreshOutline16 } from '../base/icons.js'
+import { IconCopyOutline16, IconEditOutline16, IconListCheckOutline16, IconRefreshOutline16 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
 import styles from './MessageActions.module.css'
 
@@ -21,15 +21,19 @@ const INTERACTIVE =
 export const MessageActions = ({
   children,
   className,
+  messageId,
   text,
   onEdit,
   onRegenerate,
+  onMultiSelect,
 }: {
   children: ReactNode
   className?: string
+  messageId: string
   text?: string
   onEdit?: () => void
   onRegenerate?: () => void
+  onMultiSelect?: () => void
 }) => {
   const t = useTranslate()
   const [point, setPoint] = useState<Point | null>(null)
@@ -75,7 +79,7 @@ export const MessageActions = ({
     const touch = pointerType === 'touch' ||
       (!pointerType && navigator.maxTouchPoints > 0)
     if (
-      !(text || onEdit || onRegenerate) ||
+      !(text || onEdit || onRegenerate || onMultiSelect) ||
       !touch ||
       !event.isPrimary ||
       (event.target instanceof Element && event.target.closest(INTERACTIVE))
@@ -95,6 +99,7 @@ export const MessageActions = ({
     <>
       <div
         className={className}
+        data-chat-message={messageId}
         onPointerDown={startHold}
         onPointerMove={(event) => {
           const start = hold.current
@@ -145,6 +150,11 @@ export const MessageActions = ({
               {onRegenerate ? (
                 <button type="button" onClick={() => select(onRegenerate)}>
                   <IconRefreshOutline16 /> {t('regenerate')}
+                </button>
+              ) : null}
+              {onMultiSelect ? (
+                <button type="button" onClick={() => select(onMultiSelect)}>
+                  <IconListCheckOutline16 /> {t('messageMultiSelect')}
                 </button>
               ) : null}
             </div>,

@@ -118,3 +118,58 @@ export const selectVersion = (original: Session, messageId: string): Session => 
     ),
   }
 }
+
+/** 删除指定节点，将保留的分支接到最近的保留祖先。 */
+export const removeBranchMessages = (original: Session, ids: ReadonlySet<string>): Session => {
+  if (!original.messages.some((message) => ids.has(message.id))) {
+    return original
+  }
+  const session = normalizeSession(original)
+  const deleted = new Map(session.messages.filter((message) => ids.has(message.id)).map((message) => [message.id, message]))
+  const resolveEdge = (edge: 'parentId' | 'selectedChildId') => {
+    const resolved = new Map<string, string | null>()
+    return (id: string | null | undefined): string | null => {
+      const crossed: string[] = []
+      let next = id ?? null
+      while (next && deleted.has(next)) {
+        if (resolved.has(next)) {
+          next = resolved.get(next) ?? null
+          break
+        }
+        crossed.push(next)
+        next = deleted.get(next)?.[edge] ?? null
+      }
+      for (const id of crossed) {
+        resolved.set(id, next)
+      }
+      return next
+    }
+  }
+  const parent = resolveEdge('parentId')
+  const selected = resolveEdge('selectedChildId')
+  const children = new Map<string | null, string>()
+  const kept = session.messages.filter((message) => !ids.has(message.id))
+  for (const message of kept) {
+    const parentId = parent(message.parentId)
+    if (!children.has(parentId)) {
+      children.set(parentId, message.id)
+    }
+  }
+  return {
+    ...session,
+    rootMessageId: selected(session.rootMessageId) ?? children.get(null) ?? null,
+    messages: kept.map((message) => {
+      const parentId = parent(message.parentId)
+      const childId = selected(message.selectedChildId) ??
+        (message.selectedChildId ? children.get(message.id) : undefined)
+      return parentId === message.parentId && childId === message.selectedChildId
+        ? message
+        : {
+            ...message,
+            parentId,
+            selectedChildId: childId,
+            ...(message.role === 'assistant' && parentId !== message.parentId && { questionDeleted: true }),
+          }
+    }),
+  }
+}

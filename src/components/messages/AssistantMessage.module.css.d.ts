@@ -6,6 +6,7 @@ declare const styles: {
   readonly "fading": string;
   readonly "notice": string;
   readonly "noticeAction": string;
+  readonly "tokenUsage": string;
   readonly "bottom": string;
   readonly "alwaysShow": string;
   readonly "continueButton": string;

@@ -86,6 +86,13 @@
   }
 }
 
+.tokenUsage {
+  margin-left: 6px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .bottom {
   position: relative;
   left: -6px;

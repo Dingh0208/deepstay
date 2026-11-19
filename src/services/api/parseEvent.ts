@@ -1,9 +1,11 @@
 import type {
   ContentBlockDelta,
   MessageStreamEvent,
+  MessageUsage,
   OutputBlockStart,
   TextCitation,
 } from './types.js'
+import { isTokenCount } from './usage.js'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -165,11 +167,27 @@ const readDelta = (value: unknown): ContentBlockDelta | null => {
   }
 }
 
-const isUsage = (value: unknown) =>
-  isRecord(value) &&
-  ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens'].every(
-    (key) => typeof value[key] === 'number' && Number.isFinite(value[key])
-  )
+const readUsage = (value: unknown, final: boolean): MessageUsage | undefined => {
+  if (!isRecord(value)) {
+    return undefined
+  }
+  const keys = ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'] as const
+  const result: MessageUsage = {}
+  for (const key of keys) {
+    if (isTokenCount(value[key])) {
+      result[key] = value[key]
+    }
+  }
+  // The initial output counter is preliminary (typically zero or one).
+  if (final && isTokenCount(value.output_tokens)) {
+    result.output_tokens = value.output_tokens
+  }
+  const tools = value.server_tool_use
+  if (isRecord(tools) && isTokenCount(tools.web_search_requests) && isTokenCount(tools.tool_search)) {
+    result.server_tool_use = { web_search_requests: tools.web_search_requests, tool_search: tools.tool_search }
+  }
+  return Object.keys(result).length > 0 ? result : undefined
+}
 
 /** 未识别或无法安全消费的事件静默丢弃，不影响后续有效内容与正常结束。 */
 export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
@@ -185,7 +203,7 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         ...value,
         message: {
           ...value.message,
-          usage: isUsage(value.message.usage) ? value.message.usage : undefined,
+          usage: readUsage(value.message.usage, false),
         },
       } as MessageStreamEvent
     case 'content_block_start': {
@@ -220,7 +238,7 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
           ...value.delta,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
-        usage: isUsage(value.usage) ? value.usage : undefined,
+        usage: readUsage(value.usage, true),
       } as MessageStreamEvent
     case 'message_stop':
       break

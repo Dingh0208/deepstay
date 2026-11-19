@@ -1,6 +1,7 @@
 import { ApiError, readMessageEventStream, request, streamError } from './http.js'
 import { apiEndpoint, type ApiConnection } from './connection.js'
 import type { CreateMessageRequest, MessageStreamEvent, MessageUsage, StopReason } from './types.js'
+import { isTokenCount } from './usage.js'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -32,19 +33,23 @@ const readUsage = (value: unknown): MessageUsage | undefined => {
   if (!isRecord(value)) {
     return undefined
   }
-  const number = (key: string) =>
-    typeof value[key] === 'number' && Number.isFinite(value[key]) ? (value[key] as number) : 0
-  const cached =
-    isRecord(value.prompt_tokens_details) &&
-    typeof value.prompt_tokens_details.cached_tokens === 'number'
+  const usage: MessageUsage = {}
+  if (isTokenCount(value.prompt_tokens)) {
+    const details = isRecord(value.prompt_tokens_details)
       ? value.prompt_tokens_details.cached_tokens
-      : number('prompt_cache_hit_tokens')
-  return {
-    input_tokens: Math.max(0, number('prompt_tokens') - cached),
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: cached,
-    output_tokens: number('completion_tokens'),
+      : undefined
+    const reportedCache = isTokenCount(details) ? details : value.prompt_cache_hit_tokens
+    const cached = isTokenCount(reportedCache) && reportedCache <= value.prompt_tokens ? reportedCache : 0
+    usage.input_tokens = value.prompt_tokens - cached
+    usage.cache_read_input_tokens = cached
   }
+  if (isTokenCount(value.completion_tokens)) {
+    usage.output_tokens = value.completion_tokens
+  }
+  if (isTokenCount(value.total_tokens)) {
+    usage.total_tokens = value.total_tokens
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined
 }
 
 /** 将 OpenAI 的文本与 reasoning_content 流转换为现有消息事件。 */
@@ -73,6 +78,11 @@ export async function* streamOpenAiMessage(
     body: JSON.stringify({
       model: body.model,
       ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
+      ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+      ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+      ...(body.frequency_penalty === undefined ? {} : { frequency_penalty: body.frequency_penalty }),
+      ...(body.presence_penalty === undefined ? {} : { presence_penalty: body.presence_penalty }),
+      ...(body.stop_sequences === undefined ? {} : { stop: body.stop_sequences }),
       messages: toMessages(body),
       stream: true,
       ...(officialDeepSeek ? { stream_options: { include_usage: true } } : {}),
@@ -125,7 +135,10 @@ export async function* streamOpenAiMessage(
       }
       started = true
     }
-    usage = readUsage(value.usage) ?? usage
+    const frameUsage = readUsage(value.usage)
+    if (frameUsage) {
+      usage = { ...usage, ...frameUsage }
+    }
     if (!Array.isArray(value.choices)) {
       throw new ApiError('protocol', 'Invalid OpenAI stream choices')
     }

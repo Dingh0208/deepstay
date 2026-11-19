@@ -5,6 +5,7 @@ import {
   type ApiConnection,
 } from '../api/connection.js'
 import { classifyApiError, getContextLengthError } from '../api/errors.js'
+import { generationRanges } from '../api/generation.js'
 import type { CreateMessageRequest } from '../api/types.js'
 import { estimateMemoryTokens, recallMemory } from './memoryRecall.js'
 import {
@@ -34,7 +35,7 @@ const MIN_GROWTH_ROUNDS = 4
 const EXTRACTION_COOLDOWN_MS = 5 * 60_000
 const extractionRetryAt = new Map<string, number>()
 const inputTokens = (text: string) =>
-  text.length > CONTEXT_INPUT_BUDGET * 3 ? CONTEXT_INPUT_BUDGET + 1 : estimateContextTokens(text)
+  estimateContextTokens(text.slice(0, generationRanges.contextTokens[1] * 3 + 3))
 const checkAbort = (signal: AbortSignal) => {
   if (signal.aborted) {
     throw signal.reason ?? new DOMException('Aborted', 'AbortError')
@@ -42,13 +43,12 @@ const checkAbort = (signal: AbortSignal) => {
 }
 
 /** Includes reminders, continuation blocks and tools; file contents have no local tokenizer. */
-export const estimateRequestTokens = (
+export const estimateRequestParts = (
   request: Pick<CreateMessageRequest, 'system' | 'messages' | 'tools'>
-): number =>
-  256 +
-  inputTokens(request.system) +
-  inputTokens(JSON.stringify(request.tools)) +
-  request.messages.reduce(
+) => ({
+  system: inputTokens(request.system),
+  tools: inputTokens(JSON.stringify(request.tools)),
+  messages: 256 + request.messages.reduce(
     (sum, message) =>
       sum +
       32 +
@@ -69,7 +69,13 @@ export const estimateRequestTokens = (
             0
           )),
     0
-  )
+  ),
+})
+
+export const estimateRequestTokens = (request: Parameters<typeof estimateRequestParts>[0]): number => {
+  const { system, tools, messages } = estimateRequestParts(request)
+  return system + tools + messages
+}
 
 type PrepareOptions = {
   sessionId: string
@@ -83,6 +89,7 @@ type PrepareOptions = {
   model: string
   signal: AbortSignal
   requestOverhead?: number
+  inputBudget?: number
   thinking?: boolean
   mode?: 'auto' | 'manual' | 'reuse'
   onCommit: (update: MemoryUpdate) => Promise<boolean>
@@ -216,7 +223,7 @@ export const prepareContextMemory = async (
       ),
       tools: [],
     }) + overhead
-  const budget = CONTEXT_INPUT_BUDGET - 512
+  const budget = (options.inputBudget ?? CONTEXT_INPUT_BUDGET) - 512
   const requiredSize = requestSize([], fixed)
   const rounds = getContextRounds(history)
   const full = { history, systemMemory: fixed, requiredSystemMemory: fixed, active: false }
@@ -313,7 +320,7 @@ export const prepareContextMemory = async (
   }
   const head = rounds[0]?.[0].content ?? ''
   const opening = head.slice(0, 850)
-  const activeBudget = Math.max(0, available - 4_000)
+  const activeBudget = Math.max(0, available - Math.min(4_000, Math.floor(available * 0.2)))
   const alreadyOver = checkpoint !== undefined &&
     estimateRounds(checkpoint.start, rounds.length, activeBudget) > activeBudget
   const grew = checkpoint ? rounds.length - 1 - checkpoint.last : 0

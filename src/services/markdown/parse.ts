@@ -7,6 +7,7 @@ import { gfm } from 'micromark-extension-gfm'
 import { math } from 'micromark-extension-llm-math'
 import type { Source } from '../chat/view.js'
 import { hasOwn } from '../../utils/object.js'
+import { getDisplayArray } from './katex.js'
 
 /** 正文里的 [citation:N]，已换成对应来源 */
 export interface CitationNode extends MdAstNode {
@@ -89,6 +90,20 @@ export function toMdAst(
       ;(node as Parent).children = node.children.flatMap(simplify) as RootContent[]
     }
     switch (node.type) {
+      case 'paragraph': {
+        const first = node.children[0]
+        if (
+          first?.type === 'text' &&
+          first.value.startsWith('\\') &&
+          node.children.every((child) => child.type === 'text' || child.type === 'break')
+        ) {
+          const value = raw(node)
+          if (getDisplayArray(value)) {
+            return [{ type: 'math', value, position: node.position }]
+          }
+        }
+        return [node]
+      }
       case 'link':
         return disableLink ? node.children : [node]
       case 'delete': {

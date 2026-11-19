@@ -223,6 +223,7 @@ const toAssistant = (message: ChatMessage): AssistantMessage => {
   return {
     id,
     role: 'assistant',
+    ...(message.deepstay_relinked && { questionDeleted: true }),
     createdAt: time(message.inserted_at),
     model: null,
     thinking: message.thinking_enabled,
@@ -240,7 +241,7 @@ const toAssistant = (message: ChatMessage): AssistantMessage => {
 }
 
 /**
- * 按 id 排序还原消息树：父消息的 id 必须更小、角色交替、根为提问。
+ * 按 id 排序还原消息树：父消息的 id 必须更小。只有 Deepstay 重接的边允许角色不交替。
  * current_message_id 到根的路径为当前分支；其余节点默认选中 id 最大的子消息。
  */
 const buildTree = (file: SessionFile): Pick<Session, 'messages' | 'rootMessageId'> => {
@@ -249,11 +250,11 @@ const buildTree = (file: SessionFile): Pick<Session, 'messages' | 'rootMessageId
   const messages = sorted.map((message) => {
     const { id, parent_id } = message
     const parent = parent_id === null ? undefined : byId.get(parent_id)
-    if (
-      byId.has(id) ||
-      (parent_id === null ? message.role !== 'USER' : !parent) ||
-      (parent && parent.role === (message.role === 'USER' ? 'user' : 'assistant'))
-    ) {
+    if (byId.has(id) || (parent_id !== null && !parent)) {
+      fail('backupInvalidBranches')
+    }
+    const normalEdge = parent ? parent.role !== (message.role === 'USER' ? 'user' : 'assistant') : message.role === 'USER'
+    if (!normalEdge && !message.deepstay_relinked) {
       fail('backupInvalidBranches')
     }
     const local = message.role === 'USER' ? toUser(message) : toAssistant(message)

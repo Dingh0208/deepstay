@@ -23,13 +23,14 @@ export const useReadAloud = create<ReadAloudState>(() => ({ messageId: null, sta
 /** 首帧前多缓冲一点，减少网络抖动造成的断续 */
 const START_DELAY = 0.1
 
-let current: { controller: AbortController; context: AudioContext } | null = null
+let current: { controller: AbortController; context: AudioContext; automatic: boolean } | null =
+  null
 
 const finish = (controller: AbortController) => {
   if (current?.controller !== controller) {
     return
   }
-  void current.context.close()
+  void current.context.close().catch(() => {})
   current = null
   useReadAloud.setState({ messageId: null, status: 'idle' })
 }
@@ -40,6 +41,13 @@ export const stopReadAloud = () => {
     const { controller } = current
     controller.abort()
     finish(controller)
+  }
+}
+
+/** Turning off the automatic setting should leave an explicitly started reading alone. */
+export const stopAutomaticReadAloud = () => {
+  if (current?.automatic) {
+    stopReadAloud()
   }
 }
 
@@ -87,9 +95,42 @@ export const toggleReadAloud = (
   if (reading === messageId) {
     return
   }
+  try {
+    const context = new AudioContext({ sampleRate: TTS_SAMPLE_RATE })
+    playReadAloud(messageId, text, context, onError)
+  } catch (error) {
+    onError(error)
+  }
+}
+
+/** Resume from the send gesture so autoplay policy is satisfied before requesting TTS. */
+export const prepareReadAloudAudio = () => {
+  try {
+    const context = new AudioContext({ sampleRate: TTS_SAMPLE_RATE })
+    void context.resume().catch(() => {})
+    return context
+  } catch {
+    return null
+  }
+}
+
+export const playAutomaticReadAloud = (messageId: string, text: string, context: AudioContext) => {
+  if (current || context.state !== 'running') {
+    void context.close().catch(() => {})
+    return
+  }
+  playReadAloud(messageId, text, context, undefined, true)
+}
+
+const playReadAloud = (
+  messageId: string,
+  text: string,
+  context: AudioContext,
+  onError?: (error: unknown) => void,
+  automatic = false
+) => {
   const controller = new AbortController()
-  const context = new AudioContext({ sampleRate: TTS_SAMPLE_RATE })
-  current = { controller, context }
+  current = { controller, context, automatic }
   useReadAloud.setState({ messageId, status: 'loading' })
   // 音色在开始朗读时读取，设置中切换后下一次朗读生效
   const { apiKey, ttsVoice } = useSettings.getState()
@@ -101,10 +142,15 @@ export const toggleReadAloud = (
     try {
       const stream = await synthesize(apiKey ?? '', text, ttsVoice, controller.signal)
       const reader = stream.getReader()
-      controller.signal.addEventListener('abort', () => void reader.cancel().catch(() => {}))
+      const cancel = () => void reader.cancel().catch(() => {})
+      if (controller.signal.aborted) {
+        cancel()
+        return
+      }
+      controller.signal.addEventListener('abort', cancel, { once: true })
       for (;;) {
         const { done, value } = await reader.read()
-        if (done) {
+        if (done || controller.signal.aborted) {
           break
         }
         const bytes = new Uint8Array(rest.length + value.length)
@@ -137,7 +183,7 @@ export const toggleReadAloud = (
     } catch (error) {
       if (!controller.signal.aborted) {
         finish(controller)
-        onError(error)
+        onError?.(error)
       }
     }
   })()

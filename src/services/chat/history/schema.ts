@@ -202,6 +202,7 @@ const message: Read<ChatMessage> = (value) => {
   return {
     id: count(item.id),
     parent_id: nullable(count)(item.parent_id),
+    ...(item.deepstay_relinked === true && { deepstay_relinked: true }),
     role: oneOf('USER', 'ASSISTANT')(item.role),
     status: oneOf(
       'WIP',

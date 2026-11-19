@@ -2,7 +2,9 @@ package xyz.infralyx.deepstay;
 
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Display;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import androidx.activity.OnBackPressedCallback;
@@ -12,6 +14,31 @@ import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
+    @Override
+    public void onResume() {
+        super.onResume();
+        requestHighestRefreshRate();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void requestHighestRefreshRate() {
+        Display display = getWindowManager().getDefaultDisplay();
+        Display.Mode current = display.getMode();
+        Display.Mode best = current;
+        for (Display.Mode mode : display.getSupportedModes()) {
+            if (mode.getPhysicalWidth() == current.getPhysicalWidth()
+                && mode.getPhysicalHeight() == current.getPhysicalHeight()
+                && mode.getRefreshRate() > best.getRefreshRate()) {
+                best = mode;
+            }
+        }
+        WindowManager.LayoutParams attributes = getWindow().getAttributes();
+        if (attributes.preferredDisplayModeId != best.getModeId()) {
+            attributes.preferredDisplayModeId = best.getModeId();
+            getWindow().setAttributes(attributes);
+        }
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(LocalFilesPlugin.class);

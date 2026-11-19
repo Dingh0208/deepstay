@@ -1,7 +1,7 @@
 import clsx from 'clsx'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslate } from '../../i18n/index.js'
-import { IconDataOutline16, IconPanelLeftOutline16, IconSettingsOutline16, NewChatIcon } from '../base/icons.js'
+import { IconDataOutline16, IconHeartOutline16, IconPanelLeftOutline16, IconSettingsOutline16, NewChatIcon } from '../base/icons.js'
 import { setSiderCollapsed, useSettings } from '../../services/settings.js'
 import { groupSessions } from '../../services/chat/sessionGroups.js'
 import { newChat, openHistoryMatch, removeSession, useChatStore } from '../../services/chat/store.js'
@@ -14,6 +14,7 @@ import { showToast } from '../base/toastState.js'
 import { openSettings } from '../settings/settingsDialogState.js'
 import { closeMobileSider, useMobileSider } from './mobileSiderState.js'
 import { SessionItem } from './SessionItem.js'
+import { FavoriteMessages } from './FavoriteMessages.js'
 import { openPlans } from '../platform/plansDialogState.js'
 import styles from './Sider.module.css'
 
@@ -27,6 +28,8 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
   const [now, setNow] = useState(Date.now)
   const locale = useSettings((state) => state.locale)
   const pinnedIds = useSettings((state) => state.pinnedSessionIds)
+  const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds])
+  const [showFavorites, setShowFavorites] = useState(false)
   const groups = useMemo(() => groupSessions(sessions, now, t, pinnedIds), [sessions, now, t, pinnedIds])
   const [deleting, setDeleting] = useState<SessionSummary | null>(null)
   const [deletePending, setDeletePending] = useState(false)
@@ -90,6 +93,16 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
     }
   }, [])
 
+  const renderSession = (session: SessionSummary) => (
+    <SessionItem
+      key={session.id}
+      session={session}
+      active={session.id === activeId}
+      pinned={pinnedSet.has(session.id)}
+      onDelete={() => setDeleting(session)}
+    />
+  )
+
   return (
     <div className={clsx(styles.sider, mobile && styles.mobile)}>
       <div className={styles.top}>
@@ -108,6 +121,7 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
         type="button"
         className={styles.newChat}
         onClick={() => {
+          setShowFavorites(false)
           newChat()
           closeMobileSider()
         }}
@@ -116,6 +130,20 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
           <NewChatIcon />
         </span>
         {t('newChat')}
+      </button>
+      <button
+        type="button"
+        className={clsx(styles.settings, styles.favoritesEntry)}
+        aria-pressed={showFavorites && !query.trim()}
+        onClick={() => {
+          setShowFavorites(!showFavorites || !!query.trim())
+          setQuery('')
+        }}
+      >
+        <span className={styles.settingsIcon}>
+          <IconHeartOutline16 filled={showFavorites && !query.trim()} />
+        </span>
+        <span className={styles.settingsLabel}>{t('messageFavorites')}</span>
       </button>
       <div className={styles.listWrap}>
         <div className={styles.list}>
@@ -160,18 +188,12 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
                 </Button>
               ) : null}
             </div>
+          ) : showFavorites ? (
+            <FavoriteMessages sessions={sessions} />
           ) : groups.map((group) => (
             <div key={group.key} className={styles.section}>
               <div className={styles.sectionHeader}>{group.label}</div>
-              {group.sessions.map((session) => (
-                <SessionItem
-                  key={session.id}
-                  session={session}
-                  active={session.id === activeId}
-                  pinned={group.key === 'pinned'}
-                  onDelete={() => setDeleting(session)}
-                />
-              ))}
+              {group.sessions.map(renderSession)}
             </div>
           ))}
         </div>

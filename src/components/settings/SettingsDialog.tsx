@@ -37,6 +37,7 @@ import { ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatBackgroundSetting, ThinkingCollapseSetting } from './AppearanceSetting.js'
 import { ContextMemorySetting } from './ContextMemorySetting.js'
 import { DiagnosticsSetting } from './DiagnosticsSetting.js'
+import { GenerationSetting, ReplyPreferenceSettings } from './GenerationSetting.js'
 import { UpdateSetting } from './UpdateSetting.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
 import styles from './Settings.module.css'
@@ -137,6 +138,8 @@ const SettingsContent = () => {
             <>
               <ThinkingCollapseSetting />
               <ContextMemorySetting />
+              <GenerationSetting />
+              <ReplyPreferenceSettings />
               <TtsVoiceSetting />
             </>
           )}

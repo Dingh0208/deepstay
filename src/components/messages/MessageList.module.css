@@ -64,3 +64,55 @@
   width: fit-content;
   margin: 12px auto;
 }
+
+.selectableMessage {
+  position: relative;
+  padding-inline-end: 34px;
+
+  > div {
+    pointer-events: none;
+    user-select: none;
+  }
+}
+
+.messageCheckbox {
+  position: absolute;
+  top: 0;
+  right: -8px;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 13px;
+  cursor: pointer;
+
+  input {
+    width: 18px;
+    height: 18px;
+    margin: 0;
+    accent-color: var(--dsw-alias-button-primary-fill);
+    cursor: pointer;
+  }
+}
+
+.selectionBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-base);
+  font-size: 13px;
+
+  > span {
+    margin-inline-end: auto;
+  }
+}
+
+.selectionAction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

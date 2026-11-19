@@ -7,6 +7,7 @@ import type {
   WebSearchToolResultBlock,
 } from '../api/types.js'
 import type { AssistantMessage, ThinkingPart } from './types.js'
+import { hasVisibleReplyText } from './reply.js'
 
 /**
  * 由回复的内容块推导界面需要的结构：思考与工具步骤的时间线、带引用角标的正文、可引用的来源列表。
@@ -217,7 +218,7 @@ export const buildReplyView = (reply: AssistantMessage, streaming: boolean): Rep
       return
     }
     const { markdown } = joinTextBlocks(pendingText, registry)
-    if (markdown.trim()) {
+    if (hasVisibleReplyText(markdown)) {
       steps.push({ type: 'text', key: `text-${pendingText[0].index}`, markdown })
     }
     pendingText = []
@@ -340,7 +341,7 @@ export const buildReplyView = (reply: AssistantMessage, streaming: boolean): Rep
   const answer = pendingText.length > 0 ? joinTextBlocks(pendingText, registry) : null
   return {
     steps,
-    answer: answer && answer.text ? answer : null,
+    answer: answer && hasVisibleReplyText(answer.text) ? answer : null,
     sources: registry.list,
     searchResults,
   }

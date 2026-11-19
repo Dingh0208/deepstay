@@ -4,10 +4,13 @@ declare const styles: {
   readonly "brand": string;
   readonly "newChat": string;
   readonly "newChatIcon": string;
+  readonly "favoritesEntry": string;
   readonly "listWrap": string;
   readonly "list": string;
   readonly "section": string;
   readonly "sectionHeader": string;
+  readonly "favoritesEmpty": string;
+  readonly "favoriteRow": string;
   readonly "bottom": string;
   readonly "settings": string;
   readonly "settingsIcon": string;

@@ -17,6 +17,7 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 ## Features
 
 - Multiple conversations, automatic titles, renaming and deletion; edit prompts, regenerate replies, and switch message branches. On touch devices, press and hold a message for its actions.
+- Open a message's actions and choose **Select messages** to favorite or delete several messages at once. The sidebar's **Favorites** opens saved messages in their original chats. Favorites stay on the device and are not included in history ZIP files.
 - Streaming replies, deep thinking, search, link reading, and source citations.
 - Attachments, voice input, and read-aloud replies.
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.

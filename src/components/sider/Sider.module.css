@@ -134,6 +134,20 @@
   margin-right: 6px;
 }
 
+.favoritesEntry {
+  flex-shrink: 0;
+  margin: 8px 0 0;
+
+  &[aria-pressed='true'] {
+    background-color: var(--dsw-specific-sidebar-nav-item-active-accent);
+
+    .settingsIcon,
+    .settingsLabel {
+      color: var(--dsw-alias-brand-primary-invert);
+    }
+  }
+}
+
 .listWrap {
   position: relative;
   flex: 1;
@@ -170,6 +184,28 @@
   color: var(--dsw-alias-label-tertiary);
   background-color: var(--dsw-specific-sidebar-fill);
   user-select: none;
+}
+
+.favoritesEmpty {
+  padding: 0 10px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+
+.favoriteRow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-inline-end: 4px;
+
+  .searchResult {
+    min-width: 0;
+    text-align: start;
+  }
+
+  .searchResult:disabled {
+    cursor: default;
+  }
 }
 
 .bottom {

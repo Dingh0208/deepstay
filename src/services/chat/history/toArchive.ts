@@ -1,4 +1,5 @@
 import type { ServerToolUseBlock } from '../../api/types.js'
+import { getUsageTotal } from '../../api/usage.js'
 import { getVisibleMessages, normalizeSession } from '../branches.js'
 import { describeReply } from '../describe.js'
 import type { AssistantMessage, Message, ReplyBlock, Session, UserMessage } from '../types.js'
@@ -198,13 +199,7 @@ const replyStatus = ({ status, stopReason }: AssistantMessage): ChatMessageStatu
 }
 
 /** 最近一次请求的输入（含缓存）与输出之和，即这一条结束时的上下文 token。 */
-const contextTokens = ({ usage }: AssistantMessage) =>
-  usage
-    ? usage.input_tokens +
-      usage.cache_creation_input_tokens +
-      usage.cache_read_input_tokens +
-      usage.output_tokens
-    : 0
+const contextTokens = ({ usage }: AssistantMessage) => getUsageTotal(usage) ?? 0
 
 /** 消息按父节点优先重新编号为 1…n，保证 parent_id 小于 id。 */
 const numberMessages = (messages: Message[]) => {
@@ -223,17 +218,18 @@ const numberMessages = (messages: Message[]) => {
     ids.set(message.id, ordered.push(message))
   }
   messages.forEach((message) => visit(message, 0))
-  return { ordered, ids }
+  return { ordered, ids, byId }
 }
 
 export const toSessionFile = (original: Session, exportImage: ExportImage): SessionFile => {
   const session = normalizeSession(original)
-  const { ordered, ids } = numberMessages(session.messages)
+  const { ordered, ids, byId } = numberMessages(session.messages)
   const id = (message: Message) => ids.get(message.id) ?? fail('backupInvalidBranches')
   // 提问的开关取首个回答的请求设置。
   const firstReply = new Map<string, AssistantMessage>()
   for (const message of ordered) {
-    if (message.role === 'assistant' && message.parentId && !firstReply.has(message.parentId)) {
+    if (message.role === 'assistant' && !message.questionDeleted &&
+        message.parentId && !firstReply.has(message.parentId)) {
       firstReply.set(message.parentId, message)
     }
   }
@@ -243,8 +239,12 @@ export const toSessionFile = (original: Session, exportImage: ExportImage): Sess
       parent_id: message.parentId ? (ids.get(message.parentId) ?? null) : null,
     }
     const reply = message.role === 'assistant' ? message : firstReply.get(message.id)
+    const relinked = message.role === 'assistant'
+      ? message.questionDeleted
+      : message.parentId && byId.get(message.parentId)?.role === 'user'
     return {
       ...tree,
+      ...(relinked && { deepstay_relinked: true }),
       role: message.role === 'user' ? 'USER' : 'ASSISTANT',
       status: message.role === 'user' ? 'FINISHED' : replyStatus(message),
       thinking_enabled: reply?.thinking ?? false,

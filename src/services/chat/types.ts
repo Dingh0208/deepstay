@@ -72,6 +72,8 @@ export type ReplyBlock = ThinkingPart | TextPart | ServerToolBlock
 export type ReplyStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'error'
 
 export type AssistantMessage = MessageBranch & {
+  /** 原提问已被单独删除，不能用结构调整后相邻的提问来重新生成。 */
+  questionDeleted?: true
   id: string
   role: 'assistant'
   createdAt: number
@@ -90,8 +92,15 @@ export type AssistantMessage = MessageBranch & {
   blocks: ReplyBlock[]
   stopReason?: StopReason
   stopDetails?: StopDetails
-  /** 最近一次请求的用量，续写后更新 */
+  /** 最近一次请求报告的用量，续写后更新；中断时可只有部分字段。 */
   usage?: MessageUsage
+  /** Measurements for the latest outbound request, after memory and history fitting. */
+  metrics?: {
+    system: number
+    tools: number
+    messages: number
+    tokensPerSecond?: number
+  }
   error?: {
     /** upload：发送前补传附件失败，请求没有发出 */
     kind: ApiErrorKind | 'upload'

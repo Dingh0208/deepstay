@@ -20,7 +20,7 @@ const hooks = registerHooks({
     return nextResolve(specifier, context)
   },
   load(url, context, nextLoad) {
-    if (url.startsWith(sourceRoot.href) && url.endsWith('.ts')) {
+    if (url.startsWith(sourceRoot.href) && new URL(url).pathname.endsWith('.ts')) {
       return { format: 'module', source: stripTypeScriptTypes(readFileSync(new URL(url), 'utf8'), { mode: 'transform' }), shortCircuit: true }
     }
     return nextLoad(url, context)
@@ -91,11 +91,34 @@ try {
   assert.equal((await archive.blob.text()).includes('local-regression-fixture'), false)
   checks.push('Actual exportHistory creates a ZIP without exporting the API Key')
 
+  settings.addFavoriteMessages(id, ['user', 'assistant', 'user'])
+  const savedFavorites = [{ sessionId: id, messageId: 'user' }, { sessionId: id, messageId: 'assistant' }]
+  assert.deepEqual(settings.useSettings.getState().favoriteMessages, savedFavorites)
+  const { useSettings: afterReload } = await import(new URL('services/settings.ts?favorite-reload', sourceRoot))
+  assert.deepEqual(afterReload.getState().favoriteMessages, savedFavorites)
+  checks.push('Multi-select favorites store distinct message references and survive module reload')
+
+  const extra = await backup.importHistory(new File([archive.blob], archive.name, { type: 'application/zip' }))
+  assert.equal(extra, 1)
+  assert.deepEqual(settings.useSettings.getState().favoriteMessages, savedFavorites)
+  const importedId = (await db.loadSessionSummaries()).find((summary) => summary.id !== id).id
+  const importedMessage = (await db.loadSession(importedId)).messages[0]
+  settings.addFavoriteMessages(importedId, [importedMessage.id])
+  assert.equal(settings.useSettings.getState().favoriteMessages.length, 3)
+  assert.equal(await store.removeSession(importedId), true)
+  assert.deepEqual(settings.useSettings.getState().favoriteMessages, savedFavorites)
+  settings.removeFavoriteMessages(id, ['assistant'])
+  assert.deepEqual(settings.useSettings.getState().favoriteMessages, savedFavorites.slice(0, 1))
+  assert.equal((await db.loadSession(id)).messages.length, 2)
+  checks.push('Appending history preserves favorites; deleting a chat removes only its references; unfavoriting retains the original message')
+
   await backup.clearHistory()
   assert.equal((await db.loadSessionSummaries()).length, 0)
   assert.equal(await db.loadFile(fileId), undefined)
   assert.equal(settings.useSettings.getState().apiKey, 'local-regression-fixture')
-  checks.push('Actual clearHistory removes local sessions and attachments while preserving the API Key')
+  assert.deepEqual(settings.useSettings.getState().favoriteMessages, [])
+  assert.equal(local.get('deepstay:favorite-messages'), undefined)
+  checks.push('Actual clearHistory removes local sessions, attachments, and favorite references while preserving the API Key')
 
   const imported = await backup.importHistory(new File([archive.blob], archive.name, { type: 'application/zip' }))
   assert.equal(imported, 1)

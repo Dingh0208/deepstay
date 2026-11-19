@@ -2,7 +2,7 @@ import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
 import { memo, useLayoutEffect, useRef, useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
-import { IconEditOutline16 } from '../base/icons.js'
+import { IconEditOutline16, IconListCheckOutline16 } from '../base/icons.js'
 import { editMessage, retryUpload } from '../../services/chat/store.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import type { UserMessage as UserMessageType } from '../../services/chat/types.js'
@@ -28,6 +28,7 @@ export const UserMessage = memo(function UserMessage({
   busy,
   versions,
   onSelectVersion,
+  onMultiSelect,
 }: {
   sessionId: string
   message: UserMessageType
@@ -38,6 +39,7 @@ export const UserMessage = memo(function UserMessage({
   busy: boolean
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
+  onMultiSelect?: (id: string) => void
 }) {
   const t = useTranslate()
   const [editing, setEditing] = useState(false)
@@ -64,9 +66,16 @@ export const UserMessage = memo(function UserMessage({
       setEditing(false)
     }
   }
+  const select = onMultiSelect && !busy && !editing ? () => onMultiSelect(message.id) : undefined
 
   return (
-    <div data-chat-message={message.id} className={clsx(styles.container, isFirst && styles.isFirst)}>
+    <MessageActions
+      className={clsx(styles.container, isFirst && styles.isFirst)}
+      messageId={message.id}
+      text={editing ? undefined : message.content}
+      onEdit={busy || editing ? undefined : startEdit}
+      onMultiSelect={select}
+    >
       {message.files.length > 0 ? (
         <div
           className={clsx(
@@ -91,6 +100,7 @@ export const UserMessage = memo(function UserMessage({
             aria-label={t('editMessage')}
             autoFocus
             rows={1}
+            enterKeyHint="enter"
             value={draft}
             disabled={busy}
             onChange={(event) => setDraft(event.target.value)}
@@ -100,9 +110,6 @@ export const UserMessage = memo(function UserMessage({
               }
               if (event.key === 'Escape') {
                 setEditing(false)
-              } else if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !isMobile) {
-                event.preventDefault()
-                sendEdit()
               }
             }}
           />
@@ -117,13 +124,9 @@ export const UserMessage = memo(function UserMessage({
         </div>
       ) : (
         <>
-          {message.content ? (
-            <MessageActions className={styles.bubble} text={message.content} onEdit={busy ? undefined : startEdit}>
-              {message.content}
-            </MessageActions>
-          ) : null}
+          {message.content ? <div className={styles.bubble}>{message.content}</div> : null}
           <div className={styles.bottom}>
-            <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
+            <div className={clsx(styles.actions, (isLast || (isMobile && !message.content)) && styles.alwaysShow)}>
               {message.content ? <CopyButton text={message.content} /> : null}
               <IconButton
                 icon={<IconEditOutline16 />}
@@ -132,11 +135,14 @@ export const UserMessage = memo(function UserMessage({
                 disabled={busy}
                 onClick={startEdit}
               />
+              {select && (!isMobile || !message.content) ? (
+                <IconButton icon={<IconListCheckOutline16 />} tooltip={t('messageMultiSelect')} tooltipPlacement="bottom" onClick={select} />
+              ) : null}
             </div>
             <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
           </div>
         </>
       )}
-    </div>
+    </MessageActions>
   )
 })

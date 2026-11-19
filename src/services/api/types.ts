@@ -175,6 +175,11 @@ export type DeepseekReadUrlTool = {
 export type CreateMessageRequest = {
   model: ChatModel
   max_tokens?: number
+  temperature?: number
+  top_p?: number
+  frequency_penalty?: number
+  presence_penalty?: number
+  stop_sequences?: string[]
   system: string
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
@@ -191,11 +196,13 @@ export type StopDetails = { type: 'refusal'; category: null; explanation: null }
 
 export type MessageUsage = {
   /** 未命中缓存的输入 Token */
-  input_tokens: number
-  cache_creation_input_tokens: number
-  cache_read_input_tokens: number
+  input_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
   /** message_start 中为 0，message_delta 中为全轮累计值 */
-  output_tokens: number
+  output_tokens?: number
+  /** OpenAI 兼容接口可以直接提供输入和输出的合计。 */
+  total_tokens?: number
   /** 仅当 message_delta 中有对外输出的搜索结果块时出现 */
   server_tool_use?: { web_search_requests: number; tool_search: number }
 }

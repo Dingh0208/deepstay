@@ -3,11 +3,11 @@ import { CONTEXT_INPUT_BUDGET, estimateRequestTokens } from './contextMemory.js'
 
 type LengthError = { inputTokens?: number; maxInputTokens?: number }
 
-export const getRetryInputBudget = (estimate: number, error: LengthError): number => {
+export const getRetryInputBudget = (estimate: number, error: LengthError, cap = CONTEXT_INPUT_BUDGET): number => {
   const { inputTokens, maxInputTokens } = error
   const ratio = inputTokens && maxInputTokens ? Math.min(1, maxInputTokens / inputTokens) : 0.75
   // The estimator and provider tokenizer can disagree, especially for attachments.
-  return Math.floor(Math.min(CONTEXT_INPUT_BUDGET, maxInputTokens ?? Infinity, estimate * ratio) * 0.85)
+  return Math.floor(Math.min(cap, maxInputTokens ?? Infinity, estimate * ratio) * 0.85)
 }
 
 /** Remove oldest complete turns from the outbound copy; retain the current question, prefix and system. */

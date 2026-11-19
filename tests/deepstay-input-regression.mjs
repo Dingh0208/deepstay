@@ -10,7 +10,7 @@ const { transformSync } = require(require.resolve('@rspack/binding', { paths: [r
 const mockUrl = value => 'data:text/javascript;base64,' + Buffer.from(value).toString('base64')
 const mocks = new Map([
   ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useRef=value=>({current:value});'],
-  ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx;'],
+  ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
   ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconPaperclipOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
   ['../../services/settings.js', 'export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek";'],
@@ -29,6 +29,7 @@ const mocks = new Map([
   ['./useVoiceInput.js', 'export const useVoiceInput=()=>({status:"idle",available:true,cancel:()=>{}});'],
   ['./VoiceButton.js', 'export const VoiceButton=()=>null;'],
   ['./Spectrum.js', 'export const Spectrum=()=>null;'],
+  ['./ComposerMetrics.js', 'export const ComposerMetrics=()=>null;'],
   ['../../i18n/index.js', 'export const useTranslate=()=>key=>key;'],
   ['./ChatInput.module.css', 'export default {};'],
 ])
@@ -61,7 +62,7 @@ const find = (node, predicate) => {
 try {
   const { Input } = await import(source)
   globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture' }
-  globalThis.__chat = { streaming: {}, importingHistory: false, contextProgress: {} }
+  globalThis.__chat = { streaming: {}, importingHistory: false, contextProgress: {}, sessionCache: {} }
   globalThis.__draft = { text: 'hello', attachments: [] }
   globalThis.__sent = 0
   globalThis.__compacted = []
@@ -73,7 +74,9 @@ try {
     let tree = Input({ sessionId: null })
     let prevented = false
     const textarea = find(tree, node => node.type === 'textarea')
+    assert.equal(textarea.props.enterKeyHint, 'enter')
     textarea.props.onKeyDown?.({ key: 'Enter', shiftKey: false, nativeEvent: { isComposing: false }, preventDefault: () => { prevented = true } })
+    textarea.props.onKeyDown?.({ key: 'Enter', shiftKey: false, nativeEvent: { isComposing: true }, preventDefault: () => { prevented = true } })
     assert.equal(prevented, false)
     assert.equal(globalThis.__sent, mobile ? 1 : 0)
     textarea.props.onChange({ target: { value: 'hello\nworld' } })
@@ -113,6 +116,25 @@ try {
   assert.equal(globalThis.__sent, 2)
   assert.deepEqual(globalThis.__notices.at(-1), { key: 'contextMemorySaved' })
   checks.push('Sending /compact dispatches only local compaction for the selected session and clears the command draft')
+  globalThis.__draft.text = 'Unsent draft'
+  tree = Input({ sessionId: 'current-chat' })
+  let metrics = find(tree, node => node.type?.name === 'ComposerMetrics')
+  assert.equal(metrics.props.compactDisabled, false)
+  metrics.props.onCompact({ type: 'click' })
+  await Promise.resolve()
+  assert.deepEqual(globalThis.__compacted, ['current-chat', 'current-chat'])
+  assert.equal(globalThis.__draft.text, 'Unsent draft')
+  assert.equal(globalThis.__sent, 2)
+  globalThis.__chat.streaming['current-chat'] = {}
+  globalThis.__chat.contextProgress['current-chat'] = { manual: true, completed: 2, total: 3 }
+  tree = Input({ sessionId: 'current-chat' })
+  metrics = find(tree, node => node.type?.name === 'ComposerMetrics')
+  assert.equal(metrics.props.compactDisabled, true)
+  assert.equal(metrics.props.progress, 'contextMemoryProgress')
+  assert.equal(typeof metrics.props.onStop, 'function')
+  metrics.props.onCompact()
+  assert.equal(globalThis.__compacted.length, 2)
+  checks.push('Context details share manual compaction, preserve the draft, and expose progress and stop while preventing duplicate starts')
   const evidence = { passed: true, runtime: process.version, checks, scope: 'Actual ChatInput TSX with mocked application services; verifies event handling and retry calls. Native textarea newline is left to browser.' }
   await writeFile(new URL('./deepstay-input-evidence.json', import.meta.url), JSON.stringify(evidence, null, 2) + '\n')
   console.log(JSON.stringify(evidence, null, 2))

@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
+import { normalizeGeneration, type GenerationSettings } from './api/generation.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
@@ -24,10 +25,17 @@ type Settings = {
   thinking: boolean
   thinkingCollapsed: boolean
   contextMemoryEnabled: boolean
+  autoReadAloud: boolean
+  showReplyTokenUsage: boolean
+  generation: GenerationSettings
   search: boolean
   siderCollapsed: boolean
   pinnedSessionIds: string[]
+  favoriteMessages: FavoriteMessage[]
 }
+
+export type FavoriteMessage = { sessionId: string; messageId: string }
+export const favoriteMessageKey = ({ sessionId, messageId }: FavoriteMessage) => JSON.stringify([sessionId, messageId])
 
 const KEYS = {
   apiKey: 'chat-demo:api-key',
@@ -43,9 +51,13 @@ const KEYS = {
   thinking: 'chat-demo:thinking',
   thinkingCollapsed: 'deepstay:thinking-collapsed',
   contextMemoryEnabled: 'deepstay:context-memory-enabled',
+  autoReadAloud: 'deepstay:auto-read-aloud',
+  showReplyTokenUsage: 'deepstay:show-reply-token-usage',
+  generation: 'deepstay:generation',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
   pinnedSessionIds: 'deepstay:pinned-session-ids',
+  favoriteMessages: 'deepstay:favorite-messages',
 } as const
 
 const read = (key: string) => {
@@ -110,6 +122,29 @@ const readStringList = (key: string): string[] => {
   }
 }
 
+const initialGeneration = () => {
+  try {
+    return normalizeGeneration(JSON.parse(read(KEYS.generation) ?? '{}'))
+  } catch {
+    return {}
+  }
+}
+
+const readFavoriteMessages = (): FavoriteMessage[] => {
+  try {
+    const value: unknown = JSON.parse(read(KEYS.favoriteMessages) ?? '[]')
+    if (Array.isArray(value)) {
+      const valid = value.filter((entry): entry is FavoriteMessage =>
+        !!entry && typeof entry.sessionId === 'string' && !!entry.sessionId &&
+        typeof entry.messageId === 'string' && !!entry.messageId)
+      return [...new Map(valid.map((entry) => [favoriteMessageKey(entry), entry])).values()]
+    }
+  } catch {
+    // Invalid preference is treated as empty.
+  }
+  return []
+}
+
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   apiBaseUrl: read(KEYS.apiBaseUrl) || __API_ORIGIN__,
@@ -124,9 +159,13 @@ export const useSettings = create<Settings>(() => ({
   thinking: read(KEYS.thinking) === 'true',
   thinkingCollapsed: read(KEYS.thinkingCollapsed) === 'true',
   contextMemoryEnabled: read(KEYS.contextMemoryEnabled) === 'true',
+  autoReadAloud: read(KEYS.autoReadAloud) === 'true',
+  showReplyTokenUsage: read(KEYS.showReplyTokenUsage) === 'true',
+  generation: initialGeneration(),
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
   pinnedSessionIds: [...new Set(readStringList(KEYS.pinnedSessionIds))],
+  favoriteMessages: readFavoriteMessages(),
 }))
 
 export const setLocale = (locale: Locale) => {
@@ -178,6 +217,22 @@ export const setContextMemoryEnabled = (contextMemoryEnabled: boolean) => {
   useSettings.setState({ contextMemoryEnabled })
 }
 
+export const setAutoReadAloud = (autoReadAloud: boolean) => {
+  write(KEYS.autoReadAloud, String(autoReadAloud))
+  useSettings.setState({ autoReadAloud })
+}
+
+export const setShowReplyTokenUsage = (showReplyTokenUsage: boolean) => {
+  write(KEYS.showReplyTokenUsage, String(showReplyTokenUsage))
+  useSettings.setState({ showReplyTokenUsage })
+}
+
+export const setGeneration = (value: GenerationSettings) => {
+  const generation = normalizeGeneration(value)
+  write(KEYS.generation, Object.keys(generation).length ? JSON.stringify(generation) : null)
+  useSettings.setState({ generation })
+}
+
 export const setThinking = (thinking: boolean) => {
   write(KEYS.thinking, String(thinking))
   useSettings.setState({ thinking })
@@ -207,3 +262,29 @@ export const setPinnedSession = (id: string, pinned: boolean) => {
 }
 
 export const clearPinnedSessions = () => savePinnedSessions([])
+
+const saveFavoriteMessages = (favoriteMessages: FavoriteMessage[]) => {
+  write(KEYS.favoriteMessages, favoriteMessages.length ? JSON.stringify(favoriteMessages) : null)
+  useSettings.setState({ favoriteMessages })
+}
+
+export const addFavoriteMessages = (sessionId: string, messageIds: readonly string[]) => {
+  const previous = useSettings.getState().favoriteMessages
+  const added = [...new Set(messageIds)].map((messageId) => ({ sessionId, messageId }))
+  const existing = new Set(previous.map(favoriteMessageKey))
+  const next = added.filter((entry) => !existing.has(favoriteMessageKey(entry)))
+  if (next.length) {
+    saveFavoriteMessages([...next, ...previous])
+  }
+}
+
+export const removeFavoriteMessages = (sessionId: string, messageIds?: readonly string[]) => {
+  const previous = useSettings.getState().favoriteMessages
+  const removed = messageIds && new Set(messageIds)
+  const next = previous.filter((entry) => entry.sessionId !== sessionId || (removed && !removed.has(entry.messageId)))
+  if (next.length !== previous.length) {
+    saveFavoriteMessages(next)
+  }
+}
+
+export const clearFavoriteMessages = () => saveFavoriteMessages([])

@@ -28,6 +28,7 @@ const mocks = new Map([
   ['./AppearanceSetting.js', 'export const ChatBackgroundSetting=()=>null; export const ThinkingCollapseSetting=()=>null;'],
   ['./ContextMemorySetting.js', 'export const ContextMemorySetting=()=>null;'],
   ['./DiagnosticsSetting.js', 'export const DiagnosticsSetting=()=>null;'],
+  ['./GenerationSetting.js', 'export const GenerationSetting=()=>null; export const ReplyPreferenceSettings=()=>null;'],
   ['./UpdateSetting.js', 'export const UpdateSetting=()=>null;'],
   ['./settingsDialogState.js', 'export const closeSettings=()=>{globalThis.__closed+=1}; export const useSettingsDialog=Object.assign(selector=>selector({open:true,section:"data"}),{getState:()=>({section:"data"})});'],
   ['./Settings.module.css', 'export default {};'],

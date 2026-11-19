@@ -1,0 +1,94 @@
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 100%;
+  padding-inline: 8px 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
+.contextButton {
+  min-height: 34px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-brand-text);
+  font: inherit;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+.modal {
+  max-height: calc(var(--app-viewport-height, 100dvh) - 24px);
+  overflow: auto;
+}
+
+.total {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+
+  strong {
+    color: var(--dsw-alias-label-primary);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.meter {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 8px;
+  margin: 10px 0 14px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
+  background: var(--dsw-alias-bg-skeleton);
+  accent-color: var(--dsw-alias-button-primary-fill);
+
+  &::-webkit-progress-bar {
+    background: var(--dsw-alias-bg-skeleton);
+  }
+
+  &::-webkit-progress-value {
+    background: var(--dsw-alias-button-primary-fill);
+  }
+
+  &::-moz-progress-bar {
+    background: var(--dsw-alias-button-primary-fill);
+  }
+}
+
+.breakdown {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+
+  > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  dd {
+    margin: 0;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@media not all and (min-width: 768px) {
+  .contextButton {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

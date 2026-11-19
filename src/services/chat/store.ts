@@ -3,6 +3,7 @@ import { createId } from '../../utils/id.js'
 import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest } from '../api/types.js'
+import { DEFAULT_CONTEXT_WINDOW, generationParameters } from '../api/generation.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import {
   extractFileIds,
@@ -12,8 +13,8 @@ import {
   isRetryableApiError,
 } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
-import { clearPinnedSessions, setPinnedSession, useSettings } from '../settings.js'
-import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
+import { clearFavoriteMessages, clearPinnedSessions, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
+import { appendBranch, getVisibleMessages, normalizeSession, removeBranchMessages, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
   clearAllDrafts,
@@ -27,6 +28,7 @@ import { useHistoryTarget } from './historySearch.js'
 import {
   CONTEXT_INPUT_BUDGET,
   estimateContextTokens,
+  estimateRequestParts,
   estimateRequestTokens,
   prepareContextMemory,
 } from './contextMemory.js'
@@ -37,9 +39,11 @@ import {
   applyEvent,
   canContinueReply,
   getContextRounds,
+  hasVisibleReplyText,
   settleReply,
   toRequestMessages,
 } from './reply.js'
+import { getGeneratedText, getTokenRate } from './replyMetrics.js'
 import {
   toSessionSummary,
   type AssistantMessage,
@@ -470,6 +474,7 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
     pendingFiles.clear()
     clearAllDrafts()
     clearPinnedSessions()
+    clearFavoriteMessages()
     const sessions = sortSessions(summaries)
     const activeId = sessions[0]?.id ?? null
     set({
@@ -533,7 +538,7 @@ export const openHistoryMatch = async (id: string, messageId: string | null) => 
   selectSession(id)
   await ensureSessionLoaded(id)
   const original = getSession(id)
-  if (!original || get().activeId !== id || get().importingHistory || !messageId) {
+  if (!original || get().activeId !== id || get().importingHistory || deletingSessions.has(id) || !messageId) {
     return
   }
   const session = normalizeSession(original)
@@ -557,7 +562,7 @@ export const openHistoryMatch = async (id: string, messageId: string | null) => 
 }
 
 export const setSessionContextMemory = (sessionId: string, fixed: string) => {
-  if (get().importingHistory || get().streaming[sessionId] || !getSession(sessionId)) {
+  if (get().importingHistory || get().streaming[sessionId] || deletingSessions.has(sessionId) || !getSession(sessionId)) {
     return
   }
   updateSession(sessionId, (session) => ({ ...session,
@@ -619,6 +624,7 @@ const removeSessionData = async (id: string): Promise<boolean> => {
     pendingFiles.delete(id)
     clearDraft(id)
     setPinnedSession(id, false)
+    removeFavoriteMessages(id)
     set((state) => ({
       sessions: state.sessions.filter((session) => session.id !== id),
       sessionCache: Object.fromEntries(
@@ -650,6 +656,42 @@ const removeSessionData = async (id: string): Promise<boolean> => {
 }
 
 export const stopReply = (sessionId: string) => getStreamController(sessionId)?.abort()
+
+export const deleteMessages = (id: string, messageIds: readonly string[]): Promise<boolean> => {
+  const task = deleteMessageData(id, messageIds).finally(() => deletionTasks.delete(task))
+  deletionTasks.add(task)
+  return task
+}
+
+const deleteMessageData = async (id: string, messageIds: readonly string[]): Promise<boolean> => {
+  const current = getSession(id)
+  if (!current || get().importingHistory || deletingSessions.has(id) || getStreamController(id)) {
+    return false
+  }
+  const ids = new Set(messageIds)
+  const next = removeBranchMessages(current, ids)
+  if (next === current) {
+    return false
+  }
+  deletingSessions.add(id)
+  try {
+    await pendingSaves.get(id)
+    await db.saveSession(next, pendingFiles.get(id))
+    updateSession(id, () => next)
+    removeFavoriteMessages(id, messageIds)
+    pendingFiles.delete(id)
+    unsavedSessions.delete(id)
+    set((state) => ({
+      sessionSaveErrors: Object.fromEntries(Object.entries(state.sessionSaveErrors).filter(([key]) => key !== id)),
+    }))
+    return true
+  } catch (error) {
+    db.reportStorageError('delete messages')(error)
+    return false
+  } finally {
+    deletingSessions.delete(id)
+  }
+}
 
 /** Local command: compact the selected branch without creating a chat turn. */
 export const compactSession = async (
@@ -688,6 +730,7 @@ export const compactSession = async (
       connection,
       model: settings.model,
       signal,
+      inputBudget: settings.generation.contextTokens,
       onCommit: (update) => db.commitMemoryUpdate(snapshot.state, update, valid),
       onProgress: (progress) => set((state) => ({
         contextProgress: { ...state.contextProgress, [sessionId]: { ...progress, manual: true } },
@@ -794,7 +837,8 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
   const index =
     messageId === undefined ? path.length - 1 : path.findIndex((m) => m.id === messageId)
   const question = path[index - 1]
-  if (question?.role !== 'user' || path[index]?.role !== 'assistant') {
+  const previous = path[index]
+  if (question?.role !== 'user' || previous?.role !== 'assistant' || previous.questionDeleted) {
     return
   }
   const history = path.slice(0, index - 1)
@@ -866,6 +910,7 @@ export const continueReply = (sessionId: string, messageId: string) => {
   if (
     question?.role !== 'user' ||
     previous?.role !== 'assistant' ||
+    previous.questionDeleted ||
     previous.id !== messageId ||
     !canContinueReply(previous)
   ) {
@@ -881,6 +926,8 @@ export const continueReply = (sessionId: string, messageId: string) => {
     status: 'pending',
     stopReason: undefined,
     stopDetails: undefined,
+    usage: undefined,
+    metrics: undefined,
     error: undefined,
   }
   updateReply(sessionId, reply)
@@ -905,6 +952,7 @@ export const retryUpload = (sessionId: string, messageId: string) => {
   if (
     question?.role !== 'user' ||
     previous?.role !== 'assistant' ||
+    previous.questionDeleted ||
     previous.error?.kind !== 'upload'
   ) {
     return
@@ -1144,10 +1192,15 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const connection = getApiConnection()
   const apiKey = settings.apiKey ?? ''
   const model = initial.model ?? settings.model
+  const generation = settings.generation
+  const baseSystem = generation.system ?? SYSTEM_PROMPT
   const contextRoute = JSON.stringify([connection.baseUrl, connection.protocol, model, initial.thinking, initial.search])
   let inputBudget = learnedContextLimit?.route === contextRoute && learnedContextLimit.key === apiKey
     ? learnedContextLimit.budget
     : undefined
+  const contextWindow = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
+  const effectiveBudget = () => Math.min(inputBudget ?? contextWindow, contextWindow)
+  const memoryBudget = () => Math.min(effectiveBudget(), generation.contextTokens ?? CONTEXT_INPUT_BUDGET)
   let retriedContextLimit = false
   let attachmentRetries = 0
   const extras = supportsDeepSeekExtras(connection)
@@ -1177,7 +1230,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   let contextPrepared = false
   let compactContext = false
   let systemMemory = ''
-  let requiredSystem = SYSTEM_PROMPT
+  let requiredSystem = baseSystem
   let sourceConflict = false
   let sourceState: MemoryState | undefined
   // 接口拒绝的历史图片只在本次生成的请求中省略。
@@ -1202,6 +1255,20 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       let preparing = false
       let receivedContent = false
       let submitted: CreateMessageRequest | undefined
+      let firstGeneratedAt: number | undefined
+      let lastGeneratedAt: number | undefined
+      const complete = () => {
+        const completed = settleReply(reply, 'done', Date.now())
+        if (completed.status !== 'done' || !completed.metrics || firstGeneratedAt === undefined ||
+          lastGeneratedAt === undefined || lastGeneratedAt - firstGeneratedAt < 100) {
+          return completed
+        }
+        const tokensPerSecond = getTokenRate(completed.usage, performance.now() - firstGeneratedAt)
+        return tokensPerSecond === undefined ? completed : {
+          ...completed,
+          metrics: { ...completed.metrics, tokensPerSecond },
+        }
+      }
       try {
         if (controller.signal.aborted) {
           throw controller.signal.reason
@@ -1278,9 +1345,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             connection,
             model,
             signal: controller.signal,
+            inputBudget: memoryBudget(),
             requestOverhead:
               estimateContextTokens(
-                SYSTEM_PROMPT +
+                baseSystem +
                   (latestReminder ?? '') +
                   JSON.stringify(extras ? serverTools(initial.search ?? false) : [])
               ) + 256,
@@ -1314,7 +1382,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           compactContext = context.active
           systemMemory = context.systemMemory
           if (context.requiredSystemMemory) {
-            requiredSystem = [SYSTEM_PROMPT, context.requiredSystemMemory].join('\n\n')
+            requiredSystem = [baseSystem, context.requiredSystemMemory].join('\n\n')
           }
           set((state) => ({
             contextProgress: Object.fromEntries(
@@ -1355,21 +1423,20 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         )
         let body: CreateMessageRequest = {
           model,
-          system: [SYSTEM_PROMPT, systemMemory].filter(Boolean).join('\n\n'),
+          ...generationParameters(generation, connection, initial.thinking ?? false),
+          system: [baseSystem, systemMemory].filter(Boolean).join('\n\n'),
           messages,
           thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
           safety_check: SAFETY_CHECK,
           tools: extras ? serverTools(initial.search ?? false) : [],
           ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
-        if (inputBudget !== undefined || compactContext) {
-          body = fitRequestHistory(body, inputBudget ?? CONTEXT_INPUT_BUDGET, requiredSystem)
-        }
+        body = fitRequestHistory(body, compactContext ? memoryBudget() : effectiveBudget(), requiredSystem)
         submitted = body
+        reply = { ...reply, metrics: estimateRequestParts(body) }
         const events = streamMessage(apiKey, body, controller.signal, connection)
         const blockIndexes = new Map<number, number>()
         let eventsSinceYield = 0
-        let displayedContent = false
         for await (const event of events) {
           if (controller.signal.aborted) {
             throw controller.signal.reason
@@ -1388,14 +1455,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             titleRequests.delete(controller)
           }
           reply = applyEvent(reply, event, Date.now(), blockIndexes)
-          const firstText: boolean =
-            !displayedContent &&
-            ((event.type === 'content_block_delta' &&
-              (event.delta.type === 'text_delta' || event.delta.type === 'thinking_delta')) ||
-              (event.type === 'content_block_start' &&
-                ((event.content_block.type === 'text' && !!event.content_block.text) ||
-                  (event.content_block.type === 'thinking' && !!event.content_block.thinking))))
-          displayedContent ||= firstText
+          const generatedText = hasVisibleReplyText(getGeneratedText(event))
+          const firstText = firstGeneratedAt === undefined && generatedText
+          if (generatedText) {
+            lastGeneratedAt = performance.now()
+            firstGeneratedAt ??= lastGeneratedAt
+          }
           if (document.visibilityState === 'hidden') {
             flush()
           } else if (firstText) {
@@ -1413,7 +1478,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         if (retriedContextLimit && inputBudget !== undefined) {
           learnedContextLimit = { route: contextRoute, key: apiKey, budget: inputBudget }
         }
-        reply = settleReply(reply, 'done', Date.now())
+        reply = complete()
         break
       } catch (error) {
         if (controller.signal.aborted) {
@@ -1431,7 +1496,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         const lengthError = submitted ? getContextLengthError(error) : null
         if (lengthError && submitted && !receivedContent && !retriedContextLimit) {
-          const budget = getRetryInputBudget(estimateRequestTokens(submitted), lengthError)
+          const budget = getRetryInputBudget(estimateRequestTokens(submitted), lengthError, generation.contextTokens)
           if (fitRequestHistory(submitted, budget, requiredSystem) !== submitted) {
             retriedContextLimit = true
             inputBudget = budget
@@ -1506,7 +1571,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         if (error instanceof ApiError && error.kind === 'interrupted' && reply.stopReason) {
           // 已收到 message_delta 的结束原因，只是缺了结尾的 message_stop
-          reply = settleReply(reply, 'done', Date.now())
+          reply = complete()
         } else if (error instanceof ApiError) {
           reply = settleReply(reply, 'error', Date.now(), {
             kind: error.kind,

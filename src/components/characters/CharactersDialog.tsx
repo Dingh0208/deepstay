@@ -204,7 +204,7 @@ const CharactersContent = () => {
         )}
       </Modal>
       {starting ? (
-        <Modal title={t('characterChooseGreeting')} closable className={styles.dialog}
+        <Modal title={t('characterChooseGreeting')} closable className={styles.dialog} mainClassName={styles.main}
           onClose={() => setStarting(null)} footer={<>
             <Button size="m" variant="outlined" onClick={() => setStarting(null)}>{t('cancel')}</Button>
             <Button size="m" disabled={importing || !chatReady} onClick={() => start(starting.preset, starting.index)}>{t('characterStartChat')}</Button>

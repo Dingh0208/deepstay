@@ -21,7 +21,7 @@ const mocks = new Map([
   ['../settings/settingsDialogState.js', 'export const closeSettings=()=>{};'],
   ['../sider/mobileSiderState.js', 'export const closeMobileSider=()=>{};'],
   ['./characterDialogState.js', 'export const closeCharacters=()=>{globalThis.__closed++}; export const useCharacterDialog=selector=>selector({open:true});'],
-  ['./CharactersDialog.module.css', 'export default {};'],
+  ['./CharactersDialog.module.css', 'export default {main:"character-scrollable-main"};'],
 ])
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -191,6 +191,8 @@ try {
   tree = render()
   assert.deepEqual(globalThis.__starts, [])
   let selection = find(tree, node => node.type?.name === 'Select')
+  assert.equal(find(tree, node => node.type?.name === 'Modal' && node.props.title === 'characterChooseGreeting').props.mainClassName,
+    'character-scrollable-main', 'Greeting preview must scroll within the modal so its footer remains reachable on short screens')
   assert.deepEqual(selection.props.options.map(option => option.value), ['0', '1', '2'])
   assert.equal(find(tree, node => node.type === 'textarea' && node.props.readOnly).props.value, '')
   selection.props.onChange('1')

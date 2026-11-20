@@ -35,3 +35,7 @@
 - APK 签名验证通过，证书 SHA-256 为 `64dba31f8f30a392fc850dd81ead8bedccb374568a7e4821be0b64fdb2ec2f1f`，与既有发布签名一致。
 - 本地 APK SHA-256 为 `d5f8e20acb62186b0dbdc27c8d4c2937cf8ab2c93432a62a473272734a90c7bd`。CI 会独立构建，公开 APK 的哈希以最终 Release 附件和清单为准。
 - 包内 Web 版本正确，无开发服务器配置、签名私钥、数据库或测试归档。
+- 发布标签 `v0.1.10` 指向 `0c36a5e8f07dcfa329119bda0ab7791a2e74c81b`；同一修复已合并并推送 main。GitHub Pages 部署通过。
+- [Android Release 工作流](https://github.com/Dingh0208/deepstay/actions/runs/44707468741) 的正式构建与校验通过。取回固定 artifact `14615697691` 后独立核对：APK 为 19,724,886 字节，SHA-256 `fb66deda213504213525b450043fff159b39986091596c4e6bbf9f2510c8ff5a`，与内含清单和校验和一致；包名、版本、既有签名及无测试数据检查均通过。
+- 构建与发布任务最终均成功；[v0.1.10 Release](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.10) 已公开并标记最新，附正式 APK、`latest.json`、`SHA256SUMS.txt` 和中文更新说明。
+- 国内 `https://ds.herohao.top/updates/latest.json` 已为 `0.1.10`。公开 APK 返回 HTTP 200，完整下载得到 19,724,886 字节，SHA-256 与固定 CI artifact、国内清单和 GitHub 附件 digest 均一致。发布下载证据保存在本轮 QA 目录的 `published-latest.json` 与 `published-deepstay-0.1.10.apk`。

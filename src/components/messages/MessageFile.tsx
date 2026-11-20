@@ -57,10 +57,14 @@ const useUploadState = (file: FileAttachment) =>
 export const MessageFile = ({
   file,
   onRetry,
+  onToggleContext,
+  busy = false,
 }: {
   file: FileAttachment
   /** 本条消息补传失败且可重试时提供 */
   onRetry: (() => void) | null
+  onToggleContext?: () => void
+  busy?: boolean
 }) => {
   const t = useTranslate()
   const url = useFileUrl(file.id)
@@ -175,13 +179,23 @@ export const MessageFile = ({
   }
 
   return (
-    <FileCard
-      name={file.name}
-      size={file.size}
-      status={uploading ? 'uploading' : failed ? 'error' : 'done'}
-      error={errorText}
-      onRetry={retry ?? undefined}
-      onOpen={url && !upload ? () => window.open(url, '_blank', 'noreferrer') : undefined}
-    />
+    <div className={styles.document}>
+      <FileCard
+        name={file.name}
+        size={file.size}
+        status={uploading ? 'uploading' : failed ? 'error' : 'done'}
+        error={errorText}
+        onRetry={retry ?? undefined}
+        onOpen={url && !upload ? () => window.open(url, '_blank', 'noreferrer') : undefined}
+      />
+      {onToggleContext ? (
+        <div className={styles.contextControl}>
+          {file.contextExcluded ? <span>{t('fileContextPaused')}</span> : null}
+          <button type="button" disabled={busy} onClick={onToggleContext}>
+            {t(file.contextExcluded ? 'fileResumeContext' : 'filePauseContext')}
+          </button>
+        </div>
+      ) : null}
+    </div>
   )
 }

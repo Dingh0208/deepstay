@@ -72,6 +72,34 @@ try {
   assert.equal(revoked.length, 2, 'Failed encodings still release their bounded bitmap')
   failEncode = false
 
+  const screenshot = png(1000, 12000)
+  assert.equal(await (await prepareImageUpload(screenshot)).text(), '341x4096')
+  assert.deepEqual(decoded.at(-1), { resizeWidth: 341, resizeHeight: 4096, resizeQuality: 'high' })
+  const bitmapDecoder = globalThis.createImageBitmap
+  globalThis.createImageBitmap = async () => { throw new Error('Resize options unavailable') }
+  globalThis.Image = class {
+    naturalWidth = 200
+    naturalHeight = 2400
+    set src(value) { queueMicrotask(() => this.onload()) }
+  }
+  const downsampled = await prepareImageUpload(screenshot)
+  assert.notEqual(downsampled, screenshot, 'A downsampled Image decoder cannot return an oversized encoded original')
+  assert.equal(await downsampled.text(), '200x2400')
+  globalThis.createImageBitmap = async () => ({ width: 3000, height: 1000, close() {} })
+  const unknownHeader = new Blob([new Uint8Array(32)], { type: 'image/jpeg' })
+  const decodedUnknown = await prepareImageUpload(unknownHeader)
+  assert.notEqual(decodedUnknown, unknownHeader, 'Unknown headers cannot prove the encoded original is bounded')
+  assert.equal(await decodedUnknown.text(), '3000x1000')
+  globalThis.createImageBitmap = bitmapDecoder
+  globalThis.Image = class { constructor() { throw new Error('Unexpected full-size fallback') } }
+
+  const attachments = await import(new URL('services/attachments.ts', root))
+  const genericImage = new File([screenshot], 'Android-Screenshot.PNG', { type: 'application/octet-stream' })
+  assert.equal(attachments.resolveMimeType(genericImage), 'image/png')
+  assert.equal(attachments.isImage(attachments.resolveMimeType(genericImage)), true)
+  assert.equal(attachments.resolveMimeType(new File(['text'], 'notes.txt', { type: 'application/octet-stream' })), 'application/octet-stream')
+  assert.equal(attachments.resolveMimeType(new File(['text'], 'notes.txt', { type: 'text/plain' })), 'text/plain')
+
   const { streamMessage } = await import(new URL('services/api/client.ts', root))
   const { supportsDeepSeekServerTools } = await import(new URL('services/api/modelCapabilities.ts', root))
   const settings = await import(new URL('services/settings.ts', root))
@@ -191,11 +219,45 @@ try {
   const notDeleted = await db.loadSession(missingId)
   assert.equal(notDeleted.messages.at(-1).error.localMessage.key, 'replyImageTooLarge')
   assert.deepEqual(notDeleted.messages[0].files[0], missingFile)
+
+  const rejectedId = 'still-rejected-after-image-repair'
+  const rejectedFile = { ...oldFile, id: 'rejected-original', serverId: 'rejected-large-file' }
+  const rejectedSession = { ...session, id: rejectedId, messages: [
+    { ...session.messages[0], files: [rejectedFile] }, session.messages[1],
+  ] }
+  await db.saveSession(rejectedSession, [{ id: rejectedFile.id, blob: original }])
+  store.useChatStore.setState(state => ({ sessions: [...state.sessions, rejectedSession] }))
+  await store.openHistoryMatch(rejectedId, null)
+  let rejectedCalls = 0, repairedUploads = 0
+  globalThis.fetch = async (url, init) => {
+    if (String(url).endsWith('/files')) {
+      repairedUploads++
+      assert.equal(await init.body.get('file').text(), '4096x819')
+      return Response.json({ id: rejectedFile.serverId })
+    }
+    rejectedCalls++
+    const request = JSON.parse(init.body)
+    const index = request.messages.findIndex(message => Array.isArray(message.content) && message.content[0]?.type === 'image')
+    assert.ok(index >= 0, 'An unsuccessful resize retry must keep the image in context')
+    // Some gateways return a structured error with HTTP 200 instead of an error status.
+    return Response.json({ error: { message: `messages.${index}.content.0: The image is too large to process: its width and height must each be at most 8192 pixels.` } })
+  }
+  drafts.setDraftText(rejectedId, 'reject the repaired image again')
+  assert.equal(store.sendMessage(rejectedId), true)
+  await idle()
+  assert.equal(rejectedCalls, 2, 'A still-rejected image gets only its initial request and one repair retry')
+  assert.equal(repairedUploads, 1, 'A pixel-limit rejection cannot repeatedly upload the same local original')
+  const rejected = await db.loadSession(rejectedId)
+  assert.equal(rejected.messages.at(-1).error.localMessage.key, 'replyImageTooLarge')
+  assert.equal(rejected.messages[0].files[0].serverId, rejectedFile.serverId)
+  assert.deepEqual(await (await db.loadFile(rejectedFile.id)).arrayBuffer(), await original.arrayBuffer())
   console.log(JSON.stringify({ passed: true, checks: [
     'Pro and Opus aliases omit unsupported server tools, old tool blocks and auto titles; Flash retains them and safety settings are unchanged.',
     'A real Pro send with search off has no implicit read-link tool or title request.',
     'Only oversized outbound copies are resized; decoder targets and canvas are bounded, and normal-size originals skip decoding.',
+    'Long screenshots over 8192 pixels, downsampled Image fallback and unknown-header ImageBitmap output never upload an oversized original; generic Android image MIME is classified correctly.',
     'A real store request with an old oversized file ID reuploads a bounded copy once, retains the image in the retry and preserves the original in IndexedDB.',
+    'Repeated pixel-limit rejection over HTTP 200 JSON stops after one local image repair, preserves the attachment and original, and shows the localized size error.',
   ], scope: 'Actual API/store/upload/IndexedDB paths with synthetic byte headers and mocked image decoding; no real API calls or keys. Real browser image decoding requires separate acceptance.' }, null, 2))
 } finally {
   hooks.deregister()

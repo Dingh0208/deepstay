@@ -1,4 +1,4 @@
-/** The Messages API accepts images no wider or taller than 4096 pixels. */
+/** Bound the outbound copy for the Messages API and older WebViews. */
 export const MAX_IMAGE_SIDE = 4096
 
 const imageSize = (data: ArrayBuffer): { width: number; height: number } | undefined => {
@@ -52,11 +52,10 @@ export const prepareImageUpload = async (blob: Blob): Promise<Blob> => {
   if (size && size.width > 0 && size.height > 0 && Math.max(size.width, size.height) <= MAX_IMAGE_SIDE) {
     return blob
   }
-  const encode = async (image: CanvasImageSource, width: number, height: number, resized = false) => {
+  const encode = async (image: CanvasImageSource, width: number, height: number) => {
     const ratio = Math.min(1, MAX_IMAGE_SIDE / Math.max(width, height))
-    if (ratio === 1 && !resized) {
-      return blob
-    }
+    // A memory-constrained decoder can report fewer pixels than the encoded file contains.
+    // Only the verified header above may return the original; decoded fallbacks always re-encode.
     const canvas = document.createElement('canvas')
     canvas.width = Math.max(1, Math.floor(width * ratio))
     canvas.height = Math.max(1, Math.floor(height * ratio))
@@ -90,7 +89,7 @@ export const prepareImageUpload = async (blob: Blob): Promise<Blob> => {
     }
     if (bitmap) {
       try {
-        return await encode(bitmap, bitmap.width, bitmap.height, target !== undefined)
+        return await encode(bitmap, bitmap.width, bitmap.height)
       } finally {
         bitmap.close()
       }

@@ -21,6 +21,7 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 - **Delete turn** removes the prompt and its answer versions while keeping other turns. Switch saved models directly in the composer, and select multiple attachments in one file picker action.
 - Streaming replies, deep thinking, search, link reading, and source citations.
 - Attachments, voice input, and read-aloud replies.
+- Word / PDF uploads default to text parsing with a confirmation before upload. Pause or resume a document’s later references from its message card; see [attachment behavior and fees](docs/ATTACHMENTS.md).
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.
 - English and Simplified Chinese, light and dark themes, mobile layouts, and local history import/export.
 - Deep thinking is off by default. Thinking content expands by default; set it to start collapsed in **Settings → Chat & AI**. Manual expansion survives streamed updates.

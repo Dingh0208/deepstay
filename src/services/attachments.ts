@@ -30,12 +30,12 @@ export const isAcceptedExt = (name: string) => ACCEPTED_EXTS.includes(getFileExt
 /** 需要服务端做版面解析的文档；其余非图片文件（纯文本、代码、表格、电子书）无需解析 */
 const LAYOUT_RECOGNITION_EXTS = new Set(['pdf', 'doc', 'docx', 'ppt', 'pptx'])
 
-/** 上传时的 purpose：图片不传，PDF 与 Word、PPT 做版面解析，其余按 user_data 上传 */
-export const getUploadPurpose = (name: string, isImage: boolean): FilePurpose | null => {
+/** 图片不传 purpose；PDF、Word、PPT 默认只解析文字，其余按 user_data 上传。 */
+export const getUploadPurpose = (name: string, isImage: boolean, documentPurpose: FilePurpose = 'text_recognition'): FilePurpose | null => {
   if (isImage) {
     return null
   }
-  return LAYOUT_RECOGNITION_EXTS.has(getFileExt(name)) ? 'rich_layout_recognition' : 'user_data'
+  return LAYOUT_RECOGNITION_EXTS.has(getFileExt(name)) ? documentPurpose : 'user_data'
 }
 
 /** 文件允许的最大体积（MB），按上传时的 purpose 区分 */
@@ -125,7 +125,8 @@ const enqueueUpload = (
   name: string,
   isImage: boolean,
   signal: AbortSignal,
-  connection: ApiConnection
+  connection: ApiConnection,
+  documentPurpose: FilePurpose
 ) =>
   new Promise<string>((resolve, reject) => {
     queue.push(async () => {
@@ -142,7 +143,7 @@ const enqueueUpload = (
           ? `${name.replace(/\.[^.]+$/, '')}.png`
           : name
         const body = prepared instanceof File ? prepared : new File([prepared], uploadName, { type: prepared.type })
-        resolve((await uploadFile(apiKey, body, getUploadPurpose(name, isImage), signal, connection)).id)
+        resolve((await uploadFile(apiKey, body, getUploadPurpose(name, isImage, documentPurpose), signal, connection)).id)
       } catch (error) {
         reject(error)
       }
@@ -180,7 +181,8 @@ export const uploadAttachment = (
   blob: Blob,
   name: string,
   isImage: boolean,
-  connection: ApiConnection = getApiConnection()
+  connection: ApiConnection = getApiConnection(),
+  documentPurpose: FilePurpose = 'text_recognition'
 ): Promise<string> => {
   const current = pending.get(id)
   if (current) {
@@ -188,7 +190,7 @@ export const uploadAttachment = (
   }
   const controller = new AbortController()
   setTask(id, { status: 'uploading' })
-  const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal, connection)
+  const promise = enqueueUpload(apiKey, blob, name, isImage, controller.signal, connection, documentPurpose)
     .then((serverId) => {
       setTask(id, { status: 'done', serverId })
       return serverId
@@ -230,8 +232,11 @@ const MIME_BY_EXT: Record<string, string> = {
   webp: 'image/webp',
 }
 
-/** 取文件的 MIME：优先用浏览器给出的类型，缺失时按扩展名推断 */
-export const resolveMimeType = (file: File) => file.type || MIME_BY_EXT[getFileExt(file.name)] || ''
+/** 部分 Android 文件选择器只返回通用 MIME；已知图片扩展名仍需进入图片预处理。 */
+export const resolveMimeType = (file: File) =>
+  !file.type || file.type === 'application/octet-stream'
+    ? MIME_BY_EXT[getFileExt(file.name)] || file.type
+    : file.type
 
 export const isImage = (mimeType: string) => mimeType.startsWith('image/')
 

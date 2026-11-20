@@ -2,6 +2,7 @@ import type { TranslationMessage } from '../../i18n/index.js'
 import type { ApiErrorKind } from '../api/client.js'
 import type {
   ChatModel,
+  FilePurpose,
   MessageUsage,
   ServerToolBlock,
   StopDetails,
@@ -23,6 +24,10 @@ export type FileAttachment = {
   isImage: boolean
   /** 具体 MIME；导入时没有原件或无法识别的为空字符串，不影响图片身份。 */
   mimeType: string
+  /** 暂停在后续请求中引用此文档，保留本地原件及历史消息；图片不使用此字段。 */
+  contextExcluded?: boolean
+  /** 保留用户确认的解析方式，重试或补传时沿用。旧附件缺省时使用文字解析。 */
+  uploadPurpose?: FilePurpose
 }
 
 /** 本地消息的分支关系；字段缺省时按线性消息列表处理。 */

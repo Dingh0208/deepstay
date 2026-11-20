@@ -557,8 +557,9 @@ await assert.rejects(brokenReply.next(), error => {
 assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'stream')
 checks.push('Transport failure during a stream preserves already received text and shows an actionable interruption message without exposing raw exception text')
 
-const { getContextLengthError } = await import(new URL('services/api/errors.ts', sourceRoot))
+const { getContextLengthError, getImageSizeError } = await import(new URL('services/api/errors.ts', sourceRoot))
 const overflow = 'user input too long, 70668 tokens exceeds max 32768 tokens (request_id: fixture)'
+const imageOverflow = 'messages.1.content.0: The image is too large to process: its width and height must each be at most 8192 pixels. (request_id: fixture)'
 const lengthCode = 'context_length_exceeded'
 const lengthCases = [
   [deepseek, () => Response.json({ error: { message: overflow } }, { status: 400 }), { inputTokens: 70668, maxInputTokens: 32768 }],
@@ -574,6 +575,7 @@ const lengthCases = [
     { headers: { 'Content-Type': 'text/event-stream' } }), {}],
   [deepseek, () => Response.json({ error: { message: 'prompt is too long: 70668 tokens > 32768 maximum' } }, { status: 400 }), { inputTokens: 70668, maxInputTokens: 32768 }],
   [deepseek, () => Response.json({ error: { message: 'Unsupported image' } }, { status: 400 }), null],
+  [deepseek, () => Response.json({ error: { message: imageOverflow } }), null],
   [getApiConnection(), () => Response.json({ error: { message: 'Request body is too large' } }, { status: 413 }), null],
   [getApiConnection(), () => Response.json({ error: { code: lengthCode, message: overflow } }, { status: 429 }), null],
 ]
@@ -585,6 +587,30 @@ for (const [connection, response, expected] of lengthCases) {
   })
 }
 checks.push('Input limit classification preserves explicit provider budgets and recognizes structured context length errors while keeping unrelated HTTP failures distinct')
+
+for (const response of [
+  () => Response.json({ error: { message: imageOverflow } }, { status: 400 }),
+  () => Response.json({ error: { message: imageOverflow } }, { status: 422 }),
+  () => Response.json({ error: { message: imageOverflow } }),
+  () => new Response(namedFrame({ type: 'error', error: { message: imageOverflow } }), { headers: { 'Content-Type': 'text/event-stream' } }),
+]) {
+  responder = response
+  await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal, deepseek)), error => {
+    assert.deepEqual(getImageSizeError(error), { messageIndex: 1, blockIndex: 0 })
+    assert.equal(getContextLengthError(error), null, 'Pixel limits must not trigger context compression')
+    return true
+  })
+}
+for (const error of [
+  new ApiError('http', imageOverflow, 401),
+  new ApiError('http', imageOverflow, 429),
+  new ApiError('http', imageOverflow, 500),
+  new ApiError('network', imageOverflow, 400),
+  new ApiError('protocol', imageOverflow, 400),
+  new ApiError('http', overflow, 400),
+  new ApiError('http', 'messages.1.content.0: Unsupported document', 400),
+]) assert.equal(getImageSizeError(error), null)
+checks.push('Image pixel-limit errors retain the exact rejected attachment location across HTTP 400/422, SSE and HTTP 200 JSON without being confused with context, document or transport failures')
 
 const { supportsDeepSeekExtras } = await import(new URL('services/api/connection.ts', sourceRoot))
 assert.equal(supportsDeepSeekExtras({ baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }), true)

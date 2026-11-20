@@ -127,7 +127,7 @@ export type TextBlockParam = { type: 'text'; text: string }
 
 /**
  * 文件块：引用经 Files API 上传的文件，图片用 image、其余用 document；
- * 图片请求需带 anthropic-beta: files-api-2025-04-14；扩展模式不支持 document，返回 400。
+ * 文件请求需带 anthropic-beta: files-api-2025-04-14；document 支持 file 来源。
  */
 export type FileBlockParam = {
   type: 'image' | 'document'
@@ -242,10 +242,10 @@ export type MessageStreamEvent =
   | { type: 'ping' }
 
 /**
- * POST /anthropic/v1/files 的 purpose：PDF 与 Word、PPT 需要服务端做版面解析；
+ * POST /anthropic/v1/files 的 purpose：PDF 与 Word、PPT 可选择文字或图文解析；
  * 纯文本、代码、表格与电子书不需要解析，用 user_data。
  */
-export type FilePurpose = 'rich_layout_recognition' | 'user_data'
+export type FilePurpose = 'text_recognition' | 'rich_layout_recognition' | 'user_data'
 
 /** POST /anthropic/v1/files 的响应 */
 export type FileObject = {

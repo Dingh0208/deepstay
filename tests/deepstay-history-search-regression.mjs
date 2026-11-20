@@ -63,6 +63,37 @@ matches = await searchHistory('看海', { [first.id]: cached }, ids, signal())
 assert.equal(matches.length, 1)
 checks.push('Returns every matching message in time order across sessions, uses newer in-memory messages, and does not repeat matches from a cached database record')
 
+const termsSession = session('multi-term', '京都　樱花 ＡＬＢＵＭ', [
+  user('terms-new', '约好一起去京都，再看盛开的樱花', 130),
+  user('terms-part-a', '京都的天气很好', 180),
+  reply('terms-part-b', '樱花已经盛开', { createdAt: 170 }),
+  reply('terms-hidden', '一起去京都看樱花吧', { parentId: 'terms-part-a', createdAt: 110 }),
+  user('terms-width', 'Ａｌｂｕｍ　京都的旅行', 120),
+])
+const otherTerms = session('other-terms', '旅行', [user('terms-other', '京都有好看的樱花', 125)])
+await db.saveSession(termsSession)
+await db.saveSession(otherTerms)
+const termIds = new Set([termsSession.id, otherTerms.id])
+matches = await searchHistory(' 樱花\t京都 ', {}, termIds, signal())
+assert.deepEqual(matches.map(match => [match.messageId, match.timestamp]), [
+  ['terms-new', 130], ['terms-other', 125], ['terms-hidden', 110],
+], 'Terms match in any order within one message, never across separate messages, while all branches and sessions stay searchable')
+matches = await searchHistory('ａｌｂｕｍ　京都', {}, termIds, signal())
+assert.deepEqual(matches.map(match => match.messageId), ['terms-width'])
+matches = await searchHistory('京都 album 樱花', {}, termIds, signal())
+assert.deepEqual(matches.map(match => [match.sessionId, match.messageId]), [[termsSession.id, null]], 'A title must contain every term itself')
+checks.push('Matches whitespace-separated Chinese terms in any order within each message or title, folds full-width ASCII and spaces, and preserves cross-session and hidden-branch time ordering')
+
+const unicodeText = `İ${'前'.repeat(33)}😀${'近'.repeat(34)}ＡＬＢＵＭ${'后'.repeat(74)}😀尾`
+const unicodeSession = session('unicode-offsets', 'Unicode', [user('unicode-u', unicodeText, 200)])
+await db.saveSession(unicodeSession)
+matches = await searchHistory('album', {}, new Set([unicodeSession.id]), signal())
+assert.equal(matches.length, 1)
+assert.equal(matches[0].excerpt, `…😀${'近'.repeat(34)}ＡＬＢＵＭ${'后'.repeat(74)}😀`, 'Width and case folding preserve original offsets and neither excerpt edge splits an emoji')
+matches = await searchHistory('后 album', {}, new Set([unicodeSession.id]), signal())
+assert.ok(matches[0].excerpt.startsWith(`…😀${'近'.repeat(34)}ＡＬＢＵＭ`), 'The excerpt centers the earliest text occurrence, regardless of query term order')
+checks.push('Returns original full-width text at the correct UTF-16 offset after a length-changing lowercase character and keeps emoji pairs intact at both excerpt boundaries')
+
 assert.deepEqual(await searchHistory('  ', { [first.id]: cached }, ids, signal()), [])
 const controller = new AbortController()
 controller.abort()

@@ -14,7 +14,7 @@ import {
   getUnsupportedImageError,
   isRetryableApiError,
 } from '../api/errors.js'
-import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
+import { cancelUpload, describeUploadError, getUploadPurpose, uploadAttachment, useUploads } from '../attachments.js'
 import { clearFavoriteMessages, clearPinnedSessions, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
 import { appendBranch, getRoundMessageIds, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
 import * as db from './db.js'
@@ -588,6 +588,31 @@ export const setSessionContextMemory = (sessionId: string, fixed: string) => {
   persist(sessionId)
 }
 
+export const setFileContextExcluded = (sessionId: string, fileId: string, excluded: boolean): Promise<boolean> => {
+  if (get().importingHistory || get().streaming[sessionId] || deletingSessions.has(sessionId) || !getSession(sessionId)) {
+    return Promise.resolve(false)
+  }
+  let changed = false
+  updateSession(sessionId, (session) => {
+    const messages = session.messages.map((message) => {
+      if (message.role !== 'user') {
+        return message
+      }
+      let messageChanged = false
+      const files = message.files.map((file) => {
+        if (file.id !== fileId || file.isImage || Boolean(file.contextExcluded) === excluded) {
+          return file
+        }
+        changed = messageChanged = true
+        return { ...file, contextExcluded: excluded }
+      })
+      return messageChanged ? { ...message, files } : message
+    })
+    return changed ? { ...session, messages } : session
+  })
+  return changed ? persist(sessionId) : Promise.resolve(false)
+}
+
 export const renameSession = (id: string, title: string) => {
   if (get().importingHistory || deletingSessions.has(id)) {
     return
@@ -821,13 +846,14 @@ export const sendMessage = (targetSessionId: string | null) => {
     id: createId(),
     role: 'user',
     content: text,
-    files: files.map(({ id, serverId, name, size, isImage, mimeType }) => ({
+    files: files.map(({ id, serverId, name, size, isImage, mimeType, uploadPurpose }) => ({
       id,
       serverId,
       name,
       size,
       isImage,
       mimeType,
+      uploadPurpose,
     })),
     createdAt: now,
   }
@@ -1024,6 +1050,9 @@ const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
  * 本地也没有原件（导入的文档附件只有元数据）时返回 null，该附件只展示、不进入请求。
  */
 const ensureServerId = async (apiKey: string, file: FileAttachment, connection: ApiConnection): Promise<string | null> => {
+  if (!file.isImage && file.contextExcluded) {
+    return null
+  }
   if (file.serverId) {
     return file.serverId
   }
@@ -1035,7 +1064,10 @@ const ensureServerId = async (apiKey: string, file: FileAttachment, connection: 
   if (!blob) {
     return null
   }
-  return uploadAttachment(apiKey, file.id, blob, file.name, file.isImage, connection)
+  if (!file.isImage && getUploadPurpose(file.name, false) !== 'user_data') {
+    throw new ApiError('protocol', { key: 'replyDocumentNeedsConfirmation' })
+  }
+  return uploadAttachment(apiKey, file.id, blob, file.name, file.isImage, connection, file.uploadPurpose)
 }
 
 /** 用会话里的最新消息替换请求快照：重传前会重置附件的 serverId，快照必须跟着更新 */
@@ -1058,7 +1090,7 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
  * 发送前补齐附件的 serverId。
  * - 本轮提问的附件并行补齐，任一失败则整体失败，已成功的照常写回，重试时复用成功结果；
  * - 历史轮次（仅进入上下文的）中没有 serverId 的附件，多为导入的图片：从最新的消息往前逐张补传，
- *   失败静默跳过，该附件不进入本次请求，下次发送时再试。
+ *   图片失败静默跳过；需要付费解析的文档必须由用户重新选择确认。
  */
 const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal, apiKey: string, connection: ApiConnection) => {
   if (
@@ -1078,7 +1110,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   })
   const uploads = Promise.allSettled(
     request.question.files.map(async (file) => {
-      if (file.serverId) {
+      if (file.serverId || (!file.isImage && file.contextExcluded)) {
         return
       }
       const serverId = await ensureServerId(apiKey, file, connection)
@@ -1101,7 +1133,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   const pending = new Map<string, FileAttachment>()
   for (const [user] of getContextRounds(request.history).slice().reverse()) {
     for (const file of user.files) {
-      if (!file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
+      if (!(file.contextExcluded && !file.isImage) && !file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
         pending.set(file.id, file)
       }
     }
@@ -1116,9 +1148,12 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
         serverIds.set(file.id, serverId)
         saveServerIds(sessionId, new Map([[file.id, serverId]]))
       }
-    } catch {
+    } catch (error) {
       if (signal.aborted) {
         throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+      }
+      if (error instanceof ApiError && error.localMessage?.key === 'replyDocumentNeedsConfirmation') {
+        throw error
       }
     }
   }
@@ -1132,7 +1167,7 @@ const collectServerFileIds = (request: Request): Set<string> => {
   const ids = new Set<string>()
   const add = (files: FileAttachment[]) => {
     for (const file of files) {
-      if (file.serverId) {
+      if (file.serverId && (file.isImage || !file.contextExcluded)) {
         ids.add(file.serverId)
       }
     }
@@ -1149,7 +1184,7 @@ const collectServerFileIds = (request: Request): Set<string> => {
  * 下一次补齐会重新读取本地原件上传。报错里点名了 file_id 就只重置这些，
  * 没点名（如 invalid file_id）则重置本次请求用到的全部附件。
  */
-const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: unknown, fileIds?: Set<string>): boolean => {
+const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: unknown, fileIds?: Set<string>): boolean | 'confirmationRequired' => {
   if (!fileIds && (!(error instanceof ApiError) || !getFileErrorCode(error))) {
     return false
   }
@@ -1162,6 +1197,13 @@ const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: un
   const session = getSession(sessionId)
   if (targets.size === 0 || !session) {
     return false
+  }
+  // Word/PDF/PPT 重新上传会再次按页解析收费，必须由用户重新选文件确认。
+  if (session.messages.some((message) => message.role === 'user' && message.files.some((file) =>
+    file.serverId && targets.has(file.serverId) && !file.contextExcluded && !file.isImage &&
+    getUploadPurpose(file.name, false) !== 'user_data'
+  ))) {
+    return 'confirmationRequired'
   }
   const localIds: string[] = []
   const messages = session.messages.map((message) => {
@@ -1209,7 +1251,7 @@ const waitForRetry = (attempt: number, signal: AbortSignal) =>
 /**
  * 请求并消费流：先补齐附件的 serverId，再发请求；流式增量按动画帧刷新内存，完成、失败或停止后落盘。
  * 补传失败时回复记为 upload 错误，可重试。
- * 服务端判定 file_id 失效时重新补传后重发，退避重试且次数有上限，超过则按原始报错收尾。
+ * 图片等 file_id 失效时有界补传后重发；付费文档提示用户重新确认，不自动解析。
  */
 const streamReply = async (sessionId: string, initial: AssistantMessage, request: Request) => {
   const settings = useSettings.getState()
@@ -1227,6 +1269,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const memoryBudget = () => Math.min(effectiveBudget(), generation.contextTokens ?? CONTEXT_INPUT_BUDGET)
   let retriedContextLimit = false
   let attachmentRetries = 0
+  const repairedImageIds = new Set<string>()
   const extras = supportsDeepSeekExtras(connection)
   const serverExtras = extras && supportsDeepSeekServerTools(model)
   const imageRoute = JSON.stringify([connection.baseUrl, connection.protocol, model])
@@ -1514,13 +1557,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           reply = settleReply(reply, 'error', Date.now(), {
             kind: 'upload',
             message: '',
-            localMessage: describeUploadError(error),
+            localMessage: error instanceof ApiError && error.localMessage ? error.localMessage : describeUploadError(error),
             retryable: isRetryableApiError(error),
           })
           break
         }
         const lengthError = submitted ? getContextLengthError(error) : null
-        if (lengthError && submitted && !receivedContent && !retriedContextLimit) {
+        const messages = submitted?.messages ?? []
+        const currentQuestionIndex = messages.length - (messages[messages.length - 1]?.role === 'assistant' ? 2 : 1)
+        const currentContent = messages[currentQuestionIndex]?.content
+        const currentDocument = Array.isArray(currentContent) && currentContent.some((block) => block.type === 'document')
+        // 服务端展开文件后的实际长度未知；本轮文档超限时不自动再提交整份文件。
+        if (lengthError && submitted && !currentDocument && !receivedContent && !retriedContextLimit) {
           const budget = getRetryInputBudget(estimateRequestTokens(submitted), lengthError, generation.contextTokens)
           if (fitRequestHistory(submitted, budget, requiredSystem) !== submitted) {
             retriedContextLimit = true
@@ -1529,7 +1577,6 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             continue
           }
         }
-        const messages = submitted?.messages ?? []
         const oversizedImage = submitted ? getImageSizeError(error) : null
         if (extras && oversizedImage && !receivedContent && attachmentRetries < FILE_RETRY_LIMIT) {
           const message = messages[oversizedImage.messageIndex]
@@ -1540,8 +1587,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             const local = [...request.history, request.question].flatMap((item) => item.role === 'user' ? item.files : [])
               .find((file) => file.serverId === block.source.file_id)
             // Only retry when the original is available; never drop the offending image from history.
-            if (local && await db.loadFile(local.id) &&
-              reuploadInvalidatedFiles(sessionId, request, error, new Set([block.source.file_id]))) {
+            if (local && !repairedImageIds.has(local.id) && await db.loadFile(local.id) &&
+              reuploadInvalidatedFiles(sessionId, request, error, new Set([block.source.file_id])) === true) {
+              repairedImageIds.add(local.id)
               attachmentRetries += 1
               continue
             }
@@ -1599,12 +1647,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         }
         // 附件失效：重新补传后重发。收到过内容块（含丢弃的客户端工具）后不自动重发。
-        if (
+        const reupload =
           extras &&
           attachmentRetries < FILE_RETRY_LIMIT &&
           !receivedContent &&
           reuploadInvalidatedFiles(sessionId, request, error)
-        ) {
+        if (reupload === true) {
           await waitForRetry(attachmentRetries++, controller.signal)
           if (controller.signal.aborted) {
             reply = settleReply(reply, 'stopped', Date.now())
@@ -1620,8 +1668,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             kind: error.kind,
             message: error.message,
             status: error.status,
-            localMessage: lengthError
-              ? { key: 'replyContextLimit' }
+            localMessage: reupload === 'confirmationRequired'
+              ? { key: 'replyDocumentExpired' }
+              : lengthError
+              ? { key: messages.some((message) => Array.isArray(message.content) && message.content.some((block) => block.type === 'document'))
+                  ? 'replyDocumentContextLimit' : 'replyContextLimit' }
               : oversizedImage
                 ? { key: 'replyImageTooLarge' }
                 : unsupportedImage

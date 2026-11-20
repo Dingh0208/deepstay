@@ -19,17 +19,16 @@ import type {
  * 文件按 Files API 的 file_id（附件的 serverId）引用：图片用 image 块，其余用 document 块。
  * 发送前 streamReply 会先补齐 serverId；仍为 null 的是本地没有原件的附件，不进入请求。
  */
-const toFileBlocks = (files: FileAttachment[]): FileBlockParam[] =>
-  files.flatMap(({ serverId, isImage }) =>
-    serverId
-      ? [
-          {
-            type: isImage ? 'image' : 'document',
-            source: { type: 'file', file_id: serverId },
-          },
-        ]
-      : []
-  )
+const toFileBlocks = (files: FileAttachment[], documents = new Set<string>()): FileBlockParam[] =>
+  files.flatMap(({ serverId, isImage, contextExcluded }) => {
+    if (!serverId || (!isImage && (contextExcluded || documents.has(serverId)))) {
+      return []
+    }
+    if (!isImage) {
+      documents.add(serverId)
+    }
+    return [{ type: isImage ? 'image' : 'document', source: { type: 'file', file_id: serverId } }]
+  })
 
 const toReplyBlock = (block: OutputBlockStart, now: number): ReplyBlock | null => {
   switch (block.type) {
@@ -212,10 +211,12 @@ const isUsableReply = (message: Message): message is AssistantMessage =>
   hasReplyBody(message)
 
 /** 有文件时用内容块数组：先文件后文本，文件按 Files API 的 file_id 引用 */
-const toUserParam = ({ content, files }: UserMessage): MessageParam => {
-  const blocks = toFileBlocks(files)
+const toUserParam = ({ id, content, files }: UserMessage, documentOwners: Map<string, string>): MessageParam => {
+  const blocks = toFileBlocks(files.filter((file) => file.isImage || documentOwners.get(file.serverId ?? '') === id))
   return blocks.length === 0
-    ? { role: 'user', content }
+    ? { role: 'user', content: content || (files.some((file) => !file.isImage && file.contextExcluded)
+        ? '此处文件已暂停引用。'
+        : files.some((file) => file.serverId) ? '文件已在后续消息中提供。' : '') }
     : {
         role: 'user',
         content: [...blocks, ...(content ? [{ type: 'text' as const, text: content }] : [])],
@@ -319,6 +320,16 @@ export const toRequestMessages = (
   textOnly = false
 ): MessageParam[] => {
   const messages: MessageParam[] = []
+  const rounds = getContextRounds(history)
+  // 保留最近引用，避免最终裁剪旧轮次时把当前问题仍需要的文件一起移除。
+  const documentOwners = new Map<string, string>()
+  for (const user of [...rounds.map(([user]) => user), question]) {
+    for (const file of user.files) {
+      if (!file.isImage && !file.contextExcluded && file.serverId) {
+        documentOwners.set(file.serverId, user.id)
+      }
+    }
+  }
   let previousReminder: string | undefined
   const appendReminder = (reminder: string | undefined) => {
     // 仅在当前分支首次出现或内容变化时插入快照；缺少快照的消息保持原有内容。
@@ -327,19 +338,19 @@ export const toRequestMessages = (
       previousReminder = reminder
     }
   }
-  for (const [user, reply] of getContextRounds(history)) {
+  for (const [user, reply] of rounds) {
     // 历史提问没有文字、附件也都没有 serverId 时，提问为空，连同回答一起省略。
-    if (!user.content && (textOnly || toFileBlocks(user.files).length === 0)) {
+    if (!user.content && (textOnly || (toFileBlocks(user.files).length === 0 && !user.files.some((file) => !file.isImage && file.contextExcluded)))) {
       continue
     }
     appendReminder(reply.latestReminder)
     messages.push(
-      textOnly ? { role: 'user', content: user.content } : toUserParam(user),
+      textOnly ? { role: 'user', content: user.content } : toUserParam(user, documentOwners),
       textOnly ? { role: 'assistant', content: [{ type: 'text', text: getReplyText(reply) }] } : toAssistantParam(reply)
     )
   }
   appendReminder(latestReminder)
-  messages.push(textOnly ? { role: 'user', content: question.content } : toUserParam(question))
+  messages.push(textOnly ? { role: 'user', content: question.content } : toUserParam(question, documentOwners))
   if (prefix?.prefix) {
     const assistant = toAssistantParam(prefix, true, thinking)
     // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。

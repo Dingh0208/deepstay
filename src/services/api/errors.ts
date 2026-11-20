@@ -145,7 +145,12 @@ export const getUnsupportedImageError = (
 export const getImageSizeError = (
   error: unknown
 ): { messageIndex: number; blockIndex: number } | null => {
-  if (!(error instanceof ApiError) || (error.status !== 400 && error.status !== 422 && error.kind !== 'stream')) {
+  if (
+    !(error instanceof ApiError) ||
+    (error.kind !== 'stream' &&
+      !(error.kind === 'http' && (error.status === 400 || error.status === 422)) &&
+      !(error.kind === 'protocol' && error.status === 200))
+  ) {
     return null
   }
   const match = /^messages(?:\.(\d+)|\[(\d+)\])\.content(?:\.(\d+)|\[(\d+)\]):\s*The image is too large to process\b/i.exec(error.message.trim())

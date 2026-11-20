@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import type { TranslationMessage } from '../../i18n/index.js'
+import type { FilePurpose } from '../api/types.js'
 import { createId } from '../../utils/id.js'
 import {
   cancelUpload,
+  getUploadPurpose,
   isImage,
   resolveMimeType,
   uploadAttachment,
@@ -17,6 +19,7 @@ export type DraftAttachment = {
   file: File
   isImage: boolean
   previewUrl: string | null
+  uploadPurpose?: FilePurpose
 }
 
 type Draft = { text: string; attachments: DraftAttachment[] }
@@ -53,7 +56,9 @@ const upload = (attachment: DraftAttachment, apiKey: string) => {
     attachment.id,
     attachment.file,
     attachment.file.name,
-    attachment.isImage
+    attachment.isImage,
+    undefined,
+    attachment.uploadPurpose
   ).catch(() => {})
 }
 
@@ -61,7 +66,8 @@ const upload = (attachment: DraftAttachment, apiKey: string) => {
 export const addDraftFiles = (
   sessionId: string | null,
   files: File[],
-  apiKey: string
+  apiKey: string,
+  documentPurpose: FilePurpose = 'text_recognition'
 ): TranslationMessage | null => {
   if (files.length === 0) {
     return null
@@ -77,6 +83,7 @@ export const addDraftFiles = (
       file,
       isImage: image,
       previewUrl: image ? URL.createObjectURL(file) : null,
+      uploadPurpose: getUploadPurpose(file.name, image, documentPurpose) ?? undefined,
     }
   })
   updateDraft(sessionId, (draft) => ({ ...draft, attachments: [...draft.attachments, ...added] }))
@@ -114,6 +121,7 @@ export const prepareDraftMessage = (draft: Draft, tasks: Record<string, UploadTa
       size: attachment.file.size,
       isImage: attachment.isImage,
       mimeType: resolveMimeType(attachment.file),
+      uploadPurpose: attachment.uploadPurpose,
       blob: attachment.file,
     })
   }

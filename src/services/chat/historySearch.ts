@@ -5,6 +5,23 @@ import type { Session } from './types.js'
 export type HistoryMatch = { sessionId: string; messageId: string | null; title: string; excerpt: string; timestamp: number }
 export const useHistoryTarget = create<{ sessionId: string; messageId: string } | { sessionId: null; messageId: null }>(() => ({ sessionId: null, messageId: null }))
 
+/** 折叠全半角与大小写，保持 UTF-16 长度，命中位置仍可直接用于原文。 */
+const foldForSearch = (text: string) => {
+  const normalized = text.replace(/[\uFF01-\uFF5E\u3000]/g, (char) =>
+    char === '\u3000' ? ' ' : String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+  const lower = normalized.toLowerCase()
+  if (lower.length === normalized.length) {
+    return lower
+  }
+  return normalized.replace(/[\s\S]/gu, (char) => {
+    const lower = char.toLowerCase()
+    return lower.length === char.length ? lower : char
+  })
+}
+
+const splitsSurrogatePair = (text: string, index: number) =>
+  /[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(text.slice(Math.max(0, index - 1), index + 1))
+
 /** 逐条扫描本机会话，不将全部长对话装入界面缓存；包括未选中的消息分支。 */
 export const searchHistory = async (
   query: string,
@@ -12,10 +29,10 @@ export const searchHistory = async (
   ids: ReadonlySet<string>,
   signal: AbortSignal
 ): Promise<HistoryMatch[]> => {
-  const term = query.trim().toLocaleLowerCase()
+  const terms = [...new Set(foldForSearch(query).trim().split(/\s+/).filter(Boolean))]
   const matches: HistoryMatch[] = []
   const inspected = new Set<string>()
-  if (!term || signal.aborted) {
+  if (terms.length === 0 || signal.aborted) {
     return matches
   }
   const inspect = (session: Session) => {
@@ -27,13 +44,24 @@ export const searchHistory = async (
     for (const message of session.messages) {
       const text = message.role === 'user' ? message.content
         : message.blocks.filter((block) => block.type === 'text').map((block) => block.text).join('\n')
-      const index = text.toLocaleLowerCase().indexOf(term)
-      if (index >= 0) {
+      const folded = foldForSearch(text)
+      const indexes = terms.map((term) => folded.indexOf(term))
+      if (indexes.every((index) => index >= 0)) {
+        const index = Math.min(...indexes)
+        let start = Math.max(0, index - 35)
+        let end = index + terms[indexes.indexOf(index)].length + 75
+        if (splitsSurrogatePair(text, start)) {
+          start -= 1
+        }
+        if (splitsSurrogatePair(text, end)) {
+          end += 1
+        }
         matches.push({ sessionId: session.id, messageId: message.id, title: session.title, timestamp: message.createdAt,
-          excerpt: `${index > 35 ? '…' : ''}${text.slice(Math.max(0, index - 35), index + term.length + 75)}` })
+          excerpt: `${start > 0 ? '…' : ''}${text.slice(start, end)}` })
       }
     }
-    if (matches.length === countBefore && session.title.toLocaleLowerCase().includes(term)) {
+    const title = foldForSearch(session.title)
+    if (matches.length === countBefore && terms.every((term) => title.includes(term))) {
       matches.push({ sessionId: session.id, messageId: null, title: session.title, excerpt: '', timestamp: session.updatedAt })
     }
   }

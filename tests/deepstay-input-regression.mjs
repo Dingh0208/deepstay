@@ -9,7 +9,7 @@ const require = createRequire(new URL('package.json', app))
 const { transformSync } = require(require.resolve('@rspack/binding', { paths: [require.resolve('@rspack/core')] }))
 const mockUrl = value => 'data:text/javascript;base64,' + Buffer.from(value).toString('base64')
 const mocks = new Map([
-  ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value});'],
+  ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value}); export const useState=value=>[globalThis.__inputState??value,update=>{globalThis.__inputState=typeof update==="function"?update(globalThis.__inputState):update}];'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
   ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconPaperclipOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
   ['../../services/settings.js', 'export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
@@ -22,12 +22,14 @@ const mocks = new Map([
   ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:new Map([[null,globalThis.__draft]])}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
   ['../base/IconButton.js', 'export const IconButton=()=>null;'],
+  ['../base/Button.js', 'export const Button=()=>null;'],
+  ['../base/Modal.js', 'export const Modal=()=>null;'],
   ['../base/Select.js', 'export const Select=()=>null;'],
   ['../base/Tooltip.js', 'export const Tooltip=()=>null;'],
   ['../settings/settingsDialogState.js', 'export const ensureApiKey=()=>true;'],
   ['./DragMask.js', 'export const DragMask=()=>null; export const useFileDrop=()=>false;'],
   ['../base/toastState.js', 'export const showToast=notice=>globalThis.__notices.push(notice);'],
-  ['../../services/attachments.js', 'export const ACCEPT=""; export const useUploads=Object.assign(select=>select({tasks:{}}),{getState:()=>({tasks:{}})});'],
+  ['../../services/attachments.js', 'export const ACCEPT=""; export const useUploads=Object.assign(select=>select({tasks:{}}),{getState:()=>({tasks:{}})}); export const validateFiles=(files,count)=>{globalThis.__validated.push({files,count});return globalThis.__validationError}; export const resolveMimeType=file=>file.type; export const isImage=mime=>mime.startsWith("image/"); export const getUploadPurpose=(name,image)=>image?null:/\\.(pdf|doc|docx|ppt|pptx)$/i.test(name)?"text_recognition":"user_data";'],
   ['./DraftAttachments.js', 'export const DraftAttachments=()=>null;'],
   ['./useVoiceInput.js', 'export const useVoiceInput=()=>({status:"idle",available:true,cancel:()=>{}});'],
   ['./VoiceButton.js', 'export const VoiceButton=()=>null;'],
@@ -73,6 +75,9 @@ try {
   globalThis.__notices = []
   globalThis.__estimated = []
   globalThis.__fileBatches = []
+  globalThis.__inputState = null
+  globalThis.__validated = []
+  globalThis.__validationError = null
   const checks = []
   for (const mobile of [false, true]) {
     globalThis.__mobile = mobile
@@ -120,6 +125,50 @@ try {
   picker.props.onChange({ target: fileTarget })
   assert.deepEqual(globalThis.__fileBatches.at(-1), ['current-chat', files, 'fixture'], 'All selected files reach the existing batch upload queue')
   assert.equal(fileTarget.value, '', 'Selecting the same files again remains possible')
+  const documents = [new File(['doc'], 'menu.docx'), new File(['notes'], 'notes.txt')]
+  const batchesBeforeConfirmation = globalThis.__fileBatches.length
+  picker.props.onChange({ target: { files: documents, value: 'documents' } })
+  assert.equal(globalThis.__fileBatches.length, batchesBeforeConfirmation, 'Paid document parsing must not start before confirmation')
+  tree = Input({ sessionId: 'current-chat' })
+  let uploadDialog = find(tree, node => node.type?.name === 'Modal')
+  assert.ok(uploadDialog)
+  assert.equal(find(uploadDialog, node => node.type?.name === 'Select').props.value, 'text_recognition')
+  uploadDialog.props.onClose()
+  tree = Input({ sessionId: 'current-chat' })
+  assert.equal(find(tree, node => node.type?.name === 'Modal'), null)
+  assert.equal(globalThis.__fileBatches.length, batchesBeforeConfirmation, 'Cancelling a document upload leaves the upload service untouched')
+  find(tree, node => node.type === 'input' && node.props.type === 'file').props.onChange({ target: { files: documents, value: '' } })
+  tree = Input({ sessionId: 'current-chat' })
+  uploadDialog = find(tree, node => node.type?.name === 'Modal')
+  const confirmDocumentUpload = find(uploadDialog.props.footer, node => node.type?.name === 'Button' && node.props.children === 'documentUploadConfirm').props.onClick
+  confirmDocumentUpload()
+  const batchesAfterConfirmation = globalThis.__fileBatches.length
+  confirmDocumentUpload()
+  assert.equal(globalThis.__fileBatches.length, batchesAfterConfirmation, 'A rapid double tap must not start a second paid upload')
+  assert.deepEqual(globalThis.__fileBatches.at(-1), ['current-chat', documents, 'fixture', 'text_recognition'], 'Confirmation preserves the complete mixed batch and defaults to text-only document parsing')
+  tree = Input({ sessionId: 'current-chat' })
+  find(tree, node => node.type === 'input' && node.props.type === 'file').props.onChange({ target: { files: documents, value: '' } })
+  tree = Input({ sessionId: 'current-chat' })
+  uploadDialog = find(tree, node => node.type?.name === 'Modal')
+  find(uploadDialog, node => node.type?.name === 'Select').props.onChange('rich_layout_recognition')
+  tree = Input({ sessionId: 'current-chat' })
+  uploadDialog = find(tree, node => node.type?.name === 'Modal')
+  find(uploadDialog.props.footer, node => node.type?.name === 'Button' && node.props.children === 'documentUploadConfirm').props.onClick()
+  assert.deepEqual(globalThis.__fileBatches.at(-1), ['current-chat', documents, 'fixture', 'rich_layout_recognition'], 'Image and chart parsing requires an explicit choice')
+  globalThis.__validationError = { key: 'uploadMaxFiles', params: { count: 50 } }
+  const batchesBeforeInvalid = globalThis.__fileBatches.length
+  tree = Input({ sessionId: 'current-chat' })
+  find(tree, node => node.type === 'input' && node.props.type === 'file').props.onChange({ target: { files: documents, value: '' } })
+  tree = Input({ sessionId: 'current-chat' })
+  assert.equal(find(tree, node => node.type?.name === 'Modal'), null, 'Invalid batches are rejected before showing a paid upload confirmation')
+  assert.equal(globalThis.__fileBatches.length, batchesBeforeInvalid)
+  assert.deepEqual(globalThis.__notices.at(-1), globalThis.__validationError)
+  globalThis.__validationError = null
+  const imageFiles = [new File(['image'], 'photo.jpg', { type: 'image/jpeg' })]
+  find(tree, node => node.type === 'input' && node.props.type === 'file').props.onChange({ target: { files: imageFiles, value: '' } })
+  assert.deepEqual(globalThis.__fileBatches.at(-1), ['current-chat', imageFiles, 'fixture'], 'Image-only selection keeps the existing immediate upload flow')
+  tree = Input({ sessionId: 'current-chat' })
+  checks.push('Office/PDF uploads wait for explicit confirmation, cancel without uploading, default to text parsing, preserve mixed batches, allow opt-in layout parsing, and reject invalid batches first')
   const modelPicker = find(tree, node => node.type?.name === 'Select' && node.props.ariaLabel === 'apiModel')
   assert.deepEqual(modelPicker.props.options.map(item => item.value), ['deepseek-flash', 'deepseek-v4-pro'])
   const connection = { url: globalThis.__settings.apiBaseUrl, protocol: globalThis.__settings.apiProtocol, key: globalThis.__settings.apiKey }

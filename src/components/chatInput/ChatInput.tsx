@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   IconGlobeLanguageOutline14,
   IconPaperclipOutline16,
@@ -10,6 +10,7 @@ import {
 import { setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { supportsDeepSeekServerTools } from '../../services/api/modelCapabilities.js'
+import type { FilePurpose } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { compactSession, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
 import { estimateSessionContext } from '../../services/chat/replyMetrics.js'
@@ -27,12 +28,14 @@ import {
 } from '../../services/chat/drafts.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import { IconButton } from '../base/IconButton.js'
+import { Button } from '../base/Button.js'
+import { Modal } from '../base/Modal.js'
 import { Select } from '../base/Select.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
 import { DragMask, useFileDrop } from './DragMask.js'
 import { showToast } from '../base/toastState.js'
-import { ACCEPT, useUploads } from '../../services/attachments.js'
+import { ACCEPT, getUploadPurpose, isImage, resolveMimeType, useUploads, validateFiles } from '../../services/attachments.js'
 import { DraftAttachments } from './DraftAttachments.js'
 import { useVoiceInput } from './useVoiceInput.js'
 import { VoiceButton } from './VoiceButton.js'
@@ -94,6 +97,8 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
+  const documentUploadConfirmed = useRef(false)
+  const [documentUpload, setDocumentUpload] = useState<{ files: File[]; purpose: FilePurpose } | null>(null)
 
   useLayoutEffect(() => {
     const toggles = togglesRef.current
@@ -117,7 +122,20 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       showToast({ key: 'apiTextOnly' })
       return
     }
-    if (files.length === 0 || useChatStore.getState().importingHistory || !ensureApiKey()) {
+    if (files.length === 0 || documentUpload || useChatStore.getState().importingHistory || !ensureApiKey()) {
+      return
+    }
+    const validation = validateFiles(files, getDraft(sessionId).attachments.length)
+    if (validation) {
+      showToast(validation)
+      return
+    }
+    if (files.some((file) => {
+      const purpose = getUploadPurpose(file.name, isImage(resolveMimeType(file)))
+      return purpose === 'text_recognition' || purpose === 'rich_layout_recognition'
+    })) {
+      documentUploadConfirmed.current = false
+      setDocumentUpload({ files, purpose: 'text_recognition' })
       return
     }
     const error = addDraftFiles(sessionId, files, useSettings.getState().apiKey ?? '')
@@ -404,6 +422,42 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   return (
     <>
       {composer}
+      {documentUpload ? (
+        <Modal
+          title={t('documentUploadTitle', { count: documentUpload.files.length })}
+          onClose={() => setDocumentUpload(null)}
+          footer={
+            <>
+              <Button size="m" variant="outlined" onClick={() => setDocumentUpload(null)}>{t('cancel')}</Button>
+              <Button size="m" disabled={importingHistory} onClick={() => {
+                if (documentUploadConfirmed.current) {
+                  return
+                }
+                documentUploadConfirmed.current = true
+                setDocumentUpload(null)
+                if (useChatStore.getState().importingHistory || !ensureApiKey()) {
+                  return
+                }
+                const error = addDraftFiles(sessionId, documentUpload.files, useSettings.getState().apiKey ?? '', documentUpload.purpose)
+                if (error) {
+                  showToast(error)
+                }
+              }}>{t('documentUploadConfirm')}</Button>
+            </>
+          }
+        >
+          <p>{t('documentUploadDescription')}</p>
+          <Select<FilePurpose>
+            value={documentUpload.purpose}
+            ariaLabel={t('documentUploadMode')}
+            options={[
+              { value: 'text_recognition', label: t('documentUploadText') },
+              { value: 'rich_layout_recognition', label: t('documentUploadRich') },
+            ]}
+            onChange={(purpose) => setDocumentUpload((current) => current ? { ...current, purpose } : null)}
+          />
+        </Modal>
+      ) : null}
       <ComposerMetrics
         latestReply={latestReply}
         estimatedContext={estimatedContext}

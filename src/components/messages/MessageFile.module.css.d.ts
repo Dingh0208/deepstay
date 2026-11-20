@@ -1,4 +1,6 @@
 declare const styles: {
+  readonly "document": string;
+  readonly "contextControl": string;
   readonly "image": string;
   readonly "imageThumb": string;
   readonly "failedIcon": string;

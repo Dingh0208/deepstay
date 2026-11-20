@@ -133,7 +133,11 @@ export const uploadFile = async (
     credentials: 'omit',
     signal,
   })
-  return (await response.json()) as FileObject
+  const uploaded = (await response.json()) as FileObject
+  if (typeof uploaded?.id !== 'string' || !uploaded.id.trim()) {
+    throw new ApiError('protocol', 'File upload returned no file_id')
+  }
+  return uploaded
 }
 
 /** DELETE /anthropic/v1/files/{file_id} */

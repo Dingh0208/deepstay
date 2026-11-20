@@ -73,7 +73,7 @@ try {
   const original = session(2, { presetId: 'local-only', name: '本机人物', prompt: '本机设定' })
   await db.saveSession(original)
   await db.saveCharacterPreset({ id: sourceCharacter.presetId, name: '同 ID 的本机预设',
-    prompt: '本机人物库不能被归档覆盖', greeting: '', updatedAt: 1 })
+    prompt: '本机人物库不能被归档覆盖', greeting: '', alternateGreetings: ['未选候选不应进入历史'], updatedAt: 1 })
   const presetsBeforeImport = await db.loadCharacterPresets()
   await store.initChat()
   const preferencesBeforeImport = new Map(preferences)
@@ -118,7 +118,7 @@ try {
   checks.push('Official archives without extensions import unchanged, and later incremental imports cannot assign a character to them')
 
   assert.equal(store.startCharacterChat({ id: sourceCharacter.presetId, name: sourceCharacter.name,
-    prompt: sourceCharacter.prompt, greeting: sourceCharacter.greeting, updatedAt: 1 }), true)
+    prompt: sourceCharacter.prompt, greeting: '未选主开场', alternateGreetings: [sourceCharacter.greeting, '未选候选'], updatedAt: 1 }, 1), true)
   const greetingSession = store.useChatStore.getState().sessionCache[store.useChatStore.getState().activeId]
   const withGreeting = appendBranch(greetingSession, greetingSession.messages[0].id, session(6).messages)
   assert.equal(await backup.importHistory(await archive([withGreeting])), 1)
@@ -129,6 +129,7 @@ try {
   assert.equal(greetingPath[0].blocks[0].text, sourceCharacter.greeting)
   assert.equal(greetingPath[0].questionDeleted, true, 'Standalone greeting must not be paired with an invented question')
   assert.deepEqual(restoredGreeting.character, sourceCharacter)
+  assert.equal(Object.hasOwn(restoredGreeting.character, 'alternateGreetings'), false)
   checks.push('A standalone assistant greeting followed by a real chat round survives ZIP export/import and remains distinct from a generated answer')
 
   const bounds = { presetId: 'i'.repeat(200), name: '名'.repeat(100), prompt: '设'.repeat(20_000), greeting: '好'.repeat(10_000) }

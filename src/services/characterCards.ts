@@ -1,6 +1,6 @@
 import type { CharacterPreset } from './characters.js'
 
-type CharacterText = Pick<CharacterPreset, 'name' | 'prompt' | 'greeting'>
+type CharacterText = Pick<CharacterPreset, 'name' | 'prompt' | 'greeting' | 'alternateGreetings'>
 type ImportedCharacter = CharacterText & { warnings: string[] }
 
 const maxFileSize = 20 * 1024 * 1024
@@ -27,10 +27,23 @@ const text = (data: Record<string, unknown>, key: string): string => {
 }
 
 const validate = (value: CharacterText): CharacterText => {
-  if (!value.name || value.name.length > 100 || !value.prompt || value.prompt.length > 20_000 || value.greeting.length > 10_000) {
+  const greetings = [value.greeting, ...(value.alternateGreetings ?? [])]
+  if (!value.name || value.name.length > 100 || !value.prompt || value.prompt.length > 20_000 ||
+      greetings.length > 100 || greetings.some((text) => text.length > 10_000) ||
+      greetings.reduce((sum, text) => sum + text.length, 0) > 100_000) {
     throw invalidCard()
   }
   return value
+}
+
+const alternateGreetings = (value: unknown): string[] => {
+  if (value === undefined) {
+    return []
+  }
+  if (!Array.isArray(value) || value.some((text) => typeof text !== 'string')) {
+    throw invalidCard()
+  }
+  return value.map((text: string) => text.trim())
 }
 
 const parseJson = (bytes: Uint8Array): unknown => {
@@ -46,7 +59,10 @@ const cardText = (value: unknown): ImportedCharacter => {
     if (card.format !== 'deepstay-character' || card.version !== 1) {
       throw invalidCard()
     }
-    return { ...validate({ name: text(card, 'name'), prompt: text(card, 'prompt'), greeting: text(card, 'greeting') }), warnings: [] }
+    const alternates = alternateGreetings(card.alternateGreetings)
+    return { ...validate({ name: text(card, 'name'), prompt: text(card, 'prompt'), greeting: text(card, 'greeting'),
+      ...(alternates.length ? { alternateGreetings: alternates } : {}),
+    }), warnings: [] }
   }
   if (card.spec !== undefined && card.spec !== 'chara_card_v2' && card.spec !== 'chara_card_v3') {
     throw invalidCard()
@@ -69,13 +85,11 @@ const cardText = (value: unknown): ImportedCharacter => {
     const value = text(data, key)
     return value ? [`${label}：\n${expand(value)}`] : []
   })
-  const alternates = data.alternate_greetings ?? []
-  if (!Array.isArray(alternates) || alternates.some((value: unknown) => typeof value !== 'string')) {
-    throw invalidCard()
-  }
-  const greeting = text(data, 'first_mes') || (alternates as string[]).find((value) => value.trim())?.trim() || ''
+  const alternates = alternateGreetings(data.alternate_greetings).map(expand)
   return {
-    ...validate({ name, prompt: sections.join('\n\n'), greeting: expand(greeting) }),
+    ...validate({ name, prompt: sections.join('\n\n'), greeting: expand(text(data, 'first_mes')),
+      ...(alternates.length ? { alternateGreetings: alternates } : {}),
+    }),
     warnings: ['text-only'],
   }
 }
@@ -160,6 +174,13 @@ export const importCharacterCard = async (file: File): Promise<ImportedCharacter
 }
 
 export const exportCharacterCard = (preset: CharacterText): string => {
-  const value = validate({ name: preset.name.trim(), prompt: preset.prompt.trim(), greeting: preset.greeting.trim() })
-  return JSON.stringify({ format: 'deepstay-character', version: 1, ...value }, null, 2)
+  const alternates = alternateGreetings(preset.alternateGreetings)
+  const value = validate({ name: preset.name.trim(), prompt: preset.prompt.trim(), greeting: preset.greeting.trim(),
+    ...(alternates.length ? { alternateGreetings: alternates } : {}),
+  })
+  const json = JSON.stringify({ format: 'deepstay-character', version: 1, ...value }, null, 2)
+  if (new TextEncoder().encode(json).length > maxJsonSize) {
+    throw invalidCard()
+  }
+  return json
 }

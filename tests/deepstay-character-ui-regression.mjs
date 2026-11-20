@@ -13,10 +13,11 @@ const mocks = new Map([
   ['react/jsx-runtime', 'export const Fragment=Symbol.for("fragment"); export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx;'],
   ['@capacitor/core', 'export const Capacitor={getPlatform:()=>globalThis.__platform}; export const registerPlugin=name=>{if(name!=="LocalFiles")throw Error("Unexpected plugin"); return {save:(...args)=>globalThis.__nativeSave(...args)}};'],
   ['../../i18n/index.js', 'export const useTranslate=()=>key=>key;'],
-  ['../../services/characters.js', 'export const useCharacters=()=>globalThis.__characters; export const characterLimits={name:100,prompt:20000,greeting:10000}; export const loadCharacters=async()=>{}; export const saveCharacter=(...args)=>globalThis.__saveCharacter(...args); export const deleteCharacter=async()=>{};'],
-  ['../../services/chat/store.js', 'export const useChatStore=selector=>selector({ready:true,importingHistory:false}); export const startCharacterChat=()=>true;'],
+  ['../../services/characters.js', 'export const useCharacters=()=>globalThis.__characters; export const characterLimits={name:100,prompt:20000,greeting:10000,greetings:100}; export const characterGreetings=p=>[p.greeting,...(p.alternateGreetings??[])]; export const loadCharacters=async()=>{}; export const saveCharacter=(...args)=>globalThis.__saveCharacter(...args); export const deleteCharacter=async()=>{};'],
+  ['../../services/chat/store.js', 'export const useChatStore=selector=>selector({ready:true,importingHistory:false}); export const startCharacterChat=(...args)=>{globalThis.__starts.push(args);return true};'],
   ['../base/Button.js', 'export const Button=()=>null;'],
   ['../base/Modal.js', 'export const Modal=()=>null;'],
+  ['../base/Select.js', 'export const Select=()=>null;'],
   ['../settings/settingsDialogState.js', 'export const closeSettings=()=>{};'],
   ['../sider/mobileSiderState.js', 'export const closeMobileSider=()=>{};'],
   ['./characterDialogState.js', 'export const closeCharacters=()=>{globalThis.__closed++}; export const useCharacterDialog=selector=>selector({open:true});'],
@@ -77,6 +78,7 @@ const originalCreate = URL.createObjectURL
 const originalRevoke = URL.revokeObjectURL
 globalThis.__platform = 'android'
 globalThis.__closed = 0
+globalThis.__starts = []
 globalThis.__characters = { ready: true, error: false, presets: [{
   id: 'character-1', name: '阿澜🌊', prompt: '温柔的海边画家，记得我们约好去看海。', greeting: '茶已经泡好，欢迎回来。', updatedAt: 123,
 }] }
@@ -153,7 +155,7 @@ try {
 
   const before = structuredClone(globalThis.__characters.presets)
   const importInput = find(render(), node => node.type === 'input' && node.props.type === 'file')
-  const target = { files: [new File([JSON.stringify({ name: '新角色', description: '认真倾听{{user}}。', first_mes: '你好。' })], 'character.json')], value: 'fixture' }
+  const target = { files: [new File([JSON.stringify({ name: '新角色', description: '认真倾听{{user}}。', first_mes: '', alternate_greetings: ['第二个开场', '第三个开场'] })], 'character.json')], value: 'fixture' }
   importInput.props.onChange({ target })
   await wait(() => Boolean(find(render(), node => node.type === 'form')))
   tree = render()
@@ -171,6 +173,41 @@ try {
   assert.deepEqual(saved, [])
   assert.deepEqual(globalThis.__characters.presets, before)
   checks.push('Actual character parsing produces an editable text-only preview; cancel or malformed import never writes or replaces the library')
+
+  find(render(), node => node.type === 'input' && node.props.type === 'file').props.onChange({ target })
+  await wait(() => Boolean(find(render(), node => node.type === 'form')))
+  let preview = render()
+  assert.equal(find(preview, node => node.type === 'textarea' && node.props.value === '第二个开场').props.maxLength, 10000)
+  find(preview, node => node.type === 'textarea' && node.props.value === '第二个开场').props.onChange({ target: { value: '编辑后的第二开场' } })
+  button(render(), 'characterAddGreeting').props.onClick()
+  find(render(), node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+  await wait(() => !find(render(), node => node.type === 'form'))
+  assert.deepEqual(saved[0].alternateGreetings, ['编辑后的第二开场', '第三个开场', ''])
+  assert.equal(saved[0].greeting, '')
+  checks.push('Imported alternates remain editable and adding a blank candidate preserves its position on save')
+
+  globalThis.__characters.presets = [{ ...before[0], greeting: '', alternateGreetings: ['所选开场', '不要自动选择此项'] }]
+  button(render(), 'characterStartChat').props.onClick()
+  tree = render()
+  assert.deepEqual(globalThis.__starts, [])
+  let selection = find(tree, node => node.type?.name === 'Select')
+  assert.deepEqual(selection.props.options.map(option => option.value), ['0', '1', '2'])
+  assert.equal(find(tree, node => node.type === 'textarea' && node.props.readOnly).props.value, '')
+  selection.props.onChange('1')
+  tree = render()
+  assert.equal(find(tree, node => node.type === 'textarea' && node.props.readOnly).props.value, '所选开场')
+  find(tree, node => node.type?.name === 'Modal' && node.props.title === 'characterChooseGreeting').props.onClose()
+  assert.deepEqual(globalThis.__starts, [])
+  button(render(), 'characterStartChat').props.onClick()
+  selection = find(render(), node => node.type?.name === 'Select')
+  selection.props.onChange('2')
+  tree = render()
+  const chooseModal = find(tree, node => node.type?.name === 'Modal' && node.props.title === 'characterChooseGreeting')
+  button(chooseModal.props.footer, 'characterStartChat').props.onClick()
+  assert.equal(globalThis.__starts.length, 1)
+  assert.equal(globalThis.__starts[0][1], 2)
+  assert.equal(globalThis.__closed, 1)
+  checks.push('Multiple greetings require an explicit preview/selection before starting; cancelling creates no chat and confirmation passes exactly the selected index')
   console.log(JSON.stringify({ passed: true, checks, scope: 'Actual character dialog callbacks with controlled React hooks and native save I/O; real card serialization, no network or device writes.' }, null, 2))
 } finally {
   URL.createObjectURL = originalCreate

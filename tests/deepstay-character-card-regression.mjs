@@ -29,6 +29,7 @@ const v3 = { spec: 'chara_card_v3', spec_version: '3.0', data: card }
 const imported = await importCharacterCard(jsonFile(v3))
 assert.equal(imported.name, '林晚')
 assert.equal(imported.greeting, '阿晚：用户，你回来啦。')
+assert.deepEqual(imported.alternateGreetings, ['另一个开场'])
 for (const content of ['阿晚记得和用户', '温柔', '海边', '对话示例', '保持人物语气', '角色补充约定', '{{unknown}}']) {
   assert.ok(imported.prompt.includes(content), content)
 }
@@ -39,14 +40,22 @@ for (const value of [card, { spec: 'chara_card_v2', data: card }]) {
   assert.deepEqual(await importCharacterCard(jsonFile(value)), imported)
 }
 const fallback = await importCharacterCard(jsonFile({ ...card, nickname: '', first_mes: '', alternate_greetings: ['', ' {{char}}等{{user}}。 '] }))
-assert.equal(fallback.greeting, '林晚等用户。')
+assert.equal(fallback.greeting, '')
+assert.deepEqual(fallback.alternateGreetings, ['', '林晚等用户。'])
 const onePass = await importCharacterCard(jsonFile({ name: '名字', nickname: '{{user}}', description: '{{char}}保留未知{{other}}。' }))
 assert.ok(onePass.prompt.includes('{{user}}保留未知{{other}}。'), 'Imported macro replacement must not evaluate its replacement text again')
 const native = JSON.parse(exportCharacterCard({ ...imported, id: 'private-id', updatedAt: 123 }))
-assert.deepEqual(Object.keys(native).sort(), ['format', 'greeting', 'name', 'prompt', 'version'])
+assert.deepEqual(Object.keys(native).sort(), ['alternateGreetings', 'format', 'greeting', 'name', 'prompt', 'version'])
 assert.equal(native.format, 'deepstay-character')
 assert.equal(native.version, 1)
-assert.deepEqual(await importCharacterCard(jsonFile(native)), { name: imported.name, prompt: imported.prompt, greeting: imported.greeting, warnings: [] })
+assert.deepEqual(await importCharacterCard(jsonFile(native)), { name: imported.name, prompt: imported.prompt, greeting: imported.greeting, alternateGreetings: imported.alternateGreetings, warnings: [] })
+const oldNative = { format: 'deepstay-character', version: 1, name: '旧人物', prompt: '旧设定', greeting: '' }
+assert.deepEqual(await importCharacterCard(jsonFile(oldNative)), { name: '旧人物', prompt: '旧设定', greeting: '', warnings: [] })
+assert.equal(Object.hasOwn(JSON.parse(exportCharacterCard(oldNative)), 'alternateGreetings'), false)
+const many = { ...card, first_mes: '', alternate_greetings: ['', '{{char}}为{{user}}留了一盏灯。', '第三个开场'] }
+const manyImported = await importCharacterCard(jsonFile(many))
+assert.deepEqual(manyImported.alternateGreetings, ['', '阿晚为用户留了一盏灯。', '第三个开场'])
+assert.deepEqual(await importCharacterCard(jsonFile(JSON.parse(exportCharacterCard(manyImported)))), { ...manyImported, warnings: [] })
 
 const crc32 = (bytes) => {
   let crc = -1
@@ -88,6 +97,8 @@ await assert.rejects(importCharacterCard(file(corruptLength, 'invalid-length.png
 
 const charx = zipSync({ 'card.json': utf8(JSON.stringify(v3)), '../ignored-asset.js': utf8('must not run'), 'assets/portrait.bin': new Uint8Array(3 * 1024 * 1024) })
 assert.deepEqual(await importCharacterCard(file(charx, 'card.charx')), imported)
+assert.deepEqual(await importCharacterCard(file(png(metadata('ccv3', JSON.stringify({ spec: 'chara_card_v3', data: many }))), 'many.png')), manyImported)
+assert.deepEqual(await importCharacterCard(file(zipSync({ 'card.json': utf8(JSON.stringify({ spec: 'chara_card_v3', data: many })) }), 'many.charx')), manyImported)
 const ignoredUnsupportedAsset = Buffer.from(zipSync({ 'card.json': utf8(JSON.stringify(v3)), 'ignored.bin': new Uint8Array(1024) }))
 for (let offset = 0; offset + 46 < ignoredUnsupportedAsset.length; offset++) {
   if (ignoredUnsupportedAsset.readUInt32LE(offset) === 0x02014b50 && ignoredUnsupportedAsset.subarray(offset + 46, offset + 57).toString() === 'ignored.bin') {
@@ -110,11 +121,17 @@ for (const invalid of [
   [], null, { spec: 'unknown', data: card }, { spec: 'chara_card_v3', data: [] },
   { ...card, name: '' }, { ...card, name: '名'.repeat(101) }, { ...card, description: 42 },
   { ...card, description: '设'.repeat(20_001) }, { ...card, first_mes: '开'.repeat(10_001) },
-  { ...card, alternate_greetings: [null] }, { format: 'deepstay-character', version: 2, ...imported },
+  { ...card, alternate_greetings: [null] }, { ...card, alternate_greetings: null },
+  { ...card, alternate_greetings: ['x'.repeat(10_001)] }, { ...card, alternate_greetings: Array(100).fill('') },
+  { ...card, first_mes: '', alternate_greetings: Array(11).fill('x'.repeat(10_000)) },
+  { ...oldNative, alternateGreetings: 'bad' }, { ...oldNative, alternateGreetings: [false] },
+  { format: 'deepstay-character', version: 2, ...imported },
   { name: '世界书', entries: [] }, { format: 'other-app', name: '角色', prompt: '内容' },
 ]) await assert.rejects(importCharacterCard(jsonFile(invalid)))
 await assert.rejects(importCharacterCard(file('not json')))
 await assert.rejects(importCharacterCard(file(new Uint8Array([255, 254, 255]))))
 assert.throws(() => exportCharacterCard({ name: '', prompt: '设定', greeting: '' }))
+assert.throws(() => exportCharacterCard({ ...oldNative, alternateGreetings: ['x'.repeat(10_001)] }))
+assert.throws(() => exportCharacterCard({ name: '大卡', prompt: '中'.repeat(20_000), greeting: '', alternateGreetings: Array(9).fill('中'.repeat(10_000)) }), /Invalid or oversized/)
 hooks.deregister()
 console.log('Passed character card regression: JSON/PNG/CHARX, macro expansion, text-only boundaries, roundtrip and size/corruption checks')

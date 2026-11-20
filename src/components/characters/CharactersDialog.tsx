@@ -2,13 +2,14 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Capacitor, registerPlugin } from '@capacitor/core'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 import {
-  characterLimits, deleteCharacter, loadCharacters, saveCharacter, useCharacters,
+  characterGreetings, characterLimits, deleteCharacter, loadCharacters, saveCharacter, useCharacters,
   type CharacterPreset,
 } from '../../services/characters.js'
 import { exportCharacterCard, importCharacterCard } from '../../services/characterCards.js'
 import { startCharacterChat, useChatStore } from '../../services/chat/store.js'
 import { Button } from '../base/Button.js'
 import { Modal } from '../base/Modal.js'
+import { Select } from '../base/Select.js'
 import { closeSettings } from '../settings/settingsDialogState.js'
 import { closeMobileSider } from '../sider/mobileSiderState.js'
 import { closeCharacters, useCharacterDialog } from './characterDialogState.js'
@@ -26,7 +27,7 @@ export const CharactersDialog = () => {
   return open ? <CharactersContent /> : null
 }
 
-type Draft = { id?: string; name: string; prompt: string; greeting: string }
+type Draft = { id?: string; name: string; prompt: string; greeting: string; alternateGreetings?: string[] }
 const emptyDraft = (): Draft => ({ name: '', prompt: '', greeting: '' })
 
 const CharactersContent = () => {
@@ -36,6 +37,7 @@ const CharactersContent = () => {
   const chatReady = useChatStore((state) => state.ready)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [deleting, setDeleting] = useState<CharacterPreset | null>(null)
+  const [starting, setStarting] = useState<{ preset: CharacterPreset; index: number } | null>(null)
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [status, setStatus] = useState<TranslationKey | null>(null)
@@ -68,6 +70,13 @@ const CharactersContent = () => {
     event.preventDefault()
     if (draft) {
       void run(async () => { await saveCharacter(draft); edit(null) }, 'characterSaveFailed')
+    }
+  }
+  const start = (preset: CharacterPreset, index = 0) => {
+    if (startCharacterChat(preset, index)) {
+      closeCharacters()
+      closeSettings()
+      closeMobileSider()
     }
   }
   const download = async (preset: CharacterPreset) => {
@@ -111,6 +120,23 @@ const CharactersContent = () => {
               <textarea rows={3} maxLength={characterLimits.greeting} value={draft.greeting} disabled={busy}
                 onChange={(event) => setDraft({ ...draft, greeting: event.target.value })} />
             </label>
+            {(draft.alternateGreetings ?? []).map((greeting, index) => (
+              <div key={index}>
+                <label>{t('characterGreetingNumber', { number: index + 2 })}
+                  <textarea rows={3} maxLength={characterLimits.greeting} value={greeting} disabled={busy}
+                    onChange={(event) => setDraft({ ...draft, alternateGreetings: draft.alternateGreetings?.map((text, at) => at === index ? event.target.value : text) })} />
+                </label>
+                <Button size="s" variant="outlined" disabled={busy} onClick={() => setDraft({
+                  ...draft, alternateGreetings: draft.alternateGreetings?.filter((_, at) => at !== index),
+                })}>{t('characterRemoveGreeting')}</Button>
+              </div>
+            ))}
+            <div>
+              <Button size="s" variant="outlined" disabled={busy || (draft.alternateGreetings?.length ?? 0) >= characterLimits.greetings - 1}
+                onClick={() => setDraft({ ...draft, alternateGreetings: [...(draft.alternateGreetings ?? []), ''] })}>
+                {t('characterAddGreeting')}
+              </Button>
+            </div>
             {imported ? <p className={styles.hint}>{t('characterImportTextOnly')}</p> : null}
             <p className={styles.hint}>{t('characterSnapshotHint')}</p>
             {status ? <div role="alert" className={styles.error}>{t(status)}</div> : null}
@@ -135,7 +161,7 @@ const CharactersContent = () => {
                   if (file) {
                     void run(async () => {
                       const value = await importCharacterCard(file)
-                      edit({ name: value.name, prompt: value.prompt, greeting: value.greeting })
+                      edit({ name: value.name, prompt: value.prompt, greeting: value.greeting, alternateGreetings: value.alternateGreetings })
                       setImported(value.warnings.length > 0)
                     }, 'characterImportFailed')
                   }
@@ -157,10 +183,10 @@ const CharactersContent = () => {
                     <p className={styles.excerpt}>{preset.prompt}</p>
                     <div className={styles.cardActions}>
                       <Button size="s" disabled={busy || importing || !chatReady} onClick={() => {
-                        if (startCharacterChat(preset)) {
-                          closeCharacters()
-                          closeSettings()
-                          closeMobileSider()
+                        if (preset.alternateGreetings?.length) {
+                          setStarting({ preset, index: 0 })
+                        } else {
+                          start(preset)
                         }
                       }}>{t('characterStartChat')}</Button>
                       <Button size="s" variant="outlined" disabled={busy} onClick={() => edit(preset)}>{t('characterEdit')}</Button>
@@ -177,6 +203,21 @@ const CharactersContent = () => {
           </>
         )}
       </Modal>
+      {starting ? (
+        <Modal title={t('characterChooseGreeting')} closable className={styles.dialog}
+          onClose={() => setStarting(null)} footer={<>
+            <Button size="m" variant="outlined" onClick={() => setStarting(null)}>{t('cancel')}</Button>
+            <Button size="m" disabled={importing || !chatReady} onClick={() => start(starting.preset, starting.index)}>{t('characterStartChat')}</Button>
+          </>}>
+          <div className={styles.form}>
+            <Select ariaLabel={t('characterChooseGreeting')} value={String(starting.index)}
+              options={characterGreetings(starting.preset).map((_, index) => ({ value: String(index), label: t('characterGreetingNumber', { number: index + 1 }) }))}
+              onChange={(value) => setStarting({ ...starting, index: Number(value) })} />
+            <textarea readOnly rows={8} aria-label={t('characterGreetingPreview')}
+              value={characterGreetings(starting.preset)[starting.index]} placeholder={t('characterNoGreeting')} />
+          </div>
+        </Modal>
+      ) : null}
       {deleting ? (
         <Modal title={t('characterDeleteTitle')} onClose={() => { if (!busyRef.current) { setDeleting(null) } }}
           footer={<>

@@ -7,6 +7,7 @@ export type CharacterPreset = {
   name: string
   prompt: string
   greeting: string
+  alternateGreetings?: string[]
   updatedAt: number
 }
 
@@ -17,16 +18,19 @@ export type CharacterSnapshot = {
   greeting?: string
 }
 
-type CharacterInput = Pick<CharacterPreset, 'name' | 'prompt' | 'greeting'> & { id?: string }
+type CharacterInput = Pick<CharacterPreset, 'name' | 'prompt' | 'greeting' | 'alternateGreetings'> & { id?: string }
 
-export const characterLimits = { name: 100, prompt: 20_000, greeting: 10_000, id: 200 } as const
+export const characterLimits = { name: 100, prompt: 20_000, greeting: 10_000, greetings: 100, greetingTotal: 100_000, id: 200 } as const
+
+export const characterGreetings = (preset: Pick<CharacterPreset, 'greeting' | 'alternateGreetings'>): string[] =>
+  [preset.greeting, ...(preset.alternateGreetings ?? [])]
 
 /** Character text is copied into each new session, independently of later library edits. */
-export const characterSnapshot = (preset: CharacterPreset): CharacterSnapshot => ({
+export const characterSnapshot = (preset: CharacterPreset, greeting = preset.greeting): CharacterSnapshot => ({
   presetId: preset.id,
   name: preset.name,
   prompt: preset.prompt,
-  ...(preset.greeting ? { greeting: preset.greeting } : {}),
+  ...(greeting ? { greeting } : {}),
 })
 
 export const characterSystemPrompt = (base: string, character?: CharacterSnapshot): string =>
@@ -75,11 +79,19 @@ const validateInput = (value: CharacterInput) => {
   const name = value.name.trim()
   const prompt = value.prompt.trim()
   const greeting = value.greeting.trim()
-  if (!name || name.length > characterLimits.name || !prompt || prompt.length > characterLimits.prompt ||
-      greeting.length > characterLimits.greeting || (id !== undefined && (!id.trim() || id.length > characterLimits.id))) {
+  const alternates = value.alternateGreetings
+  if (alternates !== undefined && (!Array.isArray(alternates) || alternates.some((text) => typeof text !== 'string'))) {
     throw new Error('Invalid character preset')
   }
-  return { id, name, prompt, greeting }
+  const alternateGreetings = alternates?.map((text) => text.trim())
+  const greetings = [greeting, ...(alternateGreetings ?? [])]
+  if (!name || name.length > characterLimits.name || !prompt || prompt.length > characterLimits.prompt ||
+      greetings.length > characterLimits.greetings || greetings.some((text) => text.length > characterLimits.greeting) ||
+      greetings.reduce((sum, text) => sum + text.length, 0) > characterLimits.greetingTotal ||
+      (id !== undefined && (!id.trim() || id.length > characterLimits.id))) {
+    throw new Error('Invalid character preset')
+  }
+  return { id, name, prompt, greeting, ...(alternateGreetings?.length ? { alternateGreetings } : {}) }
 }
 
 export const saveCharacter = async (input: CharacterInput): Promise<CharacterPreset> => {

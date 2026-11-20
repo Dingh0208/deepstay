@@ -26,7 +26,7 @@ import {
   prepareDraftMessage,
 } from './drafts.js'
 import { createLatestReminder } from './latestReminder.js'
-import { characterSnapshot, characterSystemPrompt, type CharacterPreset } from '../characters.js'
+import { characterGreetings, characterSnapshot, characterSystemPrompt, type CharacterPreset } from '../characters.js'
 import { useHistoryTarget } from './historySearch.js'
 import {
   CONTEXT_INPUT_BUDGET,
@@ -558,12 +558,17 @@ export const newChat = () => {
 }
 
 /** 人物设定和开场白复制到新会话；普通新对话不隐式使用人物。 */
-export const startCharacterChat = (preset: CharacterPreset): boolean => {
+export const startCharacterChat = (preset: CharacterPreset, greetingIndex = 0): boolean => {
   if (!get().ready || get().importingHistory) {
     return false
   }
+  const greetings = characterGreetings(preset)
+  if (!Number.isInteger(greetingIndex) || greetingIndex < 0 || greetingIndex >= greetings.length) {
+    return false
+  }
+  const opening = greetings[greetingIndex]
   const now = Date.now()
-  const greeting: AssistantMessage | undefined = preset.greeting ? {
+  const greeting: AssistantMessage | undefined = opening ? {
     id: createId(),
     role: 'assistant',
     questionDeleted: true,
@@ -573,7 +578,7 @@ export const startCharacterChat = (preset: CharacterPreset): boolean => {
     prefix: false,
     status: 'done',
     stopReason: 'end_turn',
-    blocks: [{ type: 'text', text: preset.greeting }],
+    blocks: [{ type: 'text', text: opening }],
   } : undefined
   const session: Session = {
     id: createId(),
@@ -583,7 +588,7 @@ export const startCharacterChat = (preset: CharacterPreset): boolean => {
     messages: greeting ? [greeting] : [],
     rootMessageId: greeting?.id ?? null,
     linearMessagePath: true,
-    character: characterSnapshot(preset),
+    character: characterSnapshot(preset, opening),
   }
   touchSession(session.id)
   set((state) => ({

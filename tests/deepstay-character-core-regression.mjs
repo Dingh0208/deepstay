@@ -217,6 +217,41 @@ try {
   assert.equal((await db.loadSession(firstId)).character.greeting, undefined)
   checks.push('Deleting the opening removes its hidden system context durably while retaining the character prompt; ordinary round deletion and other chats keep their own opening context')
 
+  const multi = await characters.saveCharacter({ name: '多开场人物', prompt: '多开场唯一人物设定', greeting: '', alternateGreetings: ['', '第二个开场的唯一文字', '第三个候选不会发送'] })
+  const savedMulti = structuredClone(multi)
+  characters.useCharacters.setState({ presets: [], ready: false })
+  await characters.loadCharacters()
+  assert.deepEqual(characters.useCharacters.getState().presets.find(p => p.id === multi.id), savedMulti)
+  const idsBefore = store.useChatStore.getState().sessions.map(s => s.id)
+  for (const index of [-1, 4, 0.5, NaN]) assert.equal(store.startCharacterChat(multi, index), false)
+  assert.deepEqual(store.useChatStore.getState().sessions.map(s => s.id), idsBefore)
+  assert.equal(store.startCharacterChat(multi), true)
+  const emptyGreetingId = store.useChatStore.getState().activeId
+  assert.equal(current(emptyGreetingId).messages.length, 0)
+  assert.equal(current(emptyGreetingId).character.greeting, undefined)
+  assert.equal(store.startCharacterChat(multi, 2), true)
+  const chosenId = store.useChatStore.getState().activeId
+  assert.equal(current(chosenId).messages.length, 1)
+  assert.equal(current(chosenId).messages[0].blocks[0].text, multi.alternateGreetings[1])
+  assert.equal(current(chosenId).character.greeting, multi.alternateGreetings[1])
+  assert.equal(Object.hasOwn(current(chosenId).character, 'alternateGreetings'), false)
+  const selectedSnapshot = structuredClone(current(chosenId).character)
+  await characters.saveCharacter({ ...multi, greeting: '库中新首开场', alternateGreetings: ['库中新候选'] })
+  assert.deepEqual(current(chosenId).character, selectedSnapshot)
+  await send(chosenId)
+  assert.ok(requests.at(-1).messages[0].content.includes(multi.alternateGreetings[1]))
+  assert.ok(!JSON.stringify(requests.at(-1)).includes(multi.alternateGreetings[2]))
+  assert.ok(!JSON.stringify(requests.at(-1)).includes('库中新首开场'))
+  assert.equal(await store.deleteMessages(chosenId, [current(chosenId).messages[0].id]), true)
+  await send(chosenId)
+  assert.ok(!JSON.stringify(requests.at(-1)).includes(multi.alternateGreetings[1]))
+  assert.equal(current(emptyGreetingId).character.greeting, undefined)
+  for (const alternateGreetings of [[null], ['x'.repeat(10_001)], Array(100).fill(''), Array(11).fill('x'.repeat(10_000))]) {
+    await assert.rejects(characters.saveCharacter({ ...multi, alternateGreetings }), /Invalid/)
+  }
+  assert.deepEqual((await db.loadCharacterPresets()).find(p => p.id === multi.id).alternateGreetings, ['库中新候选'])
+  checks.push('Multiple greetings persist in the preset; invalid indices do not create chats, empty openings remain empty, only the selected opening enters its isolated snapshot/request and deletion removes its hidden context')
+
   console.log(JSON.stringify({ passed: true, checks, scope: 'Real character library, chat store, API request serialization, compaction and IndexedDB with synthetic messages and mock network only.' }, null, 2))
 } finally {
   hooks.deregister()

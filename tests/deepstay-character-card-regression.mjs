@@ -133,5 +133,16 @@ await assert.rejects(importCharacterCard(file(new Uint8Array([255, 254, 255]))))
 assert.throws(() => exportCharacterCard({ name: '', prompt: '设定', greeting: '' }))
 assert.throws(() => exportCharacterCard({ ...oldNative, alternateGreetings: ['x'.repeat(10_001)] }))
 assert.throws(() => exportCharacterCard({ name: '大卡', prompt: '中'.repeat(20_000), greeting: '', alternateGreetings: Array(9).fill('中'.repeat(10_000)) }), /Invalid or oversized/)
+const boundary = { name: '边界', prompt: '设定', greeting: '', alternateGreetings: Array(7).fill('') }
+const jsonPadding = 200 * 1024 - utf8(exportCharacterCard(boundary)).length
+boundary.alternateGreetings = boundary.alternateGreetings.map((_, index) => {
+  const bytes = Math.min(30_000, Math.max(0, jsonPadding - index * 30_000))
+  return '中'.repeat(Math.floor(bytes / 3)) + 'x'.repeat(bytes % 3)
+})
+const boundaryJson = exportCharacterCard(boundary)
+assert.equal(utf8(boundaryJson).length, 200 * 1024)
+assert.deepEqual(await importCharacterCard(file(boundaryJson)), { ...boundary, warnings: [] })
+boundary.alternateGreetings[6] += 'x'
+assert.throws(() => exportCharacterCard(boundary), /Invalid or oversized/)
 hooks.deregister()
 console.log('Passed character card regression: JSON/PNG/CHARX, macro expansion, text-only boundaries, roundtrip and size/corruption checks')

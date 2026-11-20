@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../utils/id.js'
 import * as db from './chat/db.js'
+import { exportCharacterCard } from './characterCards.js'
 
 export type CharacterPreset = {
   id: string
@@ -96,6 +97,8 @@ const validateInput = (value: CharacterInput) => {
 
 export const saveCharacter = async (input: CharacterInput): Promise<CharacterPreset> => {
   const value = validateInput(input)
+  // A saved preset must fit the same portable JSON limit used by export and reimport.
+  exportCharacterCard(value)
   if (!useCharacters.getState().ready) {
     await loadCharacters()
   }

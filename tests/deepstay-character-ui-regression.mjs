@@ -186,6 +186,22 @@ try {
   assert.equal(saved[0].greeting, '')
   checks.push('Imported alternates remain editable and adding a blank candidate preserves its position on save')
 
+  button(render(), 'characterEdit').props.onClick()
+  const editDraft = find(render(), node => node.type === 'textarea' && node.props.value === before[0].prompt)
+  editDraft.props.onChange({ target: { value: '尚未保存的长卡编辑' } })
+  const saveCharacter = globalThis.__saveCharacter
+  globalThis.__saveCharacter = async value => { exportCharacterCard({ ...value,
+    prompt: '中'.repeat(20_000), alternateGreetings: Array(9).fill('中'.repeat(10_000)),
+  }) }
+  find(render(), node => node.type === 'form').props.onSubmit({ preventDefault() {} })
+  await wait(() => Boolean(find(render(), node => node.props?.role === 'alert')))
+  assert.equal(find(render(), node => node.props?.role === 'alert').props.children, 'characterSaveFailed')
+  assert.ok(find(render(), node => node.type === 'textarea' && node.props.value === '尚未保存的长卡编辑'))
+  assert.deepEqual(globalThis.__characters.presets, before)
+  button(render(), 'cancel').props.onClick()
+  globalThis.__saveCharacter = saveCharacter
+  checks.push('A portable-size save rejection retains the editable draft and original preset rather than closing or replacing it')
+
   globalThis.__characters.presets = [{ ...before[0], greeting: '', alternateGreetings: ['所选开场', '不要自动选择此项'] }]
   button(render(), 'characterStartChat').props.onClick()
   tree = render()

@@ -53,6 +53,7 @@ await new Promise((resolve, reject) => {
 old.close()
 
 const characters = await import(new URL('services/characters.ts', root))
+const { exportCharacterCard, importCharacterCard } = await import(new URL('services/characterCards.ts', root))
 const db = await import(new URL('services/chat/db.ts', root))
 const settings = await import(new URL('services/settings.ts', root))
 const store = await import(new URL('services/chat/store.ts', root))
@@ -107,6 +108,22 @@ try {
   await assert.rejects(characters.saveCharacter({ name: 'x'.repeat(101), prompt: '有效', greeting: '' }), /Invalid/)
   await assert.rejects(characters.saveCharacter({ name: '有效', prompt: 'x'.repeat(20_001), greeting: '' }), /Invalid/)
   await assert.rejects(characters.saveCharacter({ name: '有效', prompt: '有效', greeting: 'x'.repeat(10_001) }), /Invalid/)
+  const oversizedCard = { name: '大卡', prompt: '中'.repeat(20_000), greeting: '',
+    alternateGreetings: Array(9).fill('中'.repeat(10_000)) }
+  const presetsBeforeOversize = structuredClone(characters.useCharacters.getState().presets)
+  await assert.rejects(characters.saveCharacter(oversizedCard), /Invalid or oversized/)
+  await assert.rejects(characters.saveCharacter({ ...oversizedCard, id: first.id }), /Invalid or oversized/)
+  assert.deepEqual(characters.useCharacters.getState().presets, presetsBeforeOversize)
+  assert.deepEqual((await db.loadCharacterPresets()).find(p => p.id === first.id), first)
+  assert.equal((await db.loadCharacterPresets()).length, presetsBeforeOversize.length)
+  const portableInput = { name: '可备份大卡', prompt: '中'.repeat(20_000), greeting: '',
+    alternateGreetings: Array(4).fill('中'.repeat(10_000)) }
+  const portablePreset = await characters.saveCharacter(portableInput)
+  const portableJson = exportCharacterCard(portablePreset)
+  assert.ok(new TextEncoder().encode(portableJson).length < 200 * 1024)
+  assert.deepEqual(await importCharacterCard(new File([portableJson], 'character.json')), { ...portableInput, warnings: [] })
+  await characters.deleteCharacter(portablePreset.id)
+  checks.push('New or edited presets exceeding portable JSON bytes reject before writes, retain the old library, and accepted large Chinese presets export/reimport without losing candidates')
   const put = IDBObjectStore.prototype.put
   IDBObjectStore.prototype.put = function (...args) {
     if (this.name === 'characterPresets') throw new DOMException('Injected character quota error', 'QuotaExceededError')

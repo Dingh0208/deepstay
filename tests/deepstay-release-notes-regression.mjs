@@ -18,7 +18,8 @@ for (const release of notes) {
     `Every ${release.version} changelog entry must appear in the in-app history`)
 }
 assert.equal(notes[0].version, currentVersion, 'Newest release must lead the list')
-assert.ok(notes[0].changes[0].includes('附件'), 'History retains exact changelog text')
+assert.equal(notes[0].changes[0], /^- (.+)$/m.exec(changelog)[1].replace(/`([^`]+)`/g, '$1'),
+  'History retains the newest changelog entry text')
 
 const original = await readFile(new URL('../src/services/appUpdates.ts', import.meta.url), 'utf8')
 const mockCreate = `const create = (initializer) => {

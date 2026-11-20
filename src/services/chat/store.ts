@@ -26,6 +26,7 @@ import {
   prepareDraftMessage,
 } from './drafts.js'
 import { createLatestReminder } from './latestReminder.js'
+import { characterSnapshot, characterSystemPrompt, type CharacterPreset } from '../characters.js'
 import { useHistoryTarget } from './historySearch.js'
 import {
   CONTEXT_INPUT_BUDGET,
@@ -543,6 +544,45 @@ export const newChat = () => {
   }
 }
 
+/** 人物设定和开场白复制到新会话；普通新对话不隐式使用人物。 */
+export const startCharacterChat = (preset: CharacterPreset): boolean => {
+  if (!get().ready || get().importingHistory) {
+    return false
+  }
+  const now = Date.now()
+  const greeting: AssistantMessage | undefined = preset.greeting ? {
+    id: createId(),
+    role: 'assistant',
+    questionDeleted: true,
+    parentId: null,
+    createdAt: now,
+    model: null,
+    prefix: false,
+    status: 'done',
+    stopReason: 'end_turn',
+    blocks: [{ type: 'text', text: preset.greeting }],
+  } : undefined
+  const session: Session = {
+    id: createId(),
+    title: preset.name,
+    createdAt: now,
+    updatedAt: now,
+    messages: greeting ? [greeting] : [],
+    rootMessageId: greeting?.id ?? null,
+    linearMessagePath: true,
+    character: characterSnapshot(preset),
+  }
+  touchSession(session.id)
+  set((state) => ({
+    sessions: [toSessionSummary(session), ...state.sessions],
+    sessionCache: { ...state.sessionCache, [session.id]: session },
+    activeId: session.id,
+  }))
+  persist(session.id)
+  trimSessionCache()
+  return true
+}
+
 export const selectSession = (id: string) => {
   if (!get().importingHistory && get().sessions.some((session) => session.id === id)) {
     touchSession(id)
@@ -717,9 +757,19 @@ const deleteMessageData = async (id: string, messageIds: readonly string[]): Pro
     return false
   }
   const ids = new Set(messageIds)
-  const next = removeBranchMessages(current, ids)
+  let next = removeBranchMessages(current, ids)
   if (next === current) {
     return false
+  }
+  const character = current.character
+  const greeting = character?.greeting
+  if (character && greeting && current.messages.some((message) =>
+    ids.has(message.id) && message.role === 'assistant' && message.questionDeleted &&
+    !message.parentId && message.blocks.map((block) => block.type === 'text' ? block.text : '').join('') === greeting
+  )) {
+    const withoutGreeting = { ...character }
+    delete withoutGreeting.greeting
+    next = { ...next, character: withoutGreeting }
   }
   deletingSessions.add(id)
   try {
@@ -762,6 +812,7 @@ export const compactSession = async (
     if ((pending && !(await pending)) || unsavedSessions.has(sessionId)) {return 'failed'}
     const snapshot = await db.loadMemorySnapshot(sessionId)
     if (!snapshot || !valid()) {return 'cancelled'}
+    if (JSON.stringify(snapshot.session.character) !== JSON.stringify(session.character)) {return 'failed'}
     const history = getVisibleMessages(session)
     const stored = getVisibleMessages(snapshot.session)
     if (stored.length !== history.length || stored.some((message, i) =>
@@ -779,6 +830,12 @@ export const compactSession = async (
       model: settings.model,
       signal,
       inputBudget: settings.generation.contextTokens,
+      requestOverhead: estimateContextTokens(
+        characterSystemPrompt(settings.generation.system ?? SYSTEM_PROMPT, session.character) +
+          createLatestReminder(settings) +
+          JSON.stringify(supportsDeepSeekExtras(connection) && supportsDeepSeekServerTools(settings.model)
+            ? serverTools(settings.search) : [])
+      ) + 256,
       onCommit: (update) => db.commitMemoryUpdate(snapshot.state, update, valid),
       onProgress: (progress) => set((state) => ({
         contextProgress: { ...state.contextProgress, [sessionId]: { ...progress, manual: true } },
@@ -1259,7 +1316,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const apiKey = settings.apiKey ?? ''
   const model = initial.model ?? settings.model
   const generation = settings.generation
-  const baseSystem = generation.system ?? SYSTEM_PROMPT
+  const sourceSession = getSession(sessionId)
+  const baseSystem = characterSystemPrompt(generation.system ?? SYSTEM_PROMPT, sourceSession?.character)
   const contextRoute = JSON.stringify([connection.baseUrl, connection.protocol, model, initial.thinking, initial.search])
   let inputBudget = learnedContextLimit?.route === contextRoute && learnedContextLimit.key === apiKey
     ? learnedContextLimit.budget
@@ -1280,7 +1338,6 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const latestReminder = request.prefix
     ? request.prefix.latestReminder
     : createLatestReminder(settings)
-  const sourceSession = getSession(sessionId)
   const sourceEpoch = historyEpoch
   const controller = new AbortController()
   if (!getSession(sessionId)?.title) {
@@ -1358,7 +1415,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           sourceState = snapshot.state
           if (
             (snapshot.session.contextMemory?.fixed ?? '') !==
-            (sourceSession?.contextMemory?.fixed ?? '')
+            (sourceSession?.contextMemory?.fixed ?? '') ||
+            JSON.stringify(snapshot.session.character) !== JSON.stringify(sourceSession?.character)
           ) {
             sourceConflict = true
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })

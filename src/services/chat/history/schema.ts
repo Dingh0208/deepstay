@@ -25,6 +25,21 @@ const record = (value: unknown): Record<string, unknown> =>
 
 const string: Read<string> = (value) => (typeof value === 'string' ? value : invalid())
 
+export const readCharacterSnapshot: Read<NonNullable<SessionFile['deepstay_character']>> = (value) => {
+  const item = record(value)
+  const presetId = string(item.presetId)
+  const name = string(item.name)
+  const prompt = string(item.prompt)
+  const greeting = 'greeting' in item ? string(item.greeting) : undefined
+  if (!presetId.trim() || presetId.length > 200 || !name.trim() || name.length > 100 || !prompt.trim() || prompt.length > 20_000) {
+    return invalid()
+  }
+  if (greeting !== undefined && greeting.length > 10_000) {
+    return invalid()
+  }
+  return { presetId, name, prompt, ...(greeting === undefined ? {} : { greeting }) }
+}
+
 const boolean: Read<boolean> = (value) => (typeof value === 'boolean' ? value : invalid())
 
 const number: Read<number> = (value) =>
@@ -259,6 +274,7 @@ export const readSessionFile: Read<SessionFile> = (value) => {
     current_message_id: count(item.current_message_id),
     inserted_at: time(item.inserted_at),
     updated_at: time(item.updated_at),
+    ...('deepstay_character' in item ? { deepstay_character: readCharacterSnapshot(item.deepstay_character) } : {}),
     messages: list(message)(item.messages),
   }
 }

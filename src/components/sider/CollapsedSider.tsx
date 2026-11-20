@@ -4,6 +4,8 @@ import { setSiderCollapsed } from '../../services/settings.js'
 import { newChat } from '../../services/chat/store.js'
 import { IconButton } from '../base/IconButton.js'
 import styles from './Sider.module.css'
+import { CharacterIcon } from '../characters/CharactersDialog.js'
+import { openCharacters } from '../characters/characterDialogState.js'
 
 /** 收起后左上角的按钮组 */
 export const CollapsedSider = () => {
@@ -25,6 +27,7 @@ export const CollapsedSider = () => {
           tooltip={t('newChat')}
           onClick={newChat}
         />
+        <IconButton size="m" tone="primary" icon={<CharacterIcon />} tooltip={t('characterPresets')} onClick={openCharacters} />
       </div>
     </div>
   )

@@ -44,6 +44,7 @@ import { DiagnosticsSetting } from './DiagnosticsSetting.js'
 import { GenerationSetting, ReplyPreferenceSettings } from './GenerationSetting.js'
 import { UpdateSetting } from './UpdateSetting.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
+import { openCharacters } from '../characters/characterDialogState.js'
 import styles from './Settings.module.css'
 
 export const SettingsDialog = () => {
@@ -140,6 +141,8 @@ const SettingsContent = () => {
           )}
           {section === 'chat' && (
             <>
+              <SettingCell label={t('characterPresets')} status={null}
+                action={<Button size="m" variant="outlined" onClick={openCharacters}>{t('characterManage')}</Button>} />
               <ThinkingCollapseSetting />
               <ContextMemorySetting />
               <GenerationSetting />

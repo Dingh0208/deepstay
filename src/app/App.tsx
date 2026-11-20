@@ -31,6 +31,7 @@ import { hasOwn } from '../utils/object.js'
 import { useChatTypography } from './useChatTypography.js'
 import { bindAppUpdates } from '../services/appUpdates.js'
 import { ReleaseNotesDialog } from '../components/settings/ReleaseNotesDialog.js'
+import { CharactersDialog } from '../components/characters/CharactersDialog.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -153,6 +154,7 @@ export const App = () => {
       <PlatformDialog />
       <FirstRunGuide />
       <ReleaseNotesDialog />
+      <CharactersDialog />
       <Toast />
     </>
   )

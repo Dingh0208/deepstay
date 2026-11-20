@@ -4,6 +4,7 @@ import { getVisibleMessages, normalizeSession } from '../branches.js'
 import { describeReply } from '../describe.js'
 import type { AssistantMessage, Message, ReplyBlock, Session, UserMessage } from '../types.js'
 import { fail } from './errors.js'
+import { readCharacterSnapshot } from './schema.js'
 import type {
   ChatMessage,
   ChatMessageStatus,
@@ -265,6 +266,7 @@ export const toSessionFile = (original: Session, exportImage: ExportImage): Sess
     current_message_id: current ? id(current) : 0,
     inserted_at: iso(session.createdAt),
     updated_at: iso(session.updatedAt),
+    ...(session.character === undefined ? {} : { deepstay_character: readCharacterSnapshot(session.character) }),
     messages,
   }
 }

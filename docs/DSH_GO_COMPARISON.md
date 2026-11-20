@@ -1,12 +1,12 @@
 # DSH Go 与 DeepStay：已验证的重叠功能比较
 
-核查日期：2026-11-20。DSH Go 固定提交为 [`971b0d895f16035e356315b8af08fa3a12afe87c`](https://github.com/ccch1mneyyy/dsh-Go/commit/971b0d895f16035e356315b8af08fa3a12afe87c)，默认分支 main，当次最新提交时间为 2026-11-20 11:26:33 UTC。下列 GitHub 链接全部固定到该提交。DeepStay 对照基线为 `41ceb5cd6317aad323d37110371c9f8c5ec99af7` 加本轮附件修复工作区；本文件只做静态实现审查，不宣称已运行 DSH Go。
+核查日期：2026-11-20。DSH Go 固定提交为 [`971b0d895f16035e356315b8af08fa3a12afe87c`](https://github.com/ccch1mneyyy/dsh-Go/commit/971b0d895f16035e356315b8af08fa3a12afe87c)，默认分支 main，当次最新提交时间为 2026-11-20 11:26:33 UTC。下列 GitHub 链接全部固定到该提交。DeepStay 对照基线为 `41ceb5cd6317aad323d37110371c9f8c5ec99af7` 加本轮附件、搜索和人物功能工作区；本文件只做静态实现审查，不宣称已运行 DSH Go。
 
 ## 结论与适用边界
 
 重叠功能采用行为参考、适配当前架构。DeepStay 已覆盖更完整的地方保留现有实现；不能因功能同名就重写。DSH Go 普通聊天是 Flutter 界面连接 DSH Host，引擎负责上下文、会话存储与模型请求；DeepStay 是 React/Capacitor 直接调用模型，使用 IndexedDB 保存本机会话。DSH Go 的 RPC、原生文件系统、Riverpod 和 Flutter 组件不适合直接替换这里的服务层。
 
-DSH Go 还存在独立的酒馆引擎 `packages/dsh_tavern`，它和普通 DSH Host 聊天不能混为同一条实现链。下表在引用酒馆代码时明确标出。
+DSH Go 还存在独立的酒馆引擎 `packages/dsh_tavern`，直接调用 DeepSeek，不需要本机或远程 Host；它和普通 DSH Host 聊天不能混为同一条实现链。下表在引用酒馆代码时明确标出。[酒馆指南](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/docs/guide/zh/13-tavern.md)已确认角色卡与 DeepSeek ZIP 导入，不能把普通 Host 的导入范围当作整个应用的能力上限。
 
 背景、字体、收藏、置顶、编辑、更新、语音、余额及导入等用户功能另见[功能清单对照](DSH_GO_FEATURES.md)。
 
@@ -29,17 +29,20 @@ DSH Go 还存在独立的酒馆引擎 `packages/dsh_tavern`，它和普通 DSH H
 | 7. 压缩状态显示 | 读取 `compaction/start`、`compaction/end`，`turn/end` 也能清理残留压缩状态，避免一直显示进行中。 | 有“正在进行上下文压缩，请稍等”和批次进度；finally 清理准备状态。 | 参考完整状态生命周期与中断后清理测试；已有文字与进度保留，不因同名重写。 | [Go `compactingAfter` L309](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/state/run_pulse.dart#L309)，根许可。DeepStay：`chat/store.ts`。 |
 | 8. 会话记忆与自动压缩算法 | 已读 Go 代码证明压缩由 Host 执行，运行时依赖锁定 `@deepseek-ai/dsh@0.2.2-rc.1`；Go 状态层未包含可直接证明的完整自动触发阈值、摘要提示和事实抽取算法。酒馆又是另一套引擎。 | 当前分支内记录、来源引用校验、原文召回、保留开头与近期原文；增量 checkpoint、至少四新轮次和失败冷却。 | 不能声称 DSH Go 记忆更好，也不凭 UI 的 `/compact` 就替换 Hermes 方案。若要进一步比较算法，必须另审该锁定 Host 版本及酒馆实际生成链，验证情感和事实保留。 | [Go 依赖锁输入](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/runtime/locks/dsh-0.2.2-rc.1/package.json)、上行 RPC；DeepStay：`contextMemory.ts`、`memoryRecords.ts`、`memoryRecall.ts`，MIT。 |
 | 9. 缓存命中率口径 | `SessionUsage` 使用整个会话累计数：`cacheRead / (uncachedInput + cacheRead + cacheWrite)`，不是单轮百分比。 | 使用最新完成回复的最终 usage；生成中不展示临时 cache 计数，以免结束瞬间跳变。 | 两边口径不同。保留当前单轮最终口径；若以后增加累计统计，另列“本轮/累计”，不能混算或把缺省当 0%。 | [Go `SessionUsage` L62](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/state/usage_state.dart#L62)、[累计 UI L549](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/ui/chat/usage_sheet.dart#L549)，根许可。DeepStay：`replyMetrics.ts`、`api/usage.ts`。 |
-| 10. 上下文占用显示 | 明确区分最近请求占用 `pressureTokens` 与下一次请求预测 `projectedTokens`，优先显示预测；详情页标记来自哪种口径。 | 有实际最终 usage 与本地请求估算、系统/工具/消息拆分；文档估算不能当作真实解析 token。 | 值得参考“最近实际/下次估算”明确标记，避免旧回复统计被误读成修改附件后的下一请求成本。不能从 Go 的 Host 投影字段凭空得到这里的附件真实 token。 | [Go 占用字段 L69](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/state/usage_state.dart#L69)、[UI 口径 L442](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/ui/chat/usage_sheet.dart#L442)，根许可。DeepStay：`replyMetrics.ts`、`contextMemory.ts`。 |
+| 10. 上下文占用显示 | 明确区分最近请求占用 `pressureTokens` 与下一次请求预测 `projectedTokens`，优先显示预测；详情页标记来自哪种口径。 | 本轮已明确标记最近一轮实际用量、最近一轮请求估算、当前会话估算，保留系统/工具/消息拆分；生成中待结算。 | 采用明确标注口径的做法，仍不宣称完整预测下一次请求，也不从 Host 字段推算这里的附件真实 token。 | [Go 占用字段 L69](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/state/usage_state.dart#L69)、[UI 口径 L442](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/ui/chat/usage_sheet.dart#L442)，根许可。DeepStay：`replyMetrics.ts`、`ComposerMetrics.tsx`。 |
 | 11. 流式用量与错误 | 酒馆模型适配器在处理 choices 前读取顶层 usage，支持 `choices: []` 的尾部计数；HTTP 200 body.error 仍抛错误；缺 finish/DONE 时不当作成功。 | OpenAI 适配已有尾部 usage 合并、显式缓存计数优先、HTTP 200 错误体识别和截断流错误。本轮再补尺寸错误的 HTTP 200 分类。 | 行为一致，保留现有实现与回归；不复制另一套 Dart SSE 解析器。可借其“usage 与 choices 独立”的边界案例。 | [Go 酒馆适配 L377](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/packages/dsh_tavern/lib/src/llm/model_client.dart#L377)、[截断检查 L425](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/packages/dsh_tavern/lib/src/llm/model_client.dart#L425)，根 AGPL。DeepStay：`api/openai.ts`、`api/http.ts`。 |
 | 12. 流式刷新性能 | 普通聊天使用约 32ms 批量刷新；记录/投影与显示状态分离，另有聊天行缓存。 | 增量在 animation frame 提交，并在大批事件后让出浏览器；长列表另有按窗口渲染。 | 借鉴缓存边界和只刷新尾部的测试思想，不把32ms照搬成全局30帧限制，避免损害高刷设备。 | [Go `chat_state.dart` L1157](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/state/chat_state.dart#L1157)，根许可。DeepStay：`chat/store.ts`、消息列表组件。 |
 | 13. 会话持久化与未知写入结果 | 普通会话由 Host 存储；仓库补丁对 rename 后目录 fsync 失败产生 `unknown-state`，并把对应 storage unit 标为不可继续使用，避免把“不知道是否持久化”当成功。App 的 SharedPreferences 主要保存当前主机/会话选择。 | IndexedDB strict 事务原子保存会话、摘要、附件与记忆版本；保存失败记录未保存会话并显示重试入口。 | 参考错误注入和恢复验收，不移植 Node fsync/文件锁来替代 IndexedDB。两边机制不同，静态阅读不能证明任一方真机永不丢数据。 | [Go 存储补丁](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/runtime/patches/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-storage-json-postpublish.diff)、[当前会话选择 L947](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/app/lib/state/sessions_state.dart#L947)，补丁上游为MIT包，Go修改按根许可单独评估。DeepStay：`chat/db.ts`、`chat/store.ts`。 |
 | 14. 文件与费用（本轮） | 不能把 Go 的本机 Host/工具工作区读取，与官方 Files API 的按页解析、file_id 模型输入当作同一个计费协议。附件专项由另一份核查负责。 | 本轮默认文字解析、用户主动选图文解析、解析前确认、复用 file_id、文档暂停/恢复引用、请求内同file_id去重、收费文档不静默重传。 | 采用与当前官方协议兼容的设计；图片安全预处理和按次重试约束保留。用户提“参考 Go”不构成改用另一文件协议或承诺上传后永不计费。 | DeepStay：`attachments.ts`、`chat/reply.ts`、`chat/store.ts`、`imageUpload.ts`。Go架构证据：[architecture §5](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/docs/architecture.md)。 |
+| 15. 人物、角色卡与历史隔离（酒馆） | 酒馆支持 PNG / JSON / CHARX、多个开场与世界书；生成准备阶段按 `chat.characterId` 读取当前角色记录并生成有效卡。删除人物会同时删除其聊天。 | 本轮新增人物库和文字角色卡；新会话复制人物快照，既有会话继续使用原设定，删模板保留聊天。角色与开场语境统一加入系统信息及预算，ZIP 保存会话快照。 | 参考角色入口和文本映射，独立实现适合当前直接调用 API 的轻量方案。Go 文档所说已有对话不变，不应解读为其后续生成永远冻结旧卡；本项目明确冻结会话人物快照，不移植酒馆的脚本、世界书或级联删除语义。 | [Go 酒馆指南](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/docs/guide/zh/13-tavern.md)、[生成读取角色 L3851](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/packages/dsh_tavern/lib/src/engine.dart#L3851)、[删除人物 L1134](https://github.com/ccch1mneyyy/dsh-Go/blob/971b0d895f16035e356315b8af08fa3a12afe87c/packages/dsh_tavern/lib/src/engine.dart#L1134)，根许可。DeepStay：`characters.ts`、`characterCards.ts`、`chat/store.ts`、`chat/history/`。 |
 
-## 建议采用的顺序
+## 本轮结构选择与后续候选
 
-1. 本轮交付附件上传与费用修复，并参考 Go 增加全半角/多词搜索；保留用户已确认的消息时间排序、单轮最终 usage、会话内分支记忆和 IndexedDB 事务。
-2. 后续可评估明确的实际/估算上下文标签、按渠道和模型保存窗口容量；它们涉及统计口径与配置归属，不能直接照搬 Host 字段。
-3. 持久化事件日志、大型 Host 引擎和跨会话记忆涉及架构及产品范围，不能因为对方有同名模块就纳入本轮。
+1. 附件修复、全半角／多词搜索和上下文统计标签已纳入本轮实现；保留用户确认的消息时间排序、单轮最终 usage、会话内分支记忆和 IndexedDB 事务。
+2. 人物库与角色卡使用独立服务，界面只管理模板；新会话复制人物快照，发送、重新生成、续写和压缩预算使用同一个系统提示组合函数。删除模板保留聊天，导入历史不覆盖本地人物，避免库变动隐式改变旧会话。
+3. 角色卡仅映射文字和一个开场白，读取后先供用户确认。没有引入酒馆的世界书、脚本、远程资源或整套 Host；普通聊天与人物聊天继续共用现有接口、分支和持久化链路。具体范围见 [CHARACTERS.md](CHARACTERS.md)。
+4. 后续最值得评估的是按渠道／模型保存窗口容量，统一显示和请求预算；目前仍为全局设置，不把它伪装成已完成。完整下一次请求预测涉及附件和压缩准备，应独立验证性能与口径。
+5. 持久化事件日志、大型 Host 引擎和跨会话记忆不在本轮范围，不能因对方具有同名模块就纳入。
 
 ## 验证范围
 

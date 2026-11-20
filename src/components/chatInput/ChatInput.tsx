@@ -14,6 +14,7 @@ import type { FilePurpose } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { compactSession, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
 import { estimateSessionContext } from '../../services/chat/replyMetrics.js'
+import { characterSystemPrompt } from '../../services/characters.js'
 import type { AssistantMessage } from '../../services/chat/types.js'
 import { hasOwn } from '../../utils/object.js'
 import {
@@ -91,7 +92,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
     if (!session || latestReply?.metrics) {
       return undefined
     }
-    const prompt = [system ?? SYSTEM_PROMPT, session.contextMemory?.fixed].filter(Boolean).join('\n\n')
+    const prompt = [characterSystemPrompt(system ?? SYSTEM_PROMPT, session.character), session.contextMemory?.fixed].filter(Boolean).join('\n\n')
     return estimateSessionContext(session, prompt, searchAvailable ? serverTools(search) : [])
   }, [session, latestReply?.metrics, system, searchAvailable, search])
   const fileInputRef = useRef<HTMLInputElement>(null)

@@ -1,6 +1,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import { matchImport, mergeImport } from './history/mergeImport.js'
 import { recordDiagnostic } from '../diagnostics/log.js'
+import type { CharacterPreset } from '../characters.js'
 import { toSessionSummary, type Session, type SessionSummary } from './types.js'
 import type {
   MemoryRecord,
@@ -11,7 +12,7 @@ import type {
 } from './memoryTypes.js'
 
 /** IndexedDB 存储结构版本；新增或调整存储、索引时递增。 */
-const DB_VERSION = 13
+const DB_VERSION = 14
 
 /** 文件原件按附件的本地 id 存储，所有引用同一 id 的消息共用一份；用于缩略图、打开查看，以及没有 serverId 时补传。 */
 export type StoredFile = {
@@ -23,6 +24,7 @@ export type StoredFile = {
 type StoredSessionSummary = SessionSummary & { fileIds: string[] }
 
 interface ChatDB extends DBSchema {
+  characterPresets: { key: string; value: CharacterPreset }
   /** 当前使用的会话，界面读写都在这里 */
   sessions: { key: string; value: Session }
   sessionSummaries: {
@@ -99,6 +101,9 @@ const getDB = () => {
       if (!db.objectStoreNames.contains('memoryState')) {
         db.createObjectStore('memoryState', { keyPath: 'sessionId' })
       }
+      if (!db.objectStoreNames.contains('characterPresets')) {
+        db.createObjectStore('characterPresets', { keyPath: 'id' })
+      }
     },
     blocking(_currentVersion, _blockedVersion, event) {
       const connection = event.target as IDBDatabase
@@ -152,6 +157,19 @@ export const loadSessionSummaries = async (): Promise<SessionSummary[]> => {
 
 export const loadSession = async (id: string): Promise<Session | undefined> =>
   (await getDB()).get('sessions', id)
+
+export const loadCharacterPresets = async (): Promise<CharacterPreset[]> =>
+  (await getDB()).getAll('characterPresets')
+
+export const saveCharacterPreset = async (preset: CharacterPreset): Promise<void> => {
+  const tx = (await getDB()).transaction('characterPresets', 'readwrite', { durability: 'strict' })
+  await Promise.all([tx.store.put(preset), tx.done])
+}
+
+export const deleteCharacterPreset = async (id: string): Promise<void> => {
+  const tx = (await getDB()).transaction('characterPresets', 'readwrite', { durability: 'strict' })
+  await Promise.all([tx.store.delete(id), tx.done])
+}
 
 export const hasContextCheckpoint = async (id: string): Promise<boolean> =>
   (await (await getDB()).get('memoryState', id))?.hasCheckpoint === true

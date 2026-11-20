@@ -17,6 +17,7 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 ## Features
 
 - Multiple conversations, automatic titles, renaming and deletion; edit prompts, regenerate replies, and switch message branches. On touch devices, press and hold a message for its actions.
+- Create character presets with instructions and an optional greeting, or import a text character card. Each new character chat keeps its own snapshot; later preset edits or deletion preserve existing chats. See [characters and card limits](docs/CHARACTERS.md).
 - Open a message's actions and choose **Select messages** to favorite or delete several messages at once. The sidebar's **Favorites** opens saved messages in their original chats. Favorites stay on the device and are not included in history ZIP files.
 - **Delete turn** removes the prompt and its answer versions while keeping other turns. Switch saved models directly in the composer, and select multiple attachments in one file picker action.
 - Streaming replies, deep thinking, search, link reading, and source citations.
@@ -40,7 +41,7 @@ The base URL can include a relay's path prefix and `/v1`. In OpenAI-compatible m
 
 ## Data
 
-The API key and settings are stored in the browser or app WebView's localStorage. Conversations and original attachments are stored in IndexedDB. Keys are not uploaded to a deepstay platform; model discovery and chats go directly to the configured provider, while default extension features use DeepSeek. localStorage is not an encrypted key vault.
+The API key and settings are stored in the browser or app WebView's localStorage. Conversations, character presets and original attachments are stored in IndexedDB. Keys are not uploaded to a deepstay platform; model discovery and chats go directly to the configured provider, while default extension features use DeepSeek. localStorage is not an encrypted key vault.
 
 Chat backgrounds use a separate local IndexedDB store and are excluded from history exports. Importing or clearing history leaves the background unchanged; reset it in **Settings → Appearance**.
 
@@ -48,7 +49,7 @@ Chat backgrounds use a separate local IndexedDB store and are excluded from hist
 
 This version has no accounts, cloud sync, or cross-device sync. Browser and Android data are separate. Uninstalling, clearing storage, or changing browser profiles can remove local history.
 
-Settings → Data can export, import, or clear history. DeepSeek / deepstay v3 ZIP imports **keep all existing history and local continuations**, let you select conversations, skip duplicates and append missing messages from the same source. Older imports without source metadata are deduplicated only when their complete messages match; uncertain older incremental archives remain separate copies. Exports include conversations and locally available original images, but exclude API keys, settings, and original non-image attachments. See the [archive format documentation (Chinese)](src/services/chat/history/README.md). Clearing local history does not delete files already uploaded to the upstream API.
+Settings → Data can export, import, or clear history. DeepSeek / deepstay v3 ZIP imports **keep all existing history and local continuations**, let you select conversations, skip duplicates and append missing messages from the same source. Older imports without source metadata are deduplicated only when their complete messages match; uncertain older incremental archives remain separate copies. Exports include conversations, their character snapshots and locally available original images, but exclude the character preset library, API keys, settings, and original non-image attachments. See the [archive format documentation (Chinese)](src/services/chat/history/README.md). Clearing local history does not delete character presets or files already uploaded to the upstream API.
 
 ## Development
 

@@ -1,3 +1,5 @@
+import type { CharacterSnapshot } from '../../characters.js'
+
 /**
  * 历史会话导出产物（deepseek_data-*.zip）的类型定义。
  *
@@ -33,6 +35,8 @@ export type SessionFile = {
   current_message_id: number
   inserted_at: Iso8601Utc
   updated_at: Iso8601Utc
+  /** 当前会话的人物快照；不包含或修改本机人物预设库。 */
+  deepstay_character?: CharacterSnapshot
   /** 消息树，分支靠 parent_id */
   messages: ChatMessage[]
 }

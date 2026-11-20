@@ -1,5 +1,6 @@
 import type { TranslationMessage } from '../../i18n/index.js'
 import type { ApiErrorKind } from '../api/client.js'
+import type { CharacterSnapshot } from '../characters.js'
 import type {
   ChatModel,
   FilePurpose,
@@ -77,7 +78,7 @@ export type ReplyBlock = ThinkingPart | TextPart | ServerToolBlock
 export type ReplyStatus = 'pending' | 'streaming' | 'done' | 'stopped' | 'error'
 
 export type AssistantMessage = MessageBranch & {
-  /** 原提问已被单独删除，不能用结构调整后相邻的提问来重新生成。 */
+  /** 开场白或原提问已被单独删除，没有可用于重新生成的提问。 */
   questionDeleted?: true
   id: string
   role: 'assistant'
@@ -150,6 +151,8 @@ export type Session = {
     fileIds: Record<string, string>
   }
   contextMemory?: ContextMemory
+  /** 创建会话时复制的人物设定，预设库的编辑或删除不改变此快照。 */
+  character?: CharacterSnapshot
 }
 
 /** 会话列表元数据；消息只在打开会话时加载。 */

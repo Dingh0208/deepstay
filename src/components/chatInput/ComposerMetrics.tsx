@@ -80,7 +80,8 @@ export const ComposerMetrics = ({
           }
         >
           <div className={styles.total}>
-            <span>{t(pending ? 'composerUsagePending' : occupied === undefined ? 'composerNoUsage' : 'composerLastRequest')}</span>
+            <span>{t(pending ? 'composerUsagePending' : occupied === undefined ? 'composerNoUsage'
+              : context?.reported ? 'composerLastRequest' : latestReply?.metrics ? 'composerLastRequestEstimate' : 'composerCurrentEstimate')}</span>
             <strong>
               {t('composerContextAmount', { used: tokens(occupied), window: tokens(windowTokens) })}
             </strong>

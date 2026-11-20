@@ -17,6 +17,8 @@ import { SessionItem } from './SessionItem.js'
 import { FavoriteMessages } from './FavoriteMessages.js'
 import { openPlans } from '../platform/plansDialogState.js'
 import { useUpdateState } from '../../services/appUpdates.js'
+import { CharacterIcon } from '../characters/CharactersDialog.js'
+import { openCharacters } from '../characters/characterDialogState.js'
 import styles from './Sider.module.css'
 
 const HISTORY_PAGE_SIZE = 50
@@ -132,6 +134,10 @@ export const Sider = ({ mobile = false }: { mobile?: boolean }) => {
           <NewChatIcon />
         </span>
         {t('newChat')}
+      </button>
+      <button type="button" className={clsx(styles.settings, styles.favoritesEntry)} onClick={openCharacters}>
+        <span className={styles.settingsIcon}><CharacterIcon /></span>
+        <span className={styles.settingsLabel}>{t('characterPresets')}</span>
       </button>
       <button
         type="button"

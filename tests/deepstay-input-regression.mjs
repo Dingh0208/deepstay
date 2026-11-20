@@ -16,6 +16,7 @@ const mocks = new Map([
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek";'],
   ['../../services/api/modelCapabilities.js', 'export const supportsDeepSeekServerTools=model=>model!=="deepseek-v4-pro";'],
   ['../../services/chat/replyMetrics.js', 'export const estimateSessionContext=(session,system,tools)=>{globalThis.__estimated.push({session,system,tools});return {system:5,tools:tools.length,messages:200}};'],
+  ['../../services/characters.js', 'export const characterSystemPrompt=base=>base;'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>globalThis.__mobile;'],
   ['../../services/chat/store.js', 'export const SYSTEM_PROMPT="default system";export const serverTools=search=>search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
   ['../../utils/object.js', 'export const hasOwn=(object,key)=>Object.hasOwn(object,key);'],

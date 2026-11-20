@@ -31,6 +31,7 @@ const mocks = new Map([
   ['./GenerationSetting.js', 'export const GenerationSetting=()=>null; export const ReplyPreferenceSettings=()=>null;'],
   ['./UpdateSetting.js', 'export const UpdateSetting=()=>null;'],
   ['./settingsDialogState.js', 'export const closeSettings=()=>{globalThis.__closed+=1}; export const useSettingsDialog=Object.assign(selector=>selector({open:true,section:"data"}),{getState:()=>({section:"data"})});'],
+  ['../characters/characterDialogState.js', 'export const openCharacters=()=>{};'],
   ['./Settings.module.css', 'export default {};'],
 ])
 const hooks = registerHooks({

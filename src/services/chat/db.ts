@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import { createId } from '../../utils/id.js'
+import { matchImport, mergeImport } from './history/mergeImport.js'
 import { recordDiagnostic } from '../diagnostics/log.js'
 import { toSessionSummary, type Session, type SessionSummary } from './types.js'
 import type {
@@ -488,85 +488,122 @@ export const updateStagingFileTypes = async (types: ReadonlyMap<string, string>)
   ])
 }
 
-/**
- * 导入完成后原子新增会话、摘要和原件，并清空暂存；仅清空历史时显式替换。
- * 新增导入重建会话和附件 ID，重复导入也不会覆盖本机记录。
- * 逐条游标复制，同一时间只读取一条记录；事务失败时整体回滚，正式数据不变。
- */
+/** Identify chats whose in-memory writes must settle before the incremental merge. */
+export const getStagedImportTargets = async (): Promise<Set<string>> => {
+  const tx = (await getDB()).transaction(['sessions', 'sessionSummaries', 'sessionsStaging'])
+  const targets = new Set<string>()
+  const summaries = await tx.objectStore('sessionSummaries').getAll()
+  for (let cursor = await tx.objectStore('sessionsStaging').openCursor(); cursor; cursor = await cursor.continue()) {
+    const source = cursor.value
+    for (const summary of summaries.filter((item) => item.createdAt === source.createdAt)) {
+      const local = await tx.objectStore('sessions').get(summary.id)
+      if (local && matchImport(source, local)) {
+        targets.add(local.id)
+      }
+    }
+  }
+  await tx.done
+  return targets
+}
+
+/** Atomically add missing source messages/files; failures leave every existing chat unchanged. */
 export const commitStaging = async (replace = false): Promise<SessionSummary[]> => {
   const summaries: SessionSummary[] = []
-  const fileIds = new Map<string, string>()
-  const importedFileId = (id: string) => {
-    let mapped = fileIds.get(id)
-    if (!mapped) {
-      mapped = createId()
-      fileIds.set(id, mapped)
-    }
-    return mapped
-  }
   const tx = (await getDB()).transaction(
-    [
-      'sessions',
-      'sessionSummaries',
-      'files',
-      'sessionsStaging',
-      'filesStaging',
-      'memoryRecords',
-      'memorySegments',
-      'memoryState',
-    ],
+    ['sessions', 'sessionSummaries', 'files', 'sessionsStaging', 'filesStaging',
+      'memoryRecords', 'memorySegments', 'memoryState'],
     'readwrite',
     { durability: 'strict' }
   )
-  const move = async (from: 'sessionsStaging' | 'filesStaging', to: 'sessions' | 'files') => {
-    try {
-      const target = tx.objectStore(to)
-      if (replace) {
-        await target.clear()
-        if (to === 'sessions') {
-          await tx.objectStore('sessionSummaries').clear()
-          await tx.objectStore('memoryRecords').clear()
-          await tx.objectStore('memorySegments').clear()
-          await tx.objectStore('memoryState').clear()
+  await Promise.all([
+    (async () => {
+      try {
+        if (replace) {
+          for (const name of ['sessions', 'sessionSummaries', 'files', 'memoryRecords', 'memorySegments', 'memoryState'] as const) {
+            await tx.objectStore(name).clear()
+          }
         }
-      }
-      for (
-        let cursor = await tx.objectStore(from).openCursor();
-        cursor;
-        cursor = await cursor.continue()
-      ) {
-        const value = cursor.value
-        if (!replace) {
-          value.id = to === 'sessions' ? createId() : importedFileId(value.id)
-          if (to === 'sessions') {
-            for (const message of (value as Session).messages) {
-              if (message.role === 'user') {
-                for (const file of message.files) {
-                  file.id = importedFileId(file.id)
+        const sessions = tx.objectStore('sessions')
+        const index = tx.objectStore('sessionSummaries')
+        const existing = replace ? [] : await index.getAll()
+        for (let cursor = await tx.objectStore('sessionsStaging').openCursor(); cursor; cursor = await cursor.continue()) {
+          const source = cursor.value
+          let original: Session | undefined
+          let matched: Map<string, string> | undefined
+          if (!replace) {
+            // Metadata is small; only same-created-time candidates need a full conversation read.
+            for (const summary of existing.filter((item) => item.createdAt === source.createdAt)) {
+              const candidate = await sessions.get(summary.id)
+              const matches = candidate && matchImport(source, candidate)
+              if (candidate && matches) {
+                if (candidate.importSource?.id === source.id || candidate.id === source.id) {
+                  original = candidate
+                  matched = matches
+                  break
                 }
+                if (original) {
+                  // Ambiguous legacy copies must not be merged arbitrarily.
+                  original = undefined
+                  matched = undefined
+                  break
+                }
+                original = candidate
+                matched = matches
               }
             }
           }
+          const result = replace ? undefined : mergeImport(source, original, matched)
+          const session = result?.session ?? source
+          let changed = !original || (!original.importSource && source.messages.length > 0) || (result?.added ?? 0) > 0
+          if (result) {
+            const referenced = new Set(session.messages.flatMap((message) =>
+              message.role === 'user' ? message.files.map((file) => file.id) : []))
+            for (const [sourceId, targetId] of result.fileIds) {
+              if (!referenced.has(targetId) || await tx.objectStore('files').getKey(targetId) !== undefined) {
+                continue
+              }
+              const file = await tx.objectStore('filesStaging').get(sourceId)
+              if (file) {
+                await tx.objectStore('files').add({ ...file, id: targetId })
+                changed = true
+              }
+            }
+          }
+          if (!changed) {
+            continue
+          }
+          if (original) {
+            await sessions.put(session)
+          } else {
+            await sessions.add(session)
+          }
+          const summary = storedSummary(session)
+          await index.put(summary)
+          if (changed) {
+            const state = await tx.objectStore('memoryState').get(session.id)
+            await tx.objectStore('memoryState').put({
+              ...state,
+              sessionId: session.id,
+              sourceRevision: (state?.sourceRevision ?? 0) + 1,
+              memoryRevision: state?.memoryRevision ?? 0,
+            })
+            summaries.push(toSessionSummary(summary))
+          }
         }
-        await target.add(value)
-        if (to === 'sessions') {
-          const summary = storedSummary(value as Session)
-          await tx.objectStore('sessionSummaries').put(summary)
-          await tx
-            .objectStore('memoryState')
-            .put({ sessionId: value.id, sourceRevision: 1, memoryRevision: 0 })
-          summaries.push(toSessionSummary(summary))
+        if (replace) {
+          for (let cursor = await tx.objectStore('filesStaging').openCursor(); cursor; cursor = await cursor.continue()) {
+            await tx.objectStore('files').add(cursor.value)
+          }
         }
+        await tx.objectStore('sessionsStaging').clear()
+        await tx.objectStore('filesStaging').clear()
+      } catch (error) {
+        abortTransaction(tx)
+        throw error
       }
-      await tx.objectStore(from).clear()
-    } catch (error) {
-      // 同步抛出的错误不会让事务自动回滚，需显式中止，避免部分导入。
-      abortTransaction(tx)
-      throw error
-    }
-  }
-  await Promise.all([move('sessionsStaging', 'sessions'), move('filesStaging', 'files'), tx.done])
-  // 直接返回本次提交的列表，调用方无需在提交成功后再发起可能失败的读取。
+    })(),
+    tx.done,
+  ])
   return summaries
 }
 

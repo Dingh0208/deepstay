@@ -237,9 +237,24 @@
   }
 
   .attachments,
+  .modelRow,
   .functionRow {
     flex-shrink: 0;
   }
+}
+
+.modelRow {
+  display: flex;
+  padding: 4px 12px 0;
+}
+
+.modelSelect {
+  height: 30px;
+  min-width: 0;
+  max-width: 100%;
+  background: transparent;
+  border: 1px solid var(--dsw-alias-border-l2);
+  font-size: 0.8125rem;
 }
 
 .functionRow {

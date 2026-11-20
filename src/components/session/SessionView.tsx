@@ -31,7 +31,7 @@ export const SessionView = ({
   return (
     <div className={styles.view}>
       {isMobile ? (
-        <MobileHeader key={session.id} title={title} onJumpToFirst={jumpToFirst} />
+        <MobileHeader title={title} onJumpToFirst={jumpToFirst} />
       ) : (
         <div className={styles.header}>
           <ConversationTitle
@@ -43,7 +43,6 @@ export const SessionView = ({
         </div>
       )}
       <MessageList
-        key={session.id}
         session={session}
         streaming={streaming}
         jumpRequest={jumpRequest}

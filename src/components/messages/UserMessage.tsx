@@ -2,7 +2,7 @@ import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
 import { memo, useLayoutEffect, useRef, useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
-import { IconEditOutline16, IconListCheckOutline16 } from '../base/icons.js'
+import { IconEditOutline16, IconListCheckOutline16, IconTrashOutline16 } from '../base/icons.js'
 import { editMessage, retryUpload } from '../../services/chat/store.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import type { UserMessage as UserMessageType } from '../../services/chat/types.js'
@@ -29,6 +29,7 @@ export const UserMessage = memo(function UserMessage({
   versions,
   onSelectVersion,
   onMultiSelect,
+  onDelete,
 }: {
   sessionId: string
   message: UserMessageType
@@ -40,6 +41,7 @@ export const UserMessage = memo(function UserMessage({
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
   onMultiSelect?: (id: string) => void
+  onDelete?: (id: string) => void
 }) {
   const t = useTranslate()
   const [editing, setEditing] = useState(false)
@@ -75,6 +77,7 @@ export const UserMessage = memo(function UserMessage({
     }
   }
   const select = onMultiSelect && !busy && !editing ? () => onMultiSelect(message.id) : undefined
+  const remove = onDelete && !busy && !editing ? () => onDelete(message.id) : undefined
 
   return (
     <MessageActions
@@ -83,6 +86,7 @@ export const UserMessage = memo(function UserMessage({
       text={editing ? undefined : message.content}
       onEdit={busy || editing ? undefined : startEdit}
       onMultiSelect={select}
+      onDelete={remove}
     >
       {message.files.length > 0 ? (
         <div
@@ -145,6 +149,9 @@ export const UserMessage = memo(function UserMessage({
               />
               {select && (!isMobile || !message.content) ? (
                 <IconButton icon={<IconListCheckOutline16 />} tooltip={t('messageMultiSelect')} tooltipPlacement="bottom" onClick={select} />
+              ) : null}
+              {remove ? (
+                <IconButton icon={<IconTrashOutline16 />} tooltip={t('deleteMessageRound')} tooltipPlacement="bottom" onClick={remove} />
               ) : null}
             </div>
             <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />

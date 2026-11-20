@@ -13,7 +13,7 @@ const mocks = new Map([
   ['react/jsx-runtime', 'export const Fragment=Symbol.for("fragment"); export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx;'],
   ['@capacitor/core', 'export const Capacitor={}; export const registerPlugin=()=>({});'],
   ['../base/icons.js', ['IconDarkOutline16', 'IconDataOutline16', 'IconDownloadOutline16', 'IconFollowsystemOutline16', 'IconLightOutline16', 'IconSettingsOutline16', 'IconUploadOutline14', 'IconWarningOutline16'].map(name => `export const ${name}=()=>null;`).join('')],
-  ['../../services/chat/backup.js', 'export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=async()=>{}; export const importHistory=(...args)=>globalThis.__importHistory(...args);'],
+  ['../../services/chat/backup.js', 'export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=async()=>{}; export const importHistory=(...args)=>globalThis.__importHistory(...args); export const previewHistory=(...args)=>globalThis.__previewHistory(...args);'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>true;'],
   ['../../services/chat/store.js', 'export const useChatStore=selector=>selector(globalThis.__chatState);'],
   ['../../services/settings.js', 'export const isChineseBrowser=()=>false; export const setLocale=()=>{}; export const setThemePreference=()=>{}; export const setTtsVoice=()=>{}; export const setChatFont=()=>{}; export const setChatFontSize=()=>{}; export const bundledChatFonts=[]; export const getChatFontFamily=()=>"system-ui"; export const useSettings=selector=>selector({locale:"zh-CN"});'],
@@ -40,7 +40,7 @@ const hooks = registerHooks({
   },
   load(url, context, nextLoad) {
     if (url === source.href) {
-      const input = readFileSync(source, 'utf8') + '\nexport { useHistoryImport, ImportHistory, SettingsContent };'
+      const input = readFileSync(source, 'utf8') + '\nexport { useHistoryImport, ImportHistory, ImportConfirm, SettingsContent };'
       return { format: 'module', source: transformSync(input, JSON.stringify({ jsc: {
         target: 'es2022', parser: { syntax: 'typescript', tsx: true }, transform: { react: { runtime: 'automatic' } },
       }, module: { type: 'es6' } })).code, shortCircuit: true }
@@ -80,27 +80,35 @@ try {
   globalThis.__translate = key => zh[key]
   globalThis.__closed = 0
   globalThis.__chatState = { importingHistory: false }
+  globalThis.__previewHistory = async () => [{ id: 'first', title: 'First', message_count: 2, updated_at: '2026-11-20T00:00:00Z' }, { id: 'second', title: 'Second', message_count: 4, updated_at: '2026-11-20T01:00:00Z' }]
   let resolveImport, rejectImport, reportProgress
   const calls = []
-  globalThis.__importHistory = (file, onProgress) => {
-    calls.push(file)
+  globalThis.__importHistory = (file, onProgress, selected) => {
+    calls.push({ file, selected: [...selected] })
     reportProgress = onProgress
     return new Promise((resolve, reject) => { resolveImport = resolve; rejectImport = reject })
   }
-  const { useHistoryImport, ImportHistory, SettingsContent } = await import(source)
+  const { useHistoryImport, ImportHistory, ImportConfirm, SettingsContent } = await import(source)
   const renderHook = runner(useHistoryImport)
   const renderImport = runner(ImportHistory)
   let current = renderHook()
-  current.select(new File(['fixture'], 'cancelled.zip'))
+  await current.select(new File(['fixture'], 'cancelled.zip'))
   current = renderHook()
   current.cancel()
   current = renderHook()
   assert.equal(current.file, null)
   assert.equal(calls.length, 0)
-  checks.push('Selecting then cancelling a ZIP never starts import or touches history')
+  checks.push('Read-only preview selects all chats initially; cancelling never starts import or touches history')
 
-  current.select(new File(['fixture'], 'history.zip'))
+  await current.select(new File(['fixture'], 'history.zip'))
   current = renderHook()
+  assert.equal(current.preview.length, 2)
+  assert.equal(current.selected.size, 2)
+  current.toggle('first')
+  current = renderHook()
+  const renderConfirm = runner(ImportConfirm)
+  const confirmation = renderConfirm({ historyImport: current })
+  assert.equal(find(confirmation, node => node.type === 'input').props.checked, true)
   const staleConfirm = current.confirm
   const importing = current.confirm()
   void staleConfirm()
@@ -108,6 +116,7 @@ try {
   assert.equal(current.busy, true)
   assert.equal(current.file, null)
   assert.equal(calls.length, 1, 'Repeated confirmation must not start another import')
+  assert.deepEqual(calls[0].selected, ['second'], 'Only selected archive IDs are passed to the import service')
   reportProgress(42)
   current = renderHook()
   assert.equal(current.progress, 42)
@@ -133,7 +142,7 @@ try {
   assert.equal(find(renderImport({ historyImport: current, disabled: false }), node => node.type === 'progress'), null)
   checks.push('Successful save ends progress and displays the imported count')
 
-  current.select(new File(['fixture'], 'bad.zip'))
+  await current.select(new File(['fixture'], 'bad.zip'))
   current = renderHook()
   const failing = current.confirm()
   rejectImport(new Error('Invalid ZIP'))
@@ -144,10 +153,30 @@ try {
   assert.equal(current.status.error, true)
   checks.push('Failure releases the upload lock and displays an error without claiming success')
 
+  globalThis.__previewHistory = async () => { throw new Error('Invalid index') }
+  await current.select(new File(['bad'], 'bad-preview.zip'))
+  current = renderHook()
+  assert.equal(current.file, null)
+  assert.equal(current.busy, false)
+  assert.equal(current.status.error, true)
+  let resolvePreview
+  globalThis.__previewHistory = () => new Promise(resolve => { resolvePreview = resolve })
+  const cancelledPreview = current.select(new File(['pending'], 'cancel-preview.zip'))
+  current = renderHook()
+  assert.equal(current.previewing, true)
+  current.cancel()
+  resolvePreview([{ id: 'late' }])
+  await cancelledPreview
+  current = renderHook()
+  assert.equal(current.file, null)
+  assert.equal(current.preview, null)
+  globalThis.__previewHistory = async () => [{ id: 'first', title: 'First', message_count: 2, updated_at: '2026-11-20T00:00:00Z' }]
+  checks.push('A bad archive preview releases the lock; cancellation ignores a late preview response without starting import')
+
   const renderSettings = runner(SettingsContent)
   let settings = renderSettings()
   const componentHook = find(settings, node => node.type?.name === 'ImportHistory').props.historyImport
-  componentHook.select(new File(['fixture'], 'settings.zip'))
+  await componentHook.select(new File(['fixture'], 'settings.zip'))
   settings = renderSettings()
   const settingsImport = find(settings, node => node.type?.name === 'ImportHistory').props.historyImport.confirm()
   settings = renderSettings()

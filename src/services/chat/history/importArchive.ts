@@ -73,13 +73,56 @@ export const checkArchiveFormat = async (file: File): Promise<void> => {
   fail('backupUnrecognized')
 }
 
+/** Read only the small manifest/index for selection; full contents and CRCs are checked on import. */
+export const previewArchive = async (file: File): Promise<SessionIndexEntry[]> => {
+  if (!(await isZipFile(file))) {
+    fail('backupUnrecognized')
+  }
+  const sessions = new Set<string>()
+  let first = true
+  let index: SessionIndexEntry[] | undefined
+  try {
+    for await (const entry of readArchive(file, undefined, (path) => {
+      if (path.endsWith('/')) {
+        return false
+      }
+      if (first && path !== MANIFEST_PATH) {
+        fail('backupUnrecognized')
+      }
+      first = false
+      const id = parseSessionPath(path)
+      if (id !== null) {
+        sessions.add(id)
+      }
+      return path === MANIFEST_PATH || path === INDEX_PATH
+    })) {
+      if (entry.path === MANIFEST_PATH) {
+        checkManifest(await readJson(entry))
+      } else {
+        index = readSessionIndex(await readJson(entry))
+      }
+    }
+  } catch (error) {
+    throw error instanceof ArchiveError ? new BackupError('backupIncomplete') : error
+  }
+  if (!index || new Set(index.map((item) => item.id)).size !== index.length ||
+    index.length !== sessions.size || index.some((item) => !sessions.has(item.id))) {
+    fail('backupIncomplete')
+  }
+  return index ?? fail('backupIncomplete')
+}
+
 /**
  * 流式导入：manifest → user（不导入）→ 全部会话 JSON → index → 全部图片。
  * 也支持会话与图片交错排列、index 位于末尾的条目顺序。
  * 会话按至多 32 条 / 4 MiB 的批次暂存；图片全部读完后逐会话回填 MIME，不改变图片身份。
  * 写入导入暂存存储；调用方负责先清空暂存，成功后提交正式数据，失败时清理暂存。
  */
-export const importArchive = async (file: File, onProgress?: (bytes: number) => void): Promise<void> => {
+export const importArchive = async (
+  file: File,
+  onProgress?: (bytes: number) => void,
+  selectedIds?: ReadonlySet<string>
+): Promise<void> => {
   if (!(await isZipFile(file))) {
     fail('backupUnrecognized')
   }
@@ -125,12 +168,19 @@ export const importArchive = async (file: File, onProgress?: (bytes: number) => 
         // 账号信息（已脱敏）不导入；文件可能缺失。
         await skipEntry(entry)
       } else if (sessionId !== null && !index) {
-        const local = toLocalSession(readSessionFile(await readJson(entry)))
-        if (local.session.id !== sessionId || imported.has(sessionId)) {
+        if (imported.has(sessionId)) {
           fail('backupIncomplete')
         }
         imported.add(sessionId)
         currentSessionId = sessionId
+        if (selectedIds && !selectedIds.has(sessionId)) {
+          await skipEntry(entry)
+          continue
+        }
+        const local = toLocalSession(readSessionFile(await readJson(entry)))
+        if (local.session.id !== sessionId) {
+          fail('backupIncomplete')
+        }
         for (const [imagePath, id] of local.images) {
           images.set(imagePath, id)
         }
@@ -166,6 +216,7 @@ export const importArchive = async (file: File, onProgress?: (bytes: number) => 
     !index ||
     listed.size !== index.length ||
     listed.size !== imported.size ||
+    (selectedIds && [...selectedIds].some((id) => !imported.has(id))) ||
     [...imported].some((id) => !listed.has(id))
   ) {
     fail('backupIncomplete')

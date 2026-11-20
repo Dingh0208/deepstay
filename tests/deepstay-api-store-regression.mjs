@@ -359,7 +359,7 @@ await openImageHistory(importedImageSource, [{ content: '归档里有文字还�
 await db.saveFiles([{ id: importedImage.id, blob: new Blob([
   Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
 ], { type: 'image/png' }) }])
-const archive = await exportArchive([await db.loadSession(importedImageSource)])
+const archive = await exportArchive([{ ...await db.loadSession(importedImageSource), id: 'external-import-image-source', createdAt: 123456 }])
 assert.equal(await importHistory(new File([archive], 'image-history.zip', { type: 'application/zip' })), 1)
 const importedId = store.useChatStore.getState().activeId
 assert.notEqual(importedId, importedImageSource)
@@ -681,9 +681,10 @@ const actualUsage = getReplyMetrics({ usage: { total_tokens: 42 } })
 assert.equal(actualUsage.context.occupied, 42)
 assert.equal(actualUsage.context.input, undefined)
 assert.equal(actualUsage.context.reported, true)
-assert.equal(getReplyMetrics({ usage: { input_tokens: 80, cache_read_input_tokens: 20 } }).cacheHitPercentage, 0.2)
-assert.equal(getReplyMetrics({ usage: { input_tokens: 100, cache_read_input_tokens: 0 } }).cacheHitPercentage, 0)
-assert.equal(getReplyMetrics({ usage: { input_tokens: 100 } }).cacheHitPercentage, undefined)
+assert.equal(getReplyMetrics({ status: 'done', usage: { input_tokens: 80, cache_read_input_tokens: 20, output_tokens: 0 } }).cacheHitPercentage, 0.2)
+assert.equal(getReplyMetrics({ status: 'done', usage: { input_tokens: 100, cache_read_input_tokens: 0, output_tokens: 0 } }).cacheHitPercentage, 0)
+assert.equal(getReplyMetrics({ usage: { input_tokens: 100 } }), undefined,
+  'Incomplete usage without a saved request snapshot stays unknown')
 store.newChat()
 let metricRequest
 let sendText

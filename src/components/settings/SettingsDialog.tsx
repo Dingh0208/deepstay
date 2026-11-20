@@ -16,6 +16,8 @@ import {
   clearHistory,
   exportHistory,
   importHistory,
+  previewHistory,
+  type SessionIndexEntry,
 } from '../../services/chat/backup.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { recordDiagnostic } from '../../services/diagnostics/log.js'
@@ -339,7 +341,7 @@ const TtsVoiceSetting = () => {
   )
 }
 
-/** 新增导入的二次确认，叠在设置弹窗上 */
+/** Preview the archive before any local history is written. */
 const ImportConfirm = ({
   historyImport,
 }: {
@@ -356,13 +358,39 @@ const ImportConfirm = ({
           <Button variant="outlined" size="m" autoFocus onClick={historyImport.cancel}>
             {t('cancel')}
           </Button>
-          <Button variant="outlined" size="m" onClick={() => void historyImport.confirm()}>
+          <Button variant="outlined" size="m" disabled={historyImport.previewing || !historyImport.selected.size} onClick={() => void historyImport.confirm()}>
             {t('historyImportConfirm')}
           </Button>
         </>
       }
     >
       <div className={styles.importConfirmText}>{t('historyImportConfirmDescription')}</div>
+      {historyImport.previewing ? (
+        <div className={styles.importProgress} role="status">
+          <progress aria-label={t('historyPreviewing')} />
+          <span>{t('historyPreviewing')}</span>
+        </div>
+      ) : historyImport.preview ? (
+        <>
+          <div className={styles.importSelection}>
+            <span>{t('historyPreviewCount', { count: historyImport.preview.length, selected: historyImport.selected.size })}</span>
+            <button type="button" onClick={historyImport.toggleAll}>
+              {t(historyImport.selected.size === historyImport.preview.length ? 'historyDeselectAll' : 'historySelectAll')}
+            </button>
+          </div>
+          <div className={styles.importList}>
+            {historyImport.preview.map((session) => (
+              <label key={session.id} className={styles.importOption}>
+                <input type="checkbox" checked={historyImport.selected.has(session.id)} onChange={() => historyImport.toggle(session.id)} />
+                <span>
+                  <strong>{session.title || t('historyUntitledChat')}</strong>
+                  <small>{t('historyPreviewMessages', { count: session.message_count })} · {new Date(session.updated_at).toLocaleDateString()}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </>
+      ) : null}
     </Modal>
   )
 }
@@ -461,16 +489,54 @@ const SettingCell = ({
   )
 }
 
-/** 选文件后先确认；确认后串行导入，成功新增会话，失败保留原有记录。 */
+/** Read-only preview, then import selected chats serially and merge missing source messages. */
 const useHistoryImport = () => {
   const [file, setFile] = useState<File | null>(null)
+  const [preview, setPreview] = useState<SessionIndexEntry[] | null>(null)
+  const [selected, setSelected] = useState(new Set<string>())
+  const [previewing, setPreviewing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
   const [progress, setProgress] = useState(0)
   const importing = useRef(false)
+  const previewVersion = useRef(0)
+
+  const cancel = () => {
+    previewVersion.current++
+    setFile(null)
+    setPreview(null)
+    setSelected(new Set())
+    setPreviewing(false)
+  }
+
+  const select = async (next: File) => {
+    const version = ++previewVersion.current
+    setFile(next)
+    setPreview(null)
+    setSelected(new Set())
+    setStatus(null)
+    setPreviewing(true)
+    try {
+      const sessions = await previewHistory(next)
+      if (version !== previewVersion.current) {
+        return
+      }
+      setPreview(sessions.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at)))
+      setSelected(new Set(sessions.map((session) => session.id)))
+    } catch (error) {
+      if (version === previewVersion.current) {
+        setFile(null)
+        setStatus(errorStatus('historyImportFailed', error))
+      }
+    } finally {
+      if (version === previewVersion.current) {
+        setPreviewing(false)
+      }
+    }
+  }
 
   const confirm = async () => {
-    if (!file || importing.current) {
+    if (!file || !preview || !selected.size || previewing || importing.current) {
       return
     }
     importing.current = true
@@ -479,22 +545,35 @@ const useHistoryImport = () => {
     setProgress(0)
     setStatus(null)
     try {
-      const count = await importHistory(file, setProgress)
+      const count = await importHistory(file, setProgress, selected)
       recordDiagnostic({ area: 'history', operation: 'import', outcome: 'ok' })
-      setStatus({ key: count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
-    } catch {
+      setStatus({ key: count === 0 ? 'historyAlreadyImported' : count === 1 ? 'historyImportedOne' : 'historyImported', params: { count } })
+    } catch (error) {
       recordDiagnostic({ area: 'history', operation: 'import', outcome: 'failed' })
-      setStatus({ key: 'historyImportFailed', error: true })
+      setStatus(errorStatus('historyImportFailed', error))
     } finally {
       importing.current = false
       setBusy(false)
     }
   }
 
-  return { file, busy, progress, status, select: setFile, cancel: () => setFile(null), confirm }
+  return {
+    file, preview, selected, previewing, busy: busy || previewing, importing: busy,
+    progress, status, select, cancel, confirm,
+    toggle: (id: string) => setSelected((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    }),
+    toggleAll: () => setSelected(selected.size === preview?.length ? new Set() : new Set(preview?.map((session) => session.id))),
+  }
 }
 
-/** 导入作为独立会话新增，保留本地全部会话与附件。 */
+/** Selection preview never overwrites local history. */
 const ImportHistory = ({
   historyImport,
   disabled,
@@ -533,14 +612,14 @@ const ImportHistory = ({
                 const file = event.target.files?.[0]
                 event.target.value = ''
                 if (file) {
-                  historyImport.select(file)
+                  void historyImport.select(file)
                 }
               }}
             />
           </>
         }
       />
-      {historyImport.busy ? (
+      {historyImport.importing ? (
         <div className={styles.importProgress}>
           <progress aria-label={t('historyImporting')} value={historyImport.progress} max={100} />
           <span>{historyImport.progress}%</span>

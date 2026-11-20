@@ -18,12 +18,15 @@ const baselineThrottleCode = execFileSync('git', ['show', `${baselineRevision}:s
 const mocks = new Map([
   ['i18n/index.ts', 'export const useTranslate=()=>key=>key;'],
   ['app/viewport.ts', 'export const useIsMobile=()=>globalThis.__mobile;'],
-  ['services/chat/store.ts', 'export const selectMessageVersion=(...args)=>globalThis.__selection=args; export const deleteMessages=()=>true;'],
+  ['services/chat/store.ts', 'export const selectMessageVersion=(...args)=>globalThis.__selection=args; export const deleteMessages=()=>true; export const deleteMessageRound=async(...args)=>{globalThis.__deletedRound=args;return true};'],
   ['services/settings.ts', 'export const addFavoriteMessages=()=>{};'],
   ['services/chat/historySearch.ts', 'export const useHistoryTarget=Object.assign(()=>globalThis.__historyTarget??{}, {setState:target=>globalThis.__historyTarget=target});'],
   ['components/search/searchPanelState.ts', 'export const closeSearchPanel=()=>{};'],
   ['components/messages/AssistantMessage.tsx', 'export const AssistantMessage=()=>null;'],
   ['components/messages/UserMessage.tsx', 'export const UserMessage=()=>null;'],
+  ['components/chatInput/ChatInput.tsx', 'export const ChatInput=()=>null;'],
+  ['components/session/MobileHeader.tsx', 'export const MobileHeader=()=>null;'],
+  ['components/session/Welcome.tsx', 'export const Welcome=()=>null;'],
   ['components/base/IconButton.tsx', 'export const IconButton=()=>null;'],
   ['components/base/Modal.tsx', 'export const Modal=()=>null;'],
   ['components/base/icons.tsx', 'export const IconCheckOutline16=()=>null; export const IconCopyOutline16=()=>null; export const IconChevronDownOutline14=()=>null; export const IconHeartOutline16=()=>null; export const IconTrashOutline16=()=>null;'],
@@ -348,6 +351,51 @@ assert.equal(pendingFrames.size, 1)
 instance.cleanup()
 assert.equal(pendingFrames.size, 0)
 checks.push('Actual MessageList coalesces 20 resize requests into one frame/read-write pass, lets the user pause and resume following while streaming, follows viewport resizing, preserves branch anchor, ignores branch selection while streaming, resumes on a new message and cancels work on unmount')
+
+const deleteInstance = runner(MessageList)
+const deleteProps = { session, streaming: false, footer: null }
+let deleteTree = deleteInstance.render(deleteProps)
+find(deleteTree, node => typeof node.props?.onDelete === 'function').props.onDelete('u2')
+deleteTree = deleteInstance.render(deleteProps)
+let deleteDialog = find(deleteTree, node => node.props?.title === 'deleteMessageRound')
+assert.ok(deleteDialog, 'Delete turn opens a confirmation before writing')
+assert.equal(globalThis.__deletedRound, undefined)
+deleteDialog.props.onClose()
+deleteTree = deleteInstance.render(deleteProps)
+assert.equal(find(deleteTree, node => node.props?.title === 'deleteMessageRound'), null)
+assert.equal(globalThis.__deletedRound, undefined, 'Cancelling does not delete any message')
+find(deleteTree, node => typeof node.props?.onDelete === 'function').props.onDelete('u2')
+deleteTree = deleteInstance.render({ ...deleteProps, streaming: true })
+deleteDialog = find(deleteTree, node => node.props?.title === 'deleteMessageRound')
+let confirmRound = find(deleteDialog.props.footer, node => node.props?.variant === 'danger')
+assert.equal(confirmRound.props.disabled, true)
+await confirmRound.props.onClick()
+assert.equal(globalThis.__deletedRound, undefined, 'A generation started while confirming still blocks deletion')
+deleteTree = deleteInstance.render(deleteProps)
+deleteDialog = find(deleteTree, node => node.props?.title === 'deleteMessageRound')
+confirmRound = find(deleteDialog.props.footer, node => node.props?.variant === 'danger')
+await confirmRound.props.onClick()
+await new Promise(resolve => setImmediate(resolve))
+assert.deepEqual(globalThis.__deletedRound, ['fixture', 'u2'])
+assert.equal(find(deleteInstance.render(deleteProps), node => node.props?.title === 'deleteMessageRound'), null)
+deleteInstance.cleanup()
+checks.push('Delete turn requires confirmation, cancelling leaves messages intact, generation blocks confirmation, and success closes the dialog')
+
+// Duplicate sibling keys left old mobile headers in the DOM when switching sessions.
+const { SessionView } = await import(new URL('components/session/SessionView.tsx', src))
+for (const mobile of [true, false]) {
+  globalThis.__mobile = mobile
+  const view = runner(SessionView)
+  for (const id of ['chat-a', 'chat-b', 'chat-a']) {
+    const rendered = view.render({ session: { ...session, id }, streaming: false, siderCollapsed: false })
+    const children = rendered.props.children.filter(Boolean)
+    const keys = children.map(child => child.key).filter(key => key !== undefined && key !== null)
+    assert.equal(new Set(keys).size, keys.length, 'A session header and message list must have distinct sibling identity')
+    assert.equal(children.filter(child => child.props?.session?.id === id).length, 1)
+  }
+  view.cleanup()
+}
+checks.push('Mobile and desktop session views keep unique sibling keys across repeated session changes')
 
 // A long conversation should not mount every historical Markdown component on open.
 const longSession = { id: 'long-fixture', rootMessageId: 'long-0', messages: Array.from({ length: 240 }, (_, index) => ({

@@ -6,7 +6,7 @@ import {
   getVisibleMessages,
   type MessageVersions,
 } from '../../services/chat/branches.js'
-import { deleteMessages, selectMessageVersion } from '../../services/chat/store.js'
+import { deleteMessageRound, deleteMessages, selectMessageVersion } from '../../services/chat/store.js'
 import { useHistoryTarget } from '../../services/chat/historySearch.js'
 import type { AssistantMessage as AssistantReply, Message, Session } from '../../services/chat/types.js'
 import { addFavoriteMessages } from '../../services/settings.js'
@@ -81,8 +81,10 @@ export const MessageList = ({
   const [atBottom, setAtBottom] = useState(true)
   const [selected, setSelected] = useState<Set<string> | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteRoundId, setDeleteRoundId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const chooseMessages = useCallback((id: string) => setSelected(new Set([id])), [])
+  const chooseRound = useCallback((id: string) => setDeleteRoundId(id), [])
   const previousVersions = useRef<ReadonlyMap<string, MessageVersions>>(new Map())
   const previousLastMessageId = useRef<string>()
   const lastMessageId = messages[messages.length - 1]?.id
@@ -338,6 +340,23 @@ export const MessageList = ({
       setDeleting(false)
     }
   }
+  const deleteRound = async () => {
+    if (!deleteRoundId || streaming || deleting) {
+      return
+    }
+    setDeleting(true)
+    try {
+      if (await deleteMessageRound(session.id, deleteRoundId)) {
+        setDeleteRoundId(null)
+      } else {
+        showToast({ key: 'messageDeleteFailed', type: 'error' })
+      }
+    } catch {
+      showToast({ key: 'messageDeleteFailed', type: 'error' })
+    } finally {
+      setDeleting(false)
+    }
+  }
   return (
     <div ref={isMobile ? undefined : scrollRef} className={styles.container}>
       <div ref={isMobile ? scrollRef : undefined} className={styles.scroll}>
@@ -360,6 +379,7 @@ export const MessageList = ({
                 versions={versions.get(message.id) ?? EMPTY_VERSIONS}
                 onSelectVersion={selectVersion}
                 onMultiSelect={selected ? undefined : chooseMessages}
+                onDelete={selected ? undefined : chooseRound}
               />
             ) : (
               <AssistantMessage
@@ -371,6 +391,7 @@ export const MessageList = ({
                 versions={versions.get(message.id) ?? EMPTY_VERSIONS}
                 onSelectVersion={selectVersion}
                 onMultiSelect={selected ? undefined : chooseMessages}
+                onDelete={selected ? undefined : chooseRound}
               />
             )
             return (
@@ -443,6 +464,18 @@ export const MessageList = ({
           }
         >
           {t('deleteMessagesConfirmation', { count: selected.size })}
+        </Modal>
+      ) : null}
+      {deleteRoundId ? (
+        <Modal title={t('deleteMessageRound')} onClose={() => { if (!deleting) { setDeleteRoundId(null) } }}
+          footer={
+            <>
+              <Button variant="outlined" disabled={deleting} onClick={() => setDeleteRoundId(null)}>{t('cancel')}</Button>
+              <Button variant="danger" disabled={deleting || streaming} onClick={() => void deleteRound()}>{t('delete')}</Button>
+            </>
+          }
+        >
+          {t('deleteMessageRoundConfirmation')}
         </Modal>
       ) : null}
     </div>

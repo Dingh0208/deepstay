@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import { useTranslate } from '../../i18n/index.js'
 import { copyText } from '../../utils/clipboard.js'
 import { useDismiss, VIEWPORT_PADDING } from '../base/anchored.js'
-import { IconCopyOutline16, IconEditOutline16, IconListCheckOutline16, IconRefreshOutline16 } from '../base/icons.js'
+import { IconCopyOutline16, IconEditOutline16, IconListCheckOutline16, IconRefreshOutline16, IconTrashOutline16 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
 import styles from './MessageActions.module.css'
 
@@ -26,6 +26,7 @@ export const MessageActions = ({
   onEdit,
   onRegenerate,
   onMultiSelect,
+  onDelete,
 }: {
   children: ReactNode
   className?: string
@@ -34,6 +35,7 @@ export const MessageActions = ({
   onEdit?: () => void
   onRegenerate?: () => void
   onMultiSelect?: () => void
+  onDelete?: () => void
 }) => {
   const t = useTranslate()
   const [point, setPoint] = useState<Point | null>(null)
@@ -79,7 +81,7 @@ export const MessageActions = ({
     const touch = pointerType === 'touch' ||
       (!pointerType && navigator.maxTouchPoints > 0)
     if (
-      !(text || onEdit || onRegenerate || onMultiSelect) ||
+      !(text || onEdit || onRegenerate || onMultiSelect || onDelete) ||
       !touch ||
       !event.isPrimary ||
       (event.target instanceof Element && event.target.closest(INTERACTIVE))
@@ -155,6 +157,11 @@ export const MessageActions = ({
               {onMultiSelect ? (
                 <button type="button" onClick={() => select(onMultiSelect)}>
                   <IconListCheckOutline16 /> {t('messageMultiSelect')}
+                </button>
+              ) : null}
+              {onDelete ? (
+                <button type="button" onClick={() => select(onDelete)}>
+                  <IconTrashOutline16 /> {t('deleteMessageRound')}
                 </button>
               ) : null}
             </div>,

@@ -4,7 +4,7 @@ import { memo } from 'react'
 import { useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { getUsageTotal } from '../../services/api/usage.js'
-import { IconListCheckOutline16, IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
+import { IconListCheckOutline16, IconRefreshOutline16, IconTrashOutline16, IconWarningOutline16 } from '../base/icons.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
@@ -40,6 +40,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   versions,
   onSelectVersion,
   onMultiSelect,
+  onDelete,
 }: {
   sessionId: string
   message: AssistantMessageType
@@ -49,6 +50,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   versions: MessageVersions
   onSelectVersion: SelectMessageVersion
   onMultiSelect?: (id: string) => void
+  onDelete?: (id: string) => void
 }) {
   const t = useTranslate()
   const isMobile = useIsMobile()
@@ -83,6 +85,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     regenerateReply(sessionId, message.id)
   }
   const select = onMultiSelect && !busy ? () => onMultiSelect(message.id) : undefined
+  const remove = onDelete && !busy ? () => onDelete(message.id) : undefined
   return (
     <MessageActions
       className={styles.message}
@@ -90,6 +93,7 @@ export const AssistantMessage = memo(function AssistantMessage({
       text={streaming ? undefined : copyText}
       onRegenerate={canRegenerate ? regenerate : undefined}
       onMultiSelect={select}
+      onDelete={remove}
     >
       {contextProgress ? (
         <div className={clsx(styles.waiting, styles.compressionStatus)} role="status">
@@ -208,6 +212,9 @@ export const AssistantMessage = memo(function AssistantMessage({
             />}
             {select && (!isMobile || !copyText) ? (
               <IconButton icon={<IconListCheckOutline16 />} tooltip={t('messageMultiSelect')} tooltipPlacement="bottom" onClick={select} />
+            ) : null}
+            {remove ? (
+              <IconButton icon={<IconTrashOutline16 />} tooltip={t('deleteMessageRound')} tooltipPlacement="bottom" onClick={remove} />
             ) : null}
           </div>
           {isLast && !message.questionDeleted && apiProtocol === 'deepseek' && canContinueReply(message) ? (

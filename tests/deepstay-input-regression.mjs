@@ -12,16 +12,17 @@ const mocks = new Map([
   ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value});'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
   ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconPaperclipOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
-  ['../../services/settings.js', 'export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
+  ['../../services/settings.js', 'export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek";'],
   ['../../services/api/modelCapabilities.js', 'export const supportsDeepSeekServerTools=model=>model!=="deepseek-v4-pro";'],
   ['../../services/chat/replyMetrics.js', 'export const estimateSessionContext=(session,system,tools)=>{globalThis.__estimated.push({session,system,tools});return {system:5,tools:tools.length,messages:200}};'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>globalThis.__mobile;'],
   ['../../services/chat/store.js', 'export const SYSTEM_PROMPT="default system";export const serverTools=search=>search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
   ['../../utils/object.js', 'export const hasOwn=(object,key)=>Object.hasOwn(object,key);'],
-  ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:new Map([[null,globalThis.__draft]])}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=()=>null;'],
+  ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:new Map([[null,globalThis.__draft]])}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
   ['../base/IconButton.js', 'export const IconButton=()=>null;'],
+  ['../base/Select.js', 'export const Select=()=>null;'],
   ['../base/Tooltip.js', 'export const Tooltip=()=>null;'],
   ['../settings/settingsDialogState.js', 'export const ensureApiKey=()=>true;'],
   ['./DragMask.js', 'export const DragMask=()=>null; export const useFileDrop=()=>false;'],
@@ -63,7 +64,7 @@ const find = (node, predicate) => {
 }
 try {
   const { Input } = await import(source)
-  globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture', model: 'deepseek-flash', generation: {} }
+  globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], generation: {} }
   globalThis.__chat = { streaming: {}, importingHistory: false, contextProgress: {}, sessionCache: {} }
   globalThis.__draft = { text: 'hello', attachments: [] }
   globalThis.__sent = 0
@@ -71,6 +72,7 @@ try {
   globalThis.__retries = []
   globalThis.__notices = []
   globalThis.__estimated = []
+  globalThis.__fileBatches = []
   const checks = []
   for (const mobile of [false, true]) {
     globalThis.__mobile = mobile
@@ -110,6 +112,25 @@ try {
   assert.equal(globalThis.__retries.length, 1)
   checks.push('Existing attachment retry is blocked in text-only mode, allowed for DeepSeek and still blocked during history replacement')
   globalThis.__chat.importingHistory = false
+  tree = Input({ sessionId: 'current-chat' })
+  const picker = find(tree, node => node.type === 'input' && node.props.type === 'file')
+  assert.equal(picker.props.multiple, true)
+  const files = [new File(['one'], 'first.txt'), new File(['two'], 'second.txt')]
+  const fileTarget = { files, value: 'chosen-files' }
+  picker.props.onChange({ target: fileTarget })
+  assert.deepEqual(globalThis.__fileBatches.at(-1), ['current-chat', files, 'fixture'], 'All selected files reach the existing batch upload queue')
+  assert.equal(fileTarget.value, '', 'Selecting the same files again remains possible')
+  const modelPicker = find(tree, node => node.type?.name === 'Select' && node.props.ariaLabel === 'apiModel')
+  assert.deepEqual(modelPicker.props.options.map(item => item.value), ['deepseek-flash', 'deepseek-v4-pro'])
+  const connection = { url: globalThis.__settings.apiBaseUrl, protocol: globalThis.__settings.apiProtocol, key: globalThis.__settings.apiKey }
+  globalThis.__chat.streaming['current-chat'] = { model: 'deepseek-flash' }
+  modelPicker.props.onChange('deepseek-v4-pro')
+  assert.equal(globalThis.__settings.model, 'deepseek-v4-pro')
+  assert.equal(globalThis.__chat.streaming['current-chat'].model, 'deepseek-flash', 'A quick switch does not mutate the in-flight request')
+  assert.deepEqual({ url: globalThis.__settings.apiBaseUrl, protocol: globalThis.__settings.apiProtocol, key: globalThis.__settings.apiKey }, connection)
+  delete globalThis.__chat.streaming['current-chat']
+  globalThis.__settings.model = 'deepseek-flash'
+  checks.push('Quick model switching uses configured models without changing the service or active request, and file picking forwards the complete batch')
   globalThis.__draft.text = ' /compact '
   tree = Input({ sessionId: 'current-chat' })
   find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()

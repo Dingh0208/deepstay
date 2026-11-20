@@ -16,7 +16,7 @@ import {
 } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { clearFavoriteMessages, clearPinnedSessions, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
-import { appendBranch, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
+import { appendBranch, getRoundMessageIds, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
   clearAllDrafts,
@@ -498,19 +498,42 @@ export const replaceHistory = async (write: () => Promise<void>): Promise<number
   }
 }
 
-/** 导入作为独立会话新增；保留现有缓存、草稿和正在生成的回复。 */
+/** Commit incremental imports after local writes settle, then refresh affected cached conversations. */
 export const appendStagedHistory = async (): Promise<number> => {
   await initChat()
-  const summaries = await db.commitStaging()
-  const activeId = sortSessions(summaries)[0]?.id
-  set((state) => ({
-    sessions: sortSessions([...state.sessions, ...summaries]),
-    ...(activeId ? { activeId } : {}),
-  }))
-  if (activeId) {
-    await ensureSessionLoaded(activeId)
+  set({ importingHistory: true })
+  try {
+    const targets = await db.getStagedImportTargets()
+    for (const id of targets) {
+      getStreamController(id)?.abort()
+    }
+    await Promise.all(deletionTasks)
+    await Promise.all([...targets].map((id) => waitForIdle(id)))
+    await Promise.all([...targets].map((id) => sessionLoads.get(id)?.promise))
+    for (const id of targets) {
+      if (unsavedSessions.has(id) && !await persist(id)) {
+        throw new Error('Unsaved local history must be saved before merging an import')
+      }
+    }
+    if ((await Promise.all([...targets].map((id) => pendingSaves.get(id)))).some((saved) => saved === false)) {
+      throw new Error('Unsaved local history must be saved before merging an import')
+    }
+    const summaries = await db.commitStaging()
+    const affected = new Set(summaries.map((summary) => summary.id))
+    const activeId = sortSessions(summaries)[0]?.id
+    set((state) => ({
+      sessions: sortSessions([...state.sessions.filter((summary) => !affected.has(summary.id)), ...summaries]),
+      sessionCache: Object.fromEntries(Object.entries(state.sessionCache).filter(([id]) => !affected.has(id))),
+      ...(activeId ? { activeId } : {}),
+    }))
+    if (activeId) {
+      await ensureSessionLoaded(activeId)
+    }
+    return summaries.length
+  } finally {
+    set({ importingHistory: false })
+    retrySaveSessions()
   }
-  return summaries.length
 }
 
 export const newChat = () => {
@@ -656,6 +679,11 @@ export const deleteMessages = (id: string, messageIds: readonly string[]): Promi
   const task = deleteMessageData(id, messageIds).finally(() => deletionTasks.delete(task))
   deletionTasks.add(task)
   return task
+}
+
+export const deleteMessageRound = (id: string, messageId: string): Promise<boolean> => {
+  const session = getSession(id)
+  return session ? deleteMessages(id, getRoundMessageIds(session, messageId)) : Promise.resolve(false)
 }
 
 const deleteMessageData = async (id: string, messageIds: readonly string[]): Promise<boolean> => {

@@ -467,12 +467,70 @@
 }
 
 .importConfirm {
+  width: 480px;
+  max-height: calc(var(--app-screen-height) - 32px);
+  overflow-y: auto;
   padding-top: 26px;
   padding-bottom: 24px;
 }
 
 .importConfirmText {
   color: var(--dsw-alias-label-primary);
+}
+
+.importSelection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 0 8px;
+
+  button {
+    flex-shrink: 0;
+    border: none;
+    background: transparent;
+    color: var(--dsw-alias-brand-text);
+    font: inherit;
+    cursor: pointer;
+  }
+}
+
+.importList {
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.importOption {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  cursor: pointer;
+
+  input {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    accent-color: var(--dsw-alias-button-primary-fill);
+  }
+
+  span {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
+  }
+
+  strong {
+    overflow: hidden;
+    font-weight: 400;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  small {
+    color: var(--dsw-alias-label-tertiary);
+  }
 }
 
 .deleteConfirm {

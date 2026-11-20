@@ -50,17 +50,19 @@ export const getReplyMetrics = (
   fallback?: ContextEstimate
 ) => {
   const estimates = reply?.metrics ?? fallback
-  const usage = reply?.usage
+  // Chunk usage is provisional, and interrupted replies may never receive the final counters.
+  const usage = reply?.status === undefined || reply.status === 'done' ? reply?.usage : undefined
   const reportedInput = getUsageInput(usage)
   const total = getUsageTotal(usage)
-  const output = isTokenCount(usage?.output_tokens) ? usage.output_tokens : undefined
+  const output = total !== undefined && isTokenCount(usage?.output_tokens) ? usage.output_tokens : undefined
   const cacheHitPercentage =
+    total !== undefined &&
     isTokenCount(usage?.cache_read_input_tokens) && reportedInput !== undefined && reportedInput > 0 &&
     usage.cache_read_input_tokens <= reportedInput
       ? usage.cache_read_input_tokens / reportedInput
       : undefined
   const estimatedInput = estimates && estimates.system + estimates.tools + estimates.messages
-  const input = reportedInput ?? estimatedInput
+  const input = total !== undefined ? reportedInput : estimatedInput
   if (total === undefined && input === undefined) {
     return undefined
   }

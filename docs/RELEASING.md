@@ -1,6 +1,6 @@
 # deepstay Android 发布
 
-当前版本：`v0.1.10`（Android versionCode 11）。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
+当前版本：`v0.1.11`（Android versionCode 12）。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 本地构建
 

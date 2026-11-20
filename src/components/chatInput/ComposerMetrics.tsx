@@ -31,6 +31,7 @@ export const ComposerMetrics = ({
     useSettings((state) => state.generation.contextTokens) ?? DEFAULT_CONTEXT_WINDOW
   const [open, setOpen] = useState(false)
   const metrics = getReplyMetrics(latestReply, estimatedContext)
+  const pending = latestReply?.status === 'pending' || latestReply?.status === 'streaming'
   const context = metrics?.context
   const occupied = context?.occupied ?? (empty ? 0 : undefined)
   const ratio = occupied === undefined ? undefined : occupied / windowTokens
@@ -55,7 +56,7 @@ export const ComposerMetrics = ({
         aria-expanded={open}
         onClick={() => setOpen(true)}
       >
-        {t('composerContextPercent', {
+        {pending ? t('composerContextPending') : t('composerContextPercent', {
           percentage:
             context?.reported === false ? t('composerEstimate', { value: percentage }) : percentage,
         })}
@@ -79,7 +80,7 @@ export const ComposerMetrics = ({
           }
         >
           <div className={styles.total}>
-            <span>{t(occupied === undefined ? 'composerNoUsage' : 'composerLastRequest')}</span>
+            <span>{t(pending ? 'composerUsagePending' : occupied === undefined ? 'composerNoUsage' : 'composerLastRequest')}</span>
             <strong>
               {t('composerContextAmount', { used: tokens(occupied), window: tokens(windowTokens) })}
             </strong>
@@ -88,7 +89,7 @@ export const ComposerMetrics = ({
           <progress
             className={styles.meter}
             aria-label={t('composerContextTitle')}
-            aria-valuetext={occupied === undefined ? t('composerNoUsage') : percentage}
+            aria-valuetext={pending ? t('composerContextPending') : occupied === undefined ? t('composerNoUsage') : percentage}
             value={Math.min(occupied ?? 0, windowTokens)}
             max={windowTokens}
           />

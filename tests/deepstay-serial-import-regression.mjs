@@ -125,12 +125,12 @@ try {
   await wait(() => firstRead, 'held file read')
   assert.deepEqual(queueEvents, [['first', 0]])
   releaseRead()
-  assert.deepEqual(await Promise.all([first, second]), [70, 70])
+  assert.deepEqual(await Promise.all([first, second]), [0, 0])
   const secondStart = queueEvents.findIndex(item => item[0] === 'second')
   assert.deepEqual(queueEvents[secondStart - 1], ['first', 100])
-  assert.equal((await db.loadSessionSummaries()).length, before.length + 210)
+  assert.equal((await db.loadSessionSummaries()).length, before.length + 70)
   assert.deepEqual(await db.loadSession(old.id), before[0])
-  checks.push('Concurrent import calls run strictly in queue order; repeated source IDs create independent new chats without overwriting any local chat')
+  checks.push('Concurrent import calls run strictly in queue order; repeated source IDs are skipped without creating duplicates or overwriting any local chat')
 
   const afterSuccess = await snapshot()
   const add = IDBObjectStore.prototype.add
@@ -139,7 +139,8 @@ try {
     if (this.name === 'sessions') throw new DOMException('Injected transaction failure', 'QuotaExceededError')
     return add.apply(this, args)
   }
-  try { await assert.rejects(backup.importHistory(archive, value => failedProgress.push(value)), /Injected transaction failure/) }
+  const freshArchive = new File([await exportArchive([session(999)])], 'fresh.zip')
+  try { await assert.rejects(backup.importHistory(freshArchive, value => failedProgress.push(value)), /Injected transaction failure/) }
   finally { IDBObjectStore.prototype.add = add }
   assert.ok(!failedProgress.includes(100))
   assert.deepEqual(await snapshot(), afterSuccess)
@@ -214,18 +215,12 @@ try {
   assert.ok(largeProgress.length > 50, 'Large file reports intermediate progress')
   assert.equal(largeProgress.at(-1), 100)
   const beforeRepeat = (await db.loadSessionSummaries()).length
-  await backup.importHistory(largeFile)
-  const duplicate = await db.loadSession(store.useChatStore.getState().activeId)
-  assert.notEqual(duplicate.id, largeImportedId)
-  assert.notEqual(duplicate.messages[0].files[0].id, mappedFileId)
-  assert.equal((await db.loadFile(duplicate.messages[0].files[0].id)).size, imageBytes.length)
-  assert.equal((await db.loadSessionSummaries()).length, beforeRepeat + 1)
+  assert.equal(await backup.importHistory(largeFile), 0)
+  assert.equal((await db.loadSessionSummaries()).length, beforeRepeat)
   assert.deepEqual(await db.loadSession(largeImportedId), largeImported)
-  await store.removeSession(duplicate.id)
-  assert.equal(await db.loadFile(duplicate.messages[0].files[0].id), undefined)
   assert.equal((await db.loadFile(mappedFileId)).size, imageBytes.length)
   assert.deepEqual(await db.loadSession(old.id), before[0])
-  checks.push('An 80 MiB ZIP imports serially with visible intermediate progress; repeated imports isolate attachment IDs and deleting one copy preserves the other and every original chat')
+  checks.push('An 80 MiB ZIP imports serially with visible intermediate progress; repeating it reuses the original chat and attachment without touching existing history')
 
   await backup.clearHistory()
   assert.deepEqual(await db.loadSessionSummaries(), [])

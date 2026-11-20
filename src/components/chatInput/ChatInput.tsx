@@ -7,7 +7,7 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
-import { setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { supportsDeepSeekServerTools } from '../../services/api/modelCapabilities.js'
 import { useIsMobile } from '../../app/viewport.js'
@@ -27,6 +27,7 @@ import {
 } from '../../services/chat/drafts.js'
 import { stopReadAloud } from '../../services/speech/readAloud.js'
 import { IconButton } from '../base/IconButton.js'
+import { Select } from '../base/Select.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
 import { DragMask, useFileDrop } from './DragMask.js'
@@ -77,6 +78,9 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const apiProtocol = useSettings((state) => state.apiProtocol)
   const model = useSettings((state) => state.model)
+  const models = useSettings((state) => state.models)
+  const modelOptions = useMemo(() => [...new Set([...models, model])]
+    .filter(Boolean).map((value) => ({ value, label: value })), [model, models])
   const system = useSettings((state) => state.generation.system)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
   const searchAvailable = extras && supportsDeepSeekServerTools(model)
@@ -291,6 +295,16 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
         <div className={styles.mirror} aria-hidden>
           {`${text}\n`}
         </div>
+      </div>
+      <div className={styles.modelRow}>
+        <Select
+          className={styles.modelSelect}
+          value={model}
+          options={modelOptions}
+          ariaLabel={t('apiModel')}
+          disabled={importingHistory}
+          onChange={setModel}
+        />
       </div>
       <div className={styles.functionRow}>
         {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}

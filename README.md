@@ -18,6 +18,7 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 
 - Multiple conversations, automatic titles, renaming and deletion; edit prompts, regenerate replies, and switch message branches. On touch devices, press and hold a message for its actions.
 - Open a message's actions and choose **Select messages** to favorite or delete several messages at once. The sidebar's **Favorites** opens saved messages in their original chats. Favorites stay on the device and are not included in history ZIP files.
+- **Delete turn** removes the prompt and its answer versions while keeping other turns. Switch saved models directly in the composer, and select multiple attachments in one file picker action.
 - Streaming replies, deep thinking, search, link reading, and source citations.
 - Attachments, voice input, and read-aloud replies.
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.
@@ -28,7 +29,7 @@ Settings → General includes **Check for updates**, with a 10-second timeout. O
 - Search local and imported chat history from the sidebar, choose newest or oldest first, and jump to a matching message. Query the DeepSeek balance next to Fetch models in **Settings → Model API**.
 - On mobile, Enter inserts a newline; only the send button submits a message.
 - Type `/compact` in a chat to compress long history manually, or turn on automatic context compression in Chat & AI. Original messages remain on the device.
-- History ZIP files import through a serial queue with a progress bar; imported chats are added separately while all existing history is kept.
+- Preview history ZIP conversations and select which to import. A serial queue shows progress, skips duplicates and adds missing messages while keeping existing local history.
 
 Capabilities depend on the upstream API and account permissions. The default service is `https://api.deepseek.com`: chat uses Anthropic-compatible Messages / Files APIs, speech uses ASR / TTS, and search, link reading and titles require the default DeepSeek extensions. OpenAI-compatible mode uses `/v1/chat/completions` for text and `reasoning_content` streams. Unsupported attachment, search and speech actions are hidden. Switching providers sends the text of existing history while preserving the original local records. Provider-specific parameters and capabilities may differ.
 
@@ -46,7 +47,7 @@ Chat backgrounds use a separate local IndexedDB store and are excluded from hist
 
 This version has no accounts, cloud sync, or cross-device sync. Browser and Android data are separate. Uninstalling, clearing storage, or changing browser profiles can remove local history.
 
-Settings → Data can export, import, or clear history. After confirmation, imports **add separate chats and keep all existing history**, including when importing the same file again. Exports include conversations and locally available original images, but exclude API keys, settings, and original non-image attachments. See the [archive format documentation (Chinese)](src/services/chat/history/README.md). Clearing local history does not delete files already uploaded to the upstream API.
+Settings → Data can export, import, or clear history. DeepSeek / deepstay v3 ZIP imports **keep all existing history and local continuations**, let you select conversations, skip duplicates and append missing messages from the same source. Older imports without source metadata are deduplicated only when their complete messages match; uncertain older incremental archives remain separate copies. Exports include conversations and locally available original images, but exclude API keys, settings, and original non-image attachments. See the [archive format documentation (Chinese)](src/services/chat/history/README.md). Clearing local history does not delete files already uploaded to the upstream API.
 
 ## Development
 

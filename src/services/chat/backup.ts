@@ -5,6 +5,13 @@ import { appendStagedHistory, replaceHistory, useChatStore } from './store.js'
 import type { Session } from './types.js'
 
 export { BackupError } from './history/errors.js'
+export type { SessionIndexEntry } from './history/format.js'
+
+/** Preview never creates staging records or changes local history. */
+export const previewHistory = async (file: File) => {
+  const { previewArchive } = await import('./history/importArchive.js')
+  return previewArchive(file)
+}
 
 // 导入、导出与全部删除串行处理，避免读取归档时数据被清空或两个导入事务交错。
 let backupQueue: Promise<unknown> = Promise.resolve()
@@ -41,8 +48,15 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
   })
 
 /** 先流式校验和暂存，再原子新增会话与图片；失败保留原有记录。 */
-export const importHistory = (file: File, onProgress?: (percent: number) => void): Promise<number> =>
+export const importHistory = (
+  file: File,
+  onProgress?: (percent: number) => void,
+  selectedIds?: ReadonlySet<string>
+): Promise<number> =>
   enqueueBackup(async () => {
+    if (selectedIds?.size === 0) {
+      return 0
+    }
     let progress = -1
     const report = (percent: number) => {
       if (percent > progress) {
@@ -55,7 +69,7 @@ export const importHistory = (file: File, onProgress?: (percent: number) => void
     await checkArchiveFormat(file)
     try {
       await db.clearStaging()
-      await importArchive(file, (bytes) => report(Math.min(95, Math.floor(bytes / file.size * 95))))
+      await importArchive(file, (bytes) => report(Math.min(95, Math.floor(bytes / file.size * 95))), selectedIds)
       report(97)
       const count = await appendStagedHistory()
       report(100)

@@ -137,6 +137,13 @@ export type Session = {
   rootMessageId?: string | null
   /** 缓存提示：消息数组本身就是完整选中路径时为 true。 */
   linearMessagePath?: boolean
+  /** Stable archive identity and already-seen nodes; repeated imports only add new source messages. */
+  importSource?: {
+    id: string
+    createdAt: number
+    messageIds: Record<string, string>
+    fileIds: Record<string, string>
+  }
   contextMemory?: ContextMemory
 }
 

@@ -16,8 +16,8 @@ for (const release of notes) {
   assert.equal(release.changes.length, [...section.matchAll(/^- /gm)].length,
     `Every ${release.version} changelog entry must appear in the in-app history`)
 }
-assert.ok(notes[0].version === '0.1.10', 'Newest release must lead the list')
-assert.ok(notes[0].changes[0].includes('缓存统计'), 'History retains exact changelog text')
+assert.ok(notes[0].version === '0.1.11', 'Newest release must lead the list')
+assert.ok(notes[0].changes[0].includes('缓存命中率'), 'History retains exact changelog text')
 
 const original = await readFile(new URL('../src/services/appUpdates.ts', import.meta.url), 'utf8')
 const mockCreate = `const create = (initializer) => {
@@ -72,7 +72,7 @@ const initialize = async (module) => {
 
 const listeners = new Map()
 globalThis.document = {
-  querySelector: () => ({ content: '0.1.10' }),
+  querySelector: () => ({ content: '0.1.11' }),
   addEventListener: (name, listener) => listeners.set(name, listener),
   removeEventListener: (name, listener) => {
     if (listeners.get(name) === listener) listeners.delete(name)
@@ -99,7 +99,7 @@ globalThis.localStorage = localStorageFrom({ 'chat-demo:api-key': 'old-local-con
 const migrated = await compile('android')
 assert.equal((await initialize(migrated)).releaseNotesOpen, true,
   'An existing pre-0.1.8 install without a seen-version marker still shows the first upgrade notice')
-assert.equal(globalThis.localStorage.getItem('deepstay:last-seen-version'), '0.1.10')
+assert.equal(globalThis.localStorage.getItem('deepstay:last-seen-version'), '0.1.11')
 migrated.closeReleaseNotes()
 migrated.openReleaseNotes()
 assert.equal(migrated.useUpdateState.getState().recentReleaseNotes, false,
@@ -112,13 +112,13 @@ const webUpgrade = await initialize(await compile('web'))
 assert.equal(webUpgrade.releaseNotesOpen, true, 'A web install that has not seen the current app version should show notes')
 assert.equal(webUpgrade.hasUpdate, true, 'An available release should activate the Settings indicator state')
 
-globalThis.__release = { version: '0.1.10' }
-globalThis.localStorage = localStorageFrom({ 'deepstay:last-seen-version': '0.1.10' })
+globalThis.__release = { version: '0.1.11' }
+globalThis.localStorage = localStorageFrom({ 'deepstay:last-seen-version': '0.1.11' })
 const currentInstall = await initialize(await compile('web'))
 assert.equal(currentInstall.releaseNotesOpen, false, 'An already-seen version should not reopen update notes')
 assert.equal(currentInstall.hasUpdate, false, 'The update indicator should stay clear when versions match')
 
-globalThis.localStorage = localStorageFrom({ 'deepstay:last-seen-version': '0.1.10' })
+globalThis.localStorage = localStorageFrom({ 'deepstay:last-seen-version': '0.1.11' })
 const stale = await compile('web')
 stale.useUpdateState.setState({ hasUpdate: true, value: { status: 'available', release: { version: '0.2.0' } } })
 await stale.checkForUpdates(false)
@@ -146,7 +146,7 @@ await manual
 assert.equal(concurrent.useUpdateState.getState().value.status, 'available')
 listeners.get('visibilitychange')()
 assert.equal(requests, 2, 'Returning to the foreground starts a fresh check after the previous one finishes')
-respond({ version: '0.1.10' })
+respond({ version: '0.1.11' })
 await new Promise((resolve) => setImmediate(resolve))
 assert.equal(concurrent.useUpdateState.getState().hasUpdate, false)
 cleanup()

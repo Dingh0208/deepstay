@@ -180,6 +180,25 @@ export const selectVersion = (original: Session, messageId: string): Session => 
   }
 }
 
+/** 一轮包括提问及它的直接回答版本；已失去原提问的回答只删除自身。 */
+export const getRoundMessageIds = (original: Session, messageId: string): string[] => {
+  const session = normalizeSession(original)
+  const message = session.messages.find((item) => item.id === messageId)
+  if (!message) {
+    return []
+  }
+  const question = message.role === 'user'
+    ? message
+    : !message.questionDeleted
+      ? session.messages.find((item) => item.id === message.parentId && item.role === 'user')
+      : undefined
+  return question
+    ? session.messages.filter((item) => item.id === question.id ||
+        (item.role === 'assistant' && !item.questionDeleted && item.parentId === question.id))
+      .map((item) => item.id)
+    : [message.id]
+}
+
 /** 删除指定节点，将保留的分支接到最近的保留祖先。 */
 export const removeBranchMessages = (original: Session, ids: ReadonlySet<string>): Session => {
   if (!original.messages.some((message) => ids.has(message.id))) {

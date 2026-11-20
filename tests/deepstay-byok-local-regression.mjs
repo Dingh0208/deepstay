@@ -101,6 +101,10 @@ try {
   const extra = await backup.importHistory(new File([archive.blob], archive.name, { type: 'application/zip' }))
   assert.equal(extra, 1)
   assert.deepEqual(settings.useSettings.getState().favoriteMessages, savedFavorites)
+  assert.equal((await db.loadSessionSummaries()).length, 1, 'Reimporting the same local export is deduplicated')
+  const { exportArchive } = await import(new URL('services/chat/history/exportArchive.ts', sourceRoot))
+  const independent = await exportArchive([{ ...session, id: randomUUID(), createdAt: session.createdAt + 1 }])
+  assert.equal(await backup.importHistory(new File([independent], 'independent.zip')), 1)
   const importedId = (await db.loadSessionSummaries()).find((summary) => summary.id !== id).id
   const importedMessage = (await db.loadSession(importedId)).messages[0]
   settings.addFavoriteMessages(importedId, [importedMessage.id])

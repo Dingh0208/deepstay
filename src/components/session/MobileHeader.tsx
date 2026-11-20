@@ -10,7 +10,7 @@ import styles from './MobileHeader.module.css'
 export const MobileHeader = (props: { title?: undefined } | { title: string; onJumpToFirst: () => void }) => {
   const t = useTranslate()
   return (
-    <div className={styles.header}>
+    <div className={styles.header} data-mobile-chat-header="">
       <IconButton
         size="xl"
         tone="primary"

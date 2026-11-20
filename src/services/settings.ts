@@ -252,6 +252,11 @@ export const setApiConnection = (connection: Pick<Settings, 'apiKey' | 'apiBaseU
   useSettings.setState(connection)
 }
 
+export const setModel = (model: string) => {
+  write(KEYS.model, model)
+  useSettings.setState({ model })
+}
+
 export const setThinkingCollapsed = (thinkingCollapsed: boolean) => {
   write(KEYS.thinkingCollapsed, String(thinkingCollapsed))
   useSettings.setState({ thinkingCollapsed })

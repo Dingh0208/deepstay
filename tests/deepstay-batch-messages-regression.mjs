@@ -106,6 +106,8 @@ try {
   )
 
   const archive = await backup.exportHistory()
+  const { exportArchive } = await import(new URL('services/chat/history/exportArchive.ts', sourceRoot))
+  archive.blob = await exportArchive(await Promise.all((await db.loadSessionSummaries()).map(async summary => ({ ...await db.loadSession(summary.id), id: summary.id + '-external', createdAt: summary.createdAt + 1 }))))
   assert.equal(await backup.importHistory(new File([archive.blob], archive.name)), 2)
   const importedId = store.useChatStore.getState().sessions.find(
     summary => summary.title === after.title && summary.id !== sessionId

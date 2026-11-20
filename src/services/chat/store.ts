@@ -69,6 +69,19 @@ const FILE_RETRY_LIMIT = 2
 const FILE_RETRY_BASE_DELAY = 1000
 // Reuse a confirmed input budget on the same API configuration during this app session.
 let learnedContextLimit: { route: string; key: string; budget: number } | undefined
+
+/** Read-only budget for the next request, including a provider-confirmed limit on this route. */
+export const getEffectiveContextInputBudget = (): number => {
+  const { apiKey, model, thinking, search, generation } = useSettings.getState()
+  const connection = getApiConnection()
+  const serverSearch = supportsDeepSeekExtras(connection) && supportsDeepSeekServerTools(model) && search
+  const route = JSON.stringify([connection.baseUrl, connection.protocol, model, thinking, serverSearch])
+  const window = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
+  return learnedContextLimit?.route === route && learnedContextLimit.key === apiKey
+    ? Math.min(window, learnedContextLimit.budget)
+    : window
+}
+
 let rejectedHistoryImages: { route: string; key: string; ids: Set<string> } | undefined
 // 让浏览器先处理交互和绘制，再准备请求或继续处理缓冲中的数据。
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0))

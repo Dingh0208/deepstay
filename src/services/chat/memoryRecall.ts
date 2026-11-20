@@ -124,10 +124,13 @@ type RecallOptions = {
   /** 调用方已校验当前路径和来源指纹的有效记录。 */
   records: MemoryRecord[]
   signal: AbortSignal
+  yieldToMain?: () => Promise<void>
 }
 
 /** 从本会话原文取回有限证据，不在召回过程中调用模型或修改原文。 */
-export const recallMemory = async ({ sessionId, history, question, recent, records, signal }: RecallOptions): Promise<string> => {
+export const recallMemory = async ({ sessionId, history, question, recent, records, signal,
+  yieldToMain = () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+}: RecallOptions): Promise<string> => {
   throwIfAborted(signal)
   const terms = termsOf(question.content, recent)
   if (terms.length === 0) {
@@ -150,7 +153,7 @@ export const recallMemory = async ({ sessionId, history, question, recent, recor
       }
     }
     if (index % 32 === 31) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      await yieldToMain()
       throwIfAborted(signal)
     }
   }
@@ -214,13 +217,13 @@ export const recallMemory = async ({ sessionId, history, question, recent, recor
         scanned += CHUNK_CHARS
         if (scanned >= 262_144) {
           scanned = 0
-          await new Promise<void>((resolve) => setTimeout(resolve, 0))
+          await yieldToMain()
           throwIfAborted(signal)
         }
       }
       messages += 1
       if (messages % 32 === 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0))
+        await yieldToMain()
         throwIfAborted(signal)
       }
     }

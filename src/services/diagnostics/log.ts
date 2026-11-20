@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { diagnosticEnvironment } from './environment.js'
 
 const KEY = 'deepstay:diagnostics'
 const LIMIT = 200
@@ -78,5 +79,6 @@ export const recordDiagnostic = (value: Diagnostic) => {
 export const diagnosticText = () => JSON.stringify({
   app: 'DeepStay',
   format: 1,
+  environment: diagnosticEnvironment(),
   entries: useDiagnosticLog.getState().entries,
 }, null, 2)

@@ -14,7 +14,7 @@ export const supportsDiagnosticShare = () =>
 export const downloadDiagnostics = async () => {
   const text = diagnosticText()
   if (Capacitor.getPlatform() === 'android') {
-    // Diagnostic entries contain only ASCII timestamps, operation codes and status values.
+    // Entries and the environment whitelist contain only ASCII codes and version numbers.
     await localFiles.save({ name: filename, data: btoa(text), mimeType })
     return
   }

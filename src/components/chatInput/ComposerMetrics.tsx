@@ -11,6 +11,7 @@ import styles from './ComposerMetrics.module.css'
 export const ComposerMetrics = ({
   latestReply,
   estimatedContext,
+  estimating,
   empty,
   compactDisabled,
   progress,
@@ -19,6 +20,7 @@ export const ComposerMetrics = ({
 }: {
   latestReply?: AssistantMessage
   estimatedContext?: ContextEstimate
+  estimating?: boolean
   empty: boolean
   compactDisabled: boolean
   progress?: string
@@ -30,9 +32,9 @@ export const ComposerMetrics = ({
   const windowTokens =
     useSettings((state) => state.generation.contextTokens) ?? DEFAULT_CONTEXT_WINDOW
   const [open, setOpen] = useState(false)
-  const metrics = getReplyMetrics(latestReply, estimatedContext)
+  const metrics = getReplyMetrics(latestReply)
   const pending = latestReply?.status === 'pending' || latestReply?.status === 'streaming'
-  const context = metrics?.context
+  const context = getReplyMetrics(undefined, estimatedContext)?.context
   const occupied = context?.occupied ?? (empty ? 0 : undefined)
   const ratio = occupied === undefined ? undefined : occupied / windowTokens
   const speed =
@@ -56,7 +58,7 @@ export const ComposerMetrics = ({
         aria-expanded={open}
         onClick={() => setOpen(true)}
       >
-        {pending ? t('composerContextPending') : t('composerContextPercent', {
+        {pending ? t('composerContextPending') : estimating ? t('composerContextEstimating') : !estimatedContext ? t('composerNoUsage') : t('composerContextPercent', {
           percentage:
             context?.reported === false ? t('composerEstimate', { value: percentage }) : percentage,
         })}
@@ -80,17 +82,17 @@ export const ComposerMetrics = ({
           }
         >
           <div className={styles.total}>
-            <span>{t(pending ? 'composerUsagePending' : occupied === undefined ? 'composerNoUsage'
-              : context?.reported ? 'composerLastRequest' : latestReply?.metrics ? 'composerLastRequestEstimate' : 'composerCurrentEstimate')}</span>
+            <span>{t(pending ? 'composerUsagePending' : estimating ? 'composerContextEstimating' : !estimatedContext ? 'composerNoUsage' : 'composerNextRequestEstimate')}</span>
             <strong>
               {t('composerContextAmount', { used: tokens(occupied), window: tokens(windowTokens) })}
             </strong>
             {context?.reported === false ? <span>{t('composerEstimated')}</span> : null}
+            {metrics?.context.reported ? <span>{t('composerLastRequestAmount', { used: tokens(metrics.context.occupied) })}</span> : null}
           </div>
           <progress
             className={styles.meter}
             aria-label={t('composerContextTitle')}
-            aria-valuetext={pending ? t('composerContextPending') : occupied === undefined ? t('composerNoUsage') : percentage}
+            aria-valuetext={pending ? t('composerContextPending') : estimating ? t('composerContextEstimating') : !estimatedContext ? t('composerNoUsage') : percentage}
             value={Math.min(occupied ?? 0, windowTokens)}
             max={windowTokens}
           />

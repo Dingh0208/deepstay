@@ -42,6 +42,21 @@ const checkAbort = (signal: AbortSignal) => {
   }
 }
 
+const yieldPrediction = () => {
+  const scheduler = (globalThis as typeof globalThis & { scheduler?: { yield: () => Promise<void> } }).scheduler
+  if (scheduler?.yield) {return scheduler.yield()}
+  // Timer clamping can otherwise add seconds to a read-only scan of an 80 MB archive.
+  return new Promise<void>((resolve) => {
+    const channel = new MessageChannel()
+    channel.port1.onmessage = () => {
+      channel.port1.close()
+      channel.port2.close()
+      resolve()
+    }
+    channel.port2.postMessage(null)
+  })
+}
+
 /** Includes reminders, continuation blocks and tools; file contents have no local tokenizer. */
 export const estimateRequestParts = (
   request: Pick<CreateMessageRequest, 'system' | 'messages' | 'tools'>
@@ -191,8 +206,16 @@ const boundedRecords = (records: MemoryRecord[], budget: number): MemoryRecord[]
 }
 
 /** Builds a bounded send snapshot. Original messages and legacy fixed memory are untouched. */
-export const prepareContextMemory = async (
-  options: PrepareOptions
+export const prepareContextMemory = (options: PrepareOptions) => buildContextMemory(options)
+
+/** A prediction only: no extraction/commit, and saved fingerprints are metadata, not verified evidence. */
+export const previewContextMemory = (
+  options: Omit<PrepareOptions, 'mode' | 'apiKey' | 'onCommit' | 'onProgress'>
+) => buildContextMemory({ ...options, mode: 'reuse', apiKey: '', onCommit: async () => false }, true)
+
+const buildContextMemory = async (
+  options: PrepareOptions,
+  estimateOnly = false
 ): Promise<{
   history: Message[]
   systemMemory: string
@@ -260,10 +283,22 @@ export const prepareContextMemory = async (
   const path = new Map(rounds.flat().map((message) => [message.id, message]))
   const sourceOrder = new Map(Array.from(path.keys(), (id, index) => [id, index]))
   const fingerprints = new Map<string, MemoryMessage>()
+  const savedFingerprints = new Map<string, string>()
+  if (estimateOnly) {
+    for (const item of [...snapshot.records, ...snapshot.segments]) {
+      if (item.sessionId !== sessionId || item.extractorVersion !== MEMORY_VERSION) {continue}
+      for (const source of item.sources) {
+        savedFingerprints.set(source.messageId, source.fingerprint)
+      }
+    }
+  }
   const sourceOf = async (message: Message): Promise<MemoryMessage> => {
     let entry = fingerprints.get(message.id)
     if (!entry) {
-      entry = { message, fingerprint: await memoryFingerprint(message) }
+      // Edits create new message IDs; branch, source ranges and checkpoint IDs are still
+      // checked below. An estimate need not serialize/hash 80 MB to verify saved evidence.
+      // Sending never uses this shortcut and retains the complete source verification.
+      entry = { message, fingerprint: estimateOnly ? savedFingerprints.get(message.id) ?? '' : await memoryFingerprint(message) }
       fingerprints.set(message.id, entry)
     }
     checkAbort(signal)
@@ -587,6 +622,7 @@ export const prepareContextMemory = async (
     recent,
     records,
     signal,
+    yieldToMain: estimateOnly ? yieldPrediction : undefined,
   })
   // Keep evidence windows intact; splitting on blank lines could remove a condition or negation.
   let recalled = recall

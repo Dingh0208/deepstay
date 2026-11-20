@@ -469,6 +469,7 @@ globalThis.fetch = async (_url, init) => {
     { headers: { 'Content-Type': 'text/event-stream' } })
 }
 drafts.setDraftText(limitId, '1')
+const initialPredictionBudget = store.getEffectiveContextInputBudget()
 assert.equal(store.sendMessage(limitId), true)
 await waitIdle()
 assert.equal(limitedRequests.length, 2)
@@ -487,12 +488,31 @@ assert.deepEqual((await db.loadSession(limitId)).messages.at(-1).metrics, estima
 }))
 assert.equal((await db.loadSession(limitId)).messages.at(-1).status, 'done')
 assert.deepEqual((await db.loadSession(limitId)).messages.slice(0, limitHistory.length).map(({id})=>id), limitHistory.map(({id})=>id))
+const learnedPredictionBudget = store.getEffectiveContextInputBudget()
+assert.ok(learnedPredictionBudget < initialPredictionBudget, 'The next-request preview shares the provider-confirmed budget')
+const originalThinking = settings.useSettings.getState().thinking
+settings.setThinking(!originalThinking)
+assert.equal(store.getEffectiveContextInputBudget(), initialPredictionBudget, 'Learned limits stay on their thinking route')
+settings.setThinking(originalThinking)
+settings.setApiConnection({ ...changedB, model: 'length-limit-fixture', apiKey: 'different-fixture-key' })
+assert.equal(store.getEffectiveContextInputBudget(), initialPredictionBudget, 'A changed credential cannot inherit another account\'s learned limit')
+settings.setApiConnection({ ...changedB, model: 'length-limit-fixture' })
+assert.equal(store.getEffectiveContextInputBudget(), learnedPredictionBudget)
+const predictionModule = await import(new URL('services/chat/contextPrediction.ts', sourceRoot))
+const nextPrediction = await predictionModule.predictNextContext({
+  session: store.useChatStore.getState().sessionCache[limitId], text: '再继续', files: [],
+  system: settings.useSettings.getState().generation.system ?? store.SYSTEM_PROMPT,
+  tools: [], model: 'length-limit-fixture', thinking: originalThinking,
+  connection: { baseUrl: changedB.apiBaseUrl, protocol: changedB.apiProtocol },
+  inputBudget: learnedPredictionBudget, signal: new AbortController().signal,
+})
+assert.ok(nextPrediction.system + nextPrediction.tools + nextPrediction.messages <= learnedPredictionBudget)
 drafts.setDraftText(limitId, '再继续')
 assert.equal(store.sendMessage(limitId), true)
 await waitIdle()
 assert.equal(limitedRequests.length, 3, 'the same provider/model should reuse the successful budget')
 assert.equal(limitedRequests[2].messages.at(-1).content, '再继续')
-checks.push('An explicit provider length rejection retries once with fewer complete turns, preserves the latest question and local history, and reuses the smaller successful budget')
+checks.push('An explicit provider length rejection retries once with fewer complete turns, preserves the latest question and local history, and shares the smaller credential/route-bound budget with next-request prediction')
 
 settings.setApiConnection({ ...changedB, model: 'always-reject-length' })
 let repeatedRejections = 0

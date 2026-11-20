@@ -174,6 +174,20 @@ export const deleteCharacterPreset = async (id: string): Promise<void> => {
 export const hasContextCheckpoint = async (id: string): Promise<boolean> =>
   (await (await getDB()).get('memoryState', id))?.hasCheckpoint === true
 
+/** Composer estimates reuse the loaded session; never clone its potentially large original text. */
+export const loadDerivedMemory = async (
+  sessionId: string
+): Promise<Pick<MemorySnapshot, 'state' | 'records' | 'segments'>> => {
+  const tx = (await getDB()).transaction(['memoryRecords', 'memorySegments', 'memoryState'])
+  const [state, records, segments] = await Promise.all([
+    tx.objectStore('memoryState').get(sessionId),
+    tx.objectStore('memoryRecords').index('sessionId').getAll(sessionId),
+    tx.objectStore('memorySegments').index('sessionId').getAll(sessionId),
+    tx.done,
+  ])
+  return { state: state ?? { sessionId, sourceRevision: 0, memoryRevision: 0 }, records, segments }
+}
+
 /** 原文、派生记忆及版本来自同一事务，旧会话无需预先迁移。 */
 export const loadMemorySnapshot = async (
   sessionId: string

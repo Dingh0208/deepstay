@@ -15,12 +15,14 @@ const mocks = new Map([
   ['../../services/settings.js', 'export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek";'],
   ['../../services/api/modelCapabilities.js', 'export const supportsDeepSeekServerTools=model=>model!=="deepseek-v4-pro";'],
-  ['../../services/chat/replyMetrics.js', 'export const estimateSessionContext=(session,system,tools)=>{globalThis.__estimated.push({session,system,tools});return {system:5,tools:tools.length,messages:200}};'],
+  ['../../services/api/generation.js', 'export const DEFAULT_CONTEXT_WINDOW=1000000;'],
+  ['../../services/chat/latestReminder.js', 'export const createLatestReminder=()=>"fixture reminder";'],
+  ['./useContextPrediction.js', 'export const useContextPrediction=(options,paused)=>{globalThis.__estimated.push({...options,paused});return {estimate:paused?undefined:{system:5,tools:options.tools.length,messages:200},estimating:false}};'],
   ['../../services/characters.js', 'export const characterSystemPrompt=base=>base;'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>globalThis.__mobile;'],
-  ['../../services/chat/store.js', 'export const SYSTEM_PROMPT="default system";export const serverTools=search=>search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
+  ['../../services/chat/store.js', 'export const getEffectiveContextInputBudget=()=>globalThis.__settings.generation.contextTokens??1000000;export const SYSTEM_PROMPT="default system";export const serverTools=search=>search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
   ['../../utils/object.js', 'export const hasOwn=(object,key)=>Object.hasOwn(object,key);'],
-  ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:new Map([[null,globalThis.__draft]])}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
+  ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:{get:()=>globalThis.__draft}}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
   ['../base/IconButton.js', 'export const IconButton=()=>null;'],
   ['../base/Button.js', 'export const Button=()=>null;'],
@@ -215,18 +217,26 @@ try {
   tree = Input({ sessionId: 'imported-chat' })
   metrics = find(tree, node => node.type?.name === 'ComposerMetrics')
   assert.equal(metrics.props.estimatedContext.messages, 200)
-  assert.equal(globalThis.__estimated.at(-1).system, 'Custom system\n\nSession facts')
+  assert.equal(globalThis.__estimated.at(-1).system, 'Custom system')
+  assert.equal(globalThis.__estimated.at(-1).session.contextMemory.fixed, 'Session facts', 'Fixed memory is handed to the checkpoint-aware prediction service')
+  assert.equal(globalThis.__estimated.at(-1).text, 'Unsent draft')
   assert.deepEqual(globalThis.__estimated.at(-1).tools, ['read', 'search'])
   const estimatesBefore = globalThis.__estimated.length
   tree = Input({ sessionId: 'imported-chat', latestReply: { metrics: { system: 1, tools: 0, messages: 10 } } })
-  assert.equal(globalThis.__estimated.length, estimatesBefore, 'Saved request metrics avoid a history scan during streamed renders')
+  assert.equal(globalThis.__estimated.length, estimatesBefore + 1, 'Old request metrics cannot suppress a new prediction')
+  assert.equal(find(tree, node => node.type?.name === 'ComposerMetrics').props.estimatedContext.messages, 200)
+  assert.equal(globalThis.__estimated.at(-1).inputBudget, 1_000_000)
+  globalThis.__chat.streaming['imported-chat'] = {}
+  tree = Input({ sessionId: 'imported-chat' })
+  assert.equal(globalThis.__estimated.at(-1).paused, true, 'Streaming pauses local prediction work')
   assert.equal(find(tree, node => node.type?.name === 'ComposerMetrics').props.estimatedContext, undefined)
+  delete globalThis.__chat.streaming['imported-chat']
   globalThis.__settings.model = 'deepseek-v4-pro'
   tree = Input({ sessionId: 'imported-chat' })
   assert.equal(find(tree, node => node.type === 'button' && node.props['aria-label'] === 'search'), null)
   assert.ok(find(tree, node => node.type?.name === 'VoiceButton'), 'Unsupported server tools do not disable unrelated attachment and voice capabilities')
   assert.deepEqual(globalThis.__estimated.at(-1).tools, [])
-  checks.push('Imported history receives context estimates; saved request metrics skip rescanning and Pro hides unsupported search without disabling voice')
+  checks.push('Next-request prediction receives current draft, session memory, tools and route budget even with old metrics, pauses while streaming, and Pro hides unsupported search without disabling voice')
   const evidence = { passed: true, runtime: process.version, checks, scope: 'Actual ChatInput TSX with mocked application services; verifies event handling and retry calls. Native textarea newline is left to browser.' }
   await writeFile(new URL('./deepstay-input-evidence.json', import.meta.url), JSON.stringify(evidence, null, 2) + '\n')
   console.log(JSON.stringify(evidence, null, 2))

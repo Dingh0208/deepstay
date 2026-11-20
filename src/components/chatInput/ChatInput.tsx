@@ -12,8 +12,9 @@ import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { supportsDeepSeekServerTools } from '../../services/api/modelCapabilities.js'
 import type { FilePurpose } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { compactSession, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
-import { estimateSessionContext } from '../../services/chat/replyMetrics.js'
+import { compactSession, getEffectiveContextInputBudget, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
+import { DEFAULT_CONTEXT_WINDOW } from '../../services/api/generation.js'
+import { createLatestReminder } from '../../services/chat/latestReminder.js'
 import { characterSystemPrompt } from '../../services/characters.js'
 import type { AssistantMessage } from '../../services/chat/types.js'
 import { hasOwn } from '../../utils/object.js'
@@ -42,6 +43,7 @@ import { useVoiceInput } from './useVoiceInput.js'
 import { VoiceButton } from './VoiceButton.js'
 import { Spectrum } from './Spectrum.js'
 import { ComposerMetrics } from './ComposerMetrics.js'
+import { useContextPrediction } from './useContextPrediction.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
 
@@ -86,15 +88,30 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const modelOptions = useMemo(() => [...new Set([...models, model])]
     .filter(Boolean).map((value) => ({ value, label: value })), [model, models])
   const system = useSettings((state) => state.generation.system)
+  const contextTokens = useSettings((state) => state.generation.contextTokens)
+  const apiKey = useSettings((state) => state.apiKey)
+  const inputBudget = apiKey ? getEffectiveContextInputBudget() : contextTokens ?? DEFAULT_CONTEXT_WINDOW
+  const locale = useSettings((state) => state.locale)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
   const searchAvailable = extras && supportsDeepSeekServerTools(model)
-  const estimatedContext = useMemo(() => {
-    if (!session || latestReply?.metrics) {
-      return undefined
-    }
-    const prompt = [characterSystemPrompt(system ?? SYSTEM_PROMPT, session.character), session.contextMemory?.fixed].filter(Boolean).join('\n\n')
-    return estimateSessionContext(session, prompt, searchAvailable ? serverTools(search) : [])
-  }, [session, latestReply?.metrics, system, searchAvailable, search])
+  const connection = useMemo(() => ({ baseUrl: apiBaseUrl, protocol: apiProtocol }), [apiBaseUrl, apiProtocol])
+  const tools = useMemo(() => searchAvailable ? serverTools(search) : [], [searchAvailable, search])
+  const today = new Date().toDateString()
+  const latestReminder = useMemo(() => createLatestReminder({ locale }, new Date(today)), [locale, today])
+  const uploadTasks = useUploads((state) => state.tasks)
+  const files = useMemo(() => attachments.map(({ id, file, isImage, uploadPurpose }) => ({
+      id, serverId: uploadTasks[id]?.status === 'done' ? uploadTasks[id].serverId : null,
+      name: file.name, size: file.size,
+      isImage, mimeType: resolveMimeType(file), uploadPurpose,
+    })), [attachments, uploadTasks])
+  const { estimate: estimatedContext, estimating: contextEstimating } = useContextPrediction({
+    session, text, files,
+    system: characterSystemPrompt(system ?? SYSTEM_PROMPT, session?.character),
+    tools, model, thinking, connection,
+    inputBudget,
+    memoryBudget: contextTokens,
+    latestReminder,
+  }, streaming || importingHistory || (sessionId !== null && !session))
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -462,6 +479,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       <ComposerMetrics
         latestReply={latestReply}
         estimatedContext={estimatedContext}
+        estimating={contextEstimating}
         empty={empty}
         compactDisabled={empty || importingHistory || streaming || voice.status !== 'idle'}
         progress={progress}

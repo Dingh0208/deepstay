@@ -108,7 +108,8 @@ jobs:
           KNOWN_HOSTS="$RUNNER_TEMP/deepstay-update-known-hosts"
           DOWNLOADED_APK="$RUNNER_TEMP/deepstay-update-check.apk"
           DOWNLOADED_MANIFEST="$RUNNER_TEMP/deepstay-update-check.json"
-          trap 'rm -f "$SSH_KEY" "$KNOWN_HOSTS" "$DOWNLOADED_APK" "$DOWNLOADED_MANIFEST"' EXIT
+          REMOTE_LIST="$RUNNER_TEMP/deepstay-update-list.txt"
+          trap 'rm -f "$SSH_KEY" "$KNOWN_HOSTS" "$DOWNLOADED_APK" "$DOWNLOADED_MANIFEST" "$REMOTE_LIST"' EXIT
           test -n "$UPDATE_SSH_KEY" && test -n "$UPDATE_KNOWN_HOSTS"
           printf '%s\n' "$UPDATE_SSH_KEY" > "$SSH_KEY"
           printf '%s\n' "$UPDATE_KNOWN_HOSTS" > "$KNOWN_HOSTS"
@@ -146,7 +147,14 @@ jobs:
               fi
             fi
             rm -f "$LEGACY_APK" "$LEGACY_LIST"
-            printf 'cd /var/www/deepstay/updates\nreput "release/%s" "%s"\nrename "%s" "%s"\n' "$APK_NAME" "$APK_PART" "$APK_PART" "$PUBLISHED_APK_NAME" | "${SFTP[@]}"
+            printf 'cd /var/www/deepstay/updates\nls -aln\n' | "${SFTP[@]}" > "$REMOTE_LIST"
+            PART_TYPE=$(awk -v name="$APK_PART" '$9 == name {print substr($1, 1, 1)}' "$REMOTE_LIST")
+            case "$PART_TYPE" in
+              '') UPLOAD_COMMAND=put ;;
+              '-') UPLOAD_COMMAND=reput ;;
+              *) echo "The upload staging path is not a regular file." >&2; exit 1 ;;
+            esac
+            printf 'cd /var/www/deepstay/updates\n%s "release/%s" "%s"\nrename "%s" "%s"\n' "$UPLOAD_COMMAND" "$APK_NAME" "$APK_PART" "$APK_PART" "$PUBLISHED_APK_NAME" | "${SFTP[@]}"
             verify_apk
           fi
           printf 'cd /var/www/deepstay/updates\nput release/latest.json "%s"\nrename "%s" latest.json\n' "$MANIFEST_TMP" "$MANIFEST_TMP" | "${SFTP[@]}"

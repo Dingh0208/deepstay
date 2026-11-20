@@ -25,4 +25,10 @@ Android 11 / WebView 83 隔离包从 0.1.15/code16 实际覆盖升级至 0.1.16/
 
 ## 证据范围
 
-本机证据目录 `D:/codex_documents/deepstay-port-batch3-qa-20261121/`，含两轮全量日志、网页和 Android 交互、冷启动、原生导出往返及 APK 身份记录。仅合成人物和聊天、受控网络，没有调用收费模型、上传真实对话或向他人发送分享。公开产物身份在发布完成后补充。
+本机证据目录 `D:/codex_documents/deepstay-port-batch3-qa-20261121/`，含两轮全量日志、网页和 Android 交互、冷启动、原生导出往返及 APK 身份记录。仅合成人物和聊天、受控网络，没有调用收费模型、上传真实对话或向他人发送分享。公开产物身份见下方发布核验。
+
+## 公开发布核验
+
+[v0.1.16](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.16) 已发布，[Android CI 44783560475](https://github.com/Dingh0208/deepstay/actions/runs/44783560475) 构建和发布成功，提交为 `ef4800c55dc897710f647bf030220456510570c5`。GitHub latest 与国内清单均为 0.1.16/code17。公开完整 GET 为 HTTP 200，APK 19,743,642 字节，SHA-256 为 `76036d9f67cbcc98a659ca4624a4e81e61cf63c98729d67f339ce8e1c924a2b1`，与 GitHub 附件 digest/大小和国内清单一致。
+
+实际下载 APK 的包名、versionName/code、minSdk23/targetSdk35、内置网页 0.1.16、正式签名及无开发服务器配置均通过。国内清单完整字节 SHA-256 为 `13985d60aa9d0545cb9b8ab0a07c3d3a3fa84ddbce9b9970d3941bc67a93be85`，与 GitHub 清单附件一致。公开 APK 和本地构建分别记录哈希。最终证据见上述目录 `published-release-verification.json`。

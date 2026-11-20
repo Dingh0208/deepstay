@@ -27,7 +27,6 @@ import {
   setTtsVoice,
   useSettings,
   bundledChatFonts,
-  getChatFontFamily,
   type ChatFont,
   type ThemePreference,
 } from '../../services/settings.js'
@@ -284,7 +283,7 @@ const TypographySetting = () => {
         ]} />
       } />
       <div className={styles.fontPreview} aria-live="polite">
-        <p style={{ fontFamily: getChatFontFamily(font) }}>
+        <p style={{ fontFamily: 'var(--dsw-font-family)' }}>
           Aa 你好，DeepStay · 0123456789
         </p>
         {bundledChatFonts.some((item) => item.value === font) && !chineseFonts.includes(font) ? (

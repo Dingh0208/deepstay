@@ -14,7 +14,7 @@ import {
 } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { clearFavoriteMessages, clearPinnedSessions, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
-import { appendBranch, getVisibleMessages, normalizeSession, removeBranchMessages, selectVersion } from './branches.js'
+import { appendBranch, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
 import * as db from './db.js'
 import {
   clearAllDrafts,
@@ -213,14 +213,7 @@ const updateSession = (id: string, update: (session: Session) => Session) =>
   })
 
 const updateReply = (sessionId: string, reply: AssistantMessage) =>
-  updateSession(sessionId, (session) => ({
-    ...session,
-    messages: session.messages.map((message) =>
-      message.id === reply.id
-        ? { ...reply, parentId: message.parentId, selectedChildId: message.selectedChildId }
-        : message
-    ),
-  }))
+  updateSession(sessionId, (session) => replaceSessionReply(session, reply))
 
 const persist = (sessionId: string): Promise<boolean> => {
   const session = getSession(sessionId)
@@ -779,6 +772,7 @@ export const sendMessage = (targetSessionId: string | null) => {
       updatedAt: now,
       messages: [],
       rootMessageId: null,
+      linearMessagePath: true,
     }
     sessionId = session.id
     touchSession(session.id)
@@ -1500,6 +1494,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           if (fitRequestHistory(submitted, budget, requiredSystem) !== submitted) {
             retriedContextLimit = true
             inputBudget = budget
+            learnedContextLimit = { route: contextRoute, key: apiKey, budget }
             continue
           }
         }

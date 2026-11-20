@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
+import { isSafeApiPath } from './connection.js'
 
 type ProviderHttp = {
   open(options: {
@@ -13,7 +14,56 @@ type ProviderHttp = {
   close(options: { id: string }): Promise<void>
 }
 
+export type AndroidProviderErrorCode =
+  | 'PROVIDER_DNS'
+  | 'PROVIDER_TIMEOUT'
+  | 'PROVIDER_TLS'
+  | 'PROVIDER_NETWORK'
+  | 'PROVIDER_URL'
+  | 'PROVIDER_BUSY'
+  | 'PROVIDER_CLOSED'
+
+export class AndroidProviderTransportError extends Error {
+  constructor(readonly code: AndroidProviderErrorCode) {
+    super('Provider request failed')
+    this.name = 'AndroidProviderTransportError'
+  }
+}
+
+export const normalizeAndroidProviderError = (error: unknown): AndroidProviderTransportError | null => {
+  if (error instanceof AndroidProviderTransportError) {
+    return error
+  }
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return null
+  }
+  const code = error.code
+  switch (code) {
+    case 'PROVIDER_DNS':
+    case 'PROVIDER_TIMEOUT':
+    case 'PROVIDER_TLS':
+    case 'PROVIDER_NETWORK':
+    case 'PROVIDER_URL':
+    case 'PROVIDER_BUSY':
+    case 'PROVIDER_CLOSED':
+      return new AndroidProviderTransportError(code)
+    default:
+      return null
+  }
+}
+
 const providerHttp = registerPlugin<ProviderHttp>('ProviderHttp')
+
+export const requiresAndroidHttps = (url: string): boolean => {
+  if (Capacitor.getPlatform() !== 'android') {
+    return false
+  }
+  try {
+    return new URL(url).protocol !== 'https:'
+  } catch {
+    return false
+  }
+}
 
 export const supportsAndroidProviderTransport = (url: string): boolean => {
   if (Capacitor.getPlatform() !== 'android' || !Capacitor.isPluginAvailable('ProviderHttp')) {
@@ -21,11 +71,13 @@ export const supportsAndroidProviderTransport = (url: string): boolean => {
   }
   try {
     const endpoint = new URL(url)
+    const rawPath = /^[a-z][a-z\d+.-]*:\/\/[^/?#]*([^?#]*)/i.exec(url)?.[1] ?? ''
     return (
       endpoint.protocol === 'https:' &&
       endpoint.hostname.toLowerCase() !== 'api.deepseek.com' &&
       !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash &&
-      /\/v1\/(?:models|chat\/completions)$/.test(endpoint.pathname)
+      isSafeApiPath(rawPath) &&
+      /\/(?:models|chat\/completions)$/.test(endpoint.pathname)
     )
   } catch {
     return false
@@ -100,7 +152,7 @@ export const requestAndroidProvider = async (
           if (closed) {
             return
           }
-          controller.error(error)
+          controller.error(normalizeAndroidProviderError(error) ?? error)
           close()
         }
       },
@@ -108,6 +160,6 @@ export const requestAndroidProvider = async (
     }, { highWaterMark: 0 }), init)
   } catch (error) {
     close()
-    throw error
+    throw normalizeAndroidProviderError(error) ?? error
   }
 }

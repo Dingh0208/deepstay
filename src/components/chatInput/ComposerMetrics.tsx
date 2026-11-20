@@ -34,6 +34,10 @@ export const ComposerMetrics = ({
   const ratio = occupied === undefined ? undefined : occupied / windowTokens
   const speed =
     metrics?.tokensPerSecond?.toLocaleString(locale, { maximumFractionDigits: 1 }) ?? '–'
+  const cacheHit =
+    metrics?.cacheHitPercentage === undefined
+      ? undefined
+      : (metrics.cacheHitPercentage * 100).toLocaleString(locale, { maximumFractionDigits: 1 })
   const percentage =
     ratio?.toLocaleString(locale, { style: 'percent', maximumFractionDigits: 1 }) ?? '–'
   const tokens = (count: number | undefined) => count?.toLocaleString(locale) ?? '–'
@@ -41,6 +45,7 @@ export const ComposerMetrics = ({
   return (
     <div className={styles.row}>
       <span title={t('composerReplySpeed')}>{t('composerSpeed', { speed })}</span>
+      {cacheHit === undefined ? null : <span>{t('composerCacheHit', { percentage: cacheHit })}</span>}
       <button
         className={styles.contextButton}
         type="button"

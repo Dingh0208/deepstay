@@ -1,4 +1,8 @@
 .ds-markdown {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   font: var(--dsw-font-markdown-base);
   color: var(--dsw-alias-label-primary);
 }
@@ -190,8 +194,7 @@
 }
 
 .ds-markdown code {
-  display: inline-flex;
-  align-items: center;
+  display: inline;
   box-sizing: border-box;
   font: var(--dsw-font-markdown-code);
   font-family: var(--ds-font-family-code);
@@ -199,6 +202,7 @@
   background-color: var(--dsw-alias-markdown-inline-code);
   border-radius: 6px;
   padding: 0 5px;
+  overflow-wrap: anywhere;
 }
 .ds-markdown {
   h1,
@@ -307,6 +311,9 @@
 }
 
 .ds-markdown .md-code-block {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
   margin: 16px 0;
 }
 
@@ -335,6 +342,8 @@
 }
 
 .md-code-block > pre {
+  box-sizing: border-box;
+  max-width: 100%;
   font: var(--dsl-code-block-content-font);
   padding: 16px;
   margin: 0 !important;
@@ -343,6 +352,7 @@
 }
 
 .markdown-table-wrapper {
+  max-width: 100%;
   overflow-x: auto;
 }
 

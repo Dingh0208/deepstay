@@ -2,7 +2,10 @@ import { Capacitor, registerPlugin } from '@capacitor/core'
 import { useEffect } from 'react'
 import { getChatFontFamily, useSettings } from '../services/settings.js'
 
-const device = registerPlugin<{ getFontScale(): Promise<{ scale: number }> }>('LocalFiles')
+const device = registerPlugin<{
+  getFontScale(): Promise<{ scale: number }>
+  getSystemFontFamilyName(): Promise<{ familyName: string }>
+}>('LocalFiles')
 const sizes = { small: 0.875, normal: 1, large: 1.125, extraLarge: 1.25 }
 
 export const useChatTypography = () => {
@@ -10,7 +13,41 @@ export const useChatTypography = () => {
   const size = useSettings((state) => state.chatFontSize)
 
   useEffect(() => {
-    document.documentElement.style.setProperty('--dsw-font-family', getChatFontFamily(font))
+    const root = document.documentElement
+    const style = root.style
+    const fallback = getChatFontFamily(font)
+    style.setProperty('--dsw-font-family', fallback)
+    if (font !== 'system' || Capacitor.getPlatform() !== 'android') {
+      return
+    }
+
+    let active = true
+    const refreshSystemFont = async () => {
+      try {
+        const { familyName } = await device.getSystemFontFamilyName()
+        if (active) {
+          const family = familyName.trim()
+          const quotedFamily = `"${family.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+          style.setProperty('--dsw-font-family', family ? `${quotedFamily}, ${fallback}` : fallback)
+        }
+      } catch {
+        // Older native shells keep the CSS system font stack.
+        if (active) {
+          style.setProperty('--dsw-font-family', fallback)
+        }
+      }
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshSystemFont()
+      }
+    }
+    void refreshSystemFont()
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      active = false
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [font])
 
   useEffect(() => {

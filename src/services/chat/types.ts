@@ -135,6 +135,8 @@ export type Session = {
   messages: Message[]
   /** undefined 表示线性消息列表；null 表示空会话。 */
   rootMessageId?: string | null
+  /** 缓存提示：消息数组本身就是完整选中路径时为 true。 */
+  linearMessagePath?: boolean
   contextMemory?: ContextMemory
 }
 

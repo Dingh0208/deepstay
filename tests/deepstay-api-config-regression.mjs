@@ -5,8 +5,12 @@ import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const sourceRoot = new URL('../src/', import.meta.url)
+const capacitorBridgeSource = 'export const Capacitor = { getPlatform: () => globalThis.__DEEPSTAY_CAPACITOR__?.platform ?? "web", isPluginAvailable: name => name === "ProviderHttp" && globalThis.__DEEPSTAY_CAPACITOR__?.available === true }; export const registerPlugin = () => ({ open: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.open(...args), read: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.read(...args), close: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.close?.(...args) ?? Promise.resolve() })'
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
+    if (specifier === '@capacitor/core' && context.parentURL?.startsWith(sourceRoot.href) && context.parentURL.endsWith('/services/api/androidTransport.ts')) {
+      return { url: `data:text/javascript,${encodeURIComponent(capacitorBridgeSource)}`, shortCircuit: true }
+    }
     if (specifier.startsWith('.') && specifier.endsWith('.js') && context.parentURL?.startsWith(sourceRoot.href)) {
       const candidate = new URL(specifier.slice(0, -3) + '.ts', context.parentURL)
       if (existsSync(fileURLToPath(candidate))) return { url: candidate.href, shortCircuit: true }
@@ -50,9 +54,13 @@ checks.push('Fresh settings preserve the existing DeepSeek defaults and expanded
 
 const { normalizeApiBaseUrl, apiEndpoint, getApiConnection } = await import(new URL('services/api/connection.ts', sourceRoot))
 const { ApiError, fetchModels, verifyApiKey, streamMessage } = await import(new URL('services/api/client.ts', sourceRoot))
+const { toProviderApiError } = await import(new URL('services/api/http.ts', sourceRoot))
 assert.equal(normalizeApiBaseUrl(' https://gateway.example.test/proxy/v1/// '), 'https://gateway.example.test/proxy/v1')
 assert.equal(normalizeApiBaseUrl('http://127.0.0.1:8000/v1/'), 'http://127.0.0.1:8000/v1')
-for (const invalid of ['', '/v1', 'not a URL', 'ftp://gateway.example.test', 'https://name:pass@gateway.example.test/v1', 'https://gateway.example.test/v1?key=secret', 'https://gateway.example.test/v1#part']) {
+for (const invalid of ['', '/v1', 'not a URL', 'ftp://gateway.example.test', 'https://name:pass@gateway.example.test/v1', 'https://gateway.example.test/v1?key=secret', 'https://gateway.example.test/v1#part',
+  'https://gateway.example.test/proxy%2fprivate/v1', 'https://gateway.example.test/proxy%5cprivate/v1',
+  'https://gateway.example.test/proxy/%2e%2e/v1', 'https://gateway.example.test/proxy/%252e%252e/v1',
+]) {
   assert.throws(() => normalizeApiBaseUrl(invalid), invalid)
 }
 for (const [base, path, expected] of [
@@ -62,11 +70,22 @@ for (const [base, path, expected] of [
   ['https://gateway.example.test/proxy/v1/chat/completions///', 'v1/models', 'https://gateway.example.test/proxy/v1/models'],
   ['https://gateway.example.test/proxy/v1/models', 'v1/chat/completions', 'https://gateway.example.test/proxy/v1/chat/completions'],
   ['https://gateway.example.test/proxy/models', 'v1/models', 'https://gateway.example.test/proxy/models/v1/models'],
+  ['https://gateway.example.test/proxy', 'v1/models', 'https://gateway.example.test/proxy/v1/models'],
+  ['https://gateway.example.test/api/v3', 'v1/models', 'https://gateway.example.test/api/v3/models'],
+  ['https://gateway.example.test/api/v2/chat/completions', 'v1/models', 'https://gateway.example.test/api/v2/models'],
+  ['https://gateway.example.test/v1beta/openai', 'v1/chat/completions', 'https://gateway.example.test/v1beta/openai/chat/completions'],
+  ['https://gateway.example.test/proxy/chat/completions', 'v1/models', 'https://gateway.example.test/proxy/models'],
+  ['https://gateway.example.test/chat/completions', 'v1/chat/completions', 'https://gateway.example.test/chat/completions'],
+  ['https://gateway.example.test/chat/completions', 'v1/models', 'https://gateway.example.test/models'],
+  ['https://gateway.example.test/proxy%20prefix/v3', 'v1/models', 'https://gateway.example.test/proxy%20prefix/v3/models'],
   ['https://api.deepseek.com', 'anthropic/v1/messages', 'https://api.deepseek.com/anthropic/v1/messages'],
   ['https://api.deepseek.com/v1', 'anthropic/v1/messages', 'https://api.deepseek.com/anthropic/v1/messages'],
   ['https://gateway.example.test/proxy/anthropic/v1', 'anthropic/v1/messages', 'https://gateway.example.test/proxy/anthropic/v1/messages'],
   ['https://gateway.example.test/proxy/anthropic/v1/messages', 'anthropic/v1/messages', 'https://gateway.example.test/proxy/anthropic/v1/messages'],
 ]) assert.equal(apiEndpoint(base, path), expected)
+for (const input of ['https://gateway.example.test/proxy/chat/completions', 'https://gateway.example.test/chat/completions']) {
+  assert.equal(apiEndpoint(normalizeApiBaseUrl(input), 'v1/models'), apiEndpoint(input, 'v1/models'), 'Saving an explicit endpoint retains its parent route')
+}
 assert.deepEqual(getApiConnection(), { baseUrl: configured.apiBaseUrl, protocol: 'openai' })
 checks.push('Root and /v1 endpoints join once, copied request URLs are accepted, reverse-proxy prefixes remain intact and credential-bearing base URLs are rejected')
 
@@ -108,6 +127,119 @@ await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl), erro
 assert.equal(diagnosticText().includes('fixture-private-key'), false)
 assert.equal(diagnosticText().includes('gateway.example.test'), false)
 assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'network')
+const providerErrors = [
+  ['PROVIDER_DNS', 'apiProviderDns', 'network', 'dns'],
+  ['PROVIDER_TIMEOUT', 'apiProviderTimeout', 'network', 'timeout'],
+  ['PROVIDER_TLS', 'apiProviderTls', 'network', 'tls'],
+  ['PROVIDER_BUSY', 'apiProviderBusy', 'network', 'network'],
+  ['PROVIDER_NETWORK', 'apiNetworkUnavailable', 'network', 'network'],
+  ['PROVIDER_CLOSED', 'apiNetworkUnavailable', 'network', 'network'],
+  ['PROVIDER_URL', 'apiProviderRequestUnsupported', 'protocol', 'protocol'],
+]
+let nativeFailureCode
+const nativeRequestUrls = []
+const nativeRequests = []
+let nativeResponseChunks = []
+globalThis.__DEEPSTAY_CAPACITOR__ = {
+  platform: 'android',
+  available: true,
+  transport: {
+    open: async request => {
+      const { url } = request
+      nativeRequestUrls.push(url)
+      nativeRequests.push(request)
+      if (nativeFailureCode) {
+        throw Object.assign(new Error(`raw failure containing ${url} and ${configured.apiKey}`), { code: nativeFailureCode })
+      }
+      return { status: 200, contentType: request.accept }
+    },
+    read: async () => {
+      const chunk = nativeResponseChunks.shift()
+      return chunk === undefined ? {} : { data: Buffer.from(chunk).toString('base64') }
+    },
+    close: async () => {},
+  },
+}
+for (const [code, key, kind, diagnostic] of providerErrors) {
+  nativeFailureCode = code
+  await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl), error =>
+    error instanceof ApiError && error.kind === kind && error.localMessage?.key === key &&
+    error.providerCode === code && !error.message.includes(configured.apiBaseUrl) && !error.message.includes(configured.apiKey))
+  assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, diagnostic)
+}
+assert.equal(nativeRequestUrls.length, providerErrors.length)
+assert.equal(diagnosticText().includes(configured.apiBaseUrl), false)
+assert.equal(diagnosticText().includes(configured.apiKey), false)
+assert.equal(toProviderApiError({ code: 'UNRECOGNIZED', message: 'private detail' }), null)
+checks.push('Android native DNS, TLS, timeout, busy, closed, URL and network failures become localized errors with sanitized diagnostics')
+
+const androidHttpConnection = { baseUrl: 'http://gateway.example.test/proxy/v1', protocol: 'openai' }
+const networkCallsBeforeHttp = networkCalls
+const nativeCallsBeforeHttp = nativeRequestUrls.length
+const androidHttpError = error => error instanceof ApiError && error.localMessage?.key === 'apiAndroidHttpsRequired'
+await assert.rejects(fetchModels(configured.apiKey, androidHttpConnection.baseUrl), androidHttpError)
+const androidChatBody = { model: configured.model, system: '', messages: [{ role: 'user', content: '你好' }], tools: [] }
+await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, androidHttpConnection).next(), androidHttpError)
+assert.equal(networkCalls, networkCallsBeforeHttp)
+assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp)
+nativeFailureCode = 'PROVIDER_TIMEOUT'
+await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, {
+  baseUrl: configured.apiBaseUrl,
+  protocol: 'openai',
+}).next(), error => error instanceof ApiError && error.localMessage?.key === 'apiProviderTimeout')
+assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].operation, 'chat')
+assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'timeout')
+nativeFailureCode = undefined
+const { supportsAndroidProviderTransport } = await import(new URL('services/api/androidTransport.ts', sourceRoot))
+for (const [baseUrl, expected] of [
+  ['https://gateway.example.test/api/v3', 'https://gateway.example.test/api/v3/models'],
+  ['https://gateway.example.test/v1beta/openai', 'https://gateway.example.test/v1beta/openai/models'],
+  ['https://gateway.example.test/proxy/chat/completions', 'https://gateway.example.test/proxy/models'],
+  ['https://gateway.example.test/chat/completions', 'https://gateway.example.test/models'],
+  ['https://gateway.example.test/proxy%20prefix/v2', 'https://gateway.example.test/proxy%20prefix/v2/models'],
+]) {
+  assert.equal(supportsAndroidProviderTransport(expected), true)
+  nativeResponseChunks = [JSON.stringify({ data: [{ id: configured.model }] })]
+  assert.deepEqual(await fetchModels(configured.apiKey, normalizeApiBaseUrl(baseUrl)), [configured.model])
+  assert.equal(nativeRequests[nativeRequests.length - 1].url, expected)
+  nativeResponseChunks = [
+    `data: ${JSON.stringify({ id: 'custom-route', choices: [{ delta: { content: '路径正确' }, finish_reason: 'stop' }] })}\n\n`,
+    'data: [DONE]\n\n',
+  ]
+  const routeEvents = []
+  for await (const event of streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, {
+    baseUrl: normalizeApiBaseUrl(baseUrl), protocol: 'openai',
+  })) routeEvents.push(event)
+  assert.equal(nativeRequests[nativeRequests.length - 1].url, expected.replace(/\/models$/, '/chat/completions'))
+  assert.ok(routeEvents.some(event => event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text === '路径正确'))
+}
+for (const url of [
+  'https://gateway.example.test/proxy%2fprivate/models',
+  'https://gateway.example.test/proxy%5cprivate/models',
+  'https://gateway.example.test/proxy/%2e%2e/models',
+  'https://gateway.example.test/proxy/%252e%252e/models',
+]) assert.equal(supportsAndroidProviderTransport(url), false)
+checks.push('Android native model discovery and streaming chat preserve explicit endpoints, numeric-version and OpenAI bases, and encoded prefixes while rejecting encoded separators and traversal')
+nativeResponseChunks = [JSON.stringify({ data: [{ id: configured.model }] })]
+assert.deepEqual(await fetchModels(configured.apiKey, configured.apiBaseUrl), [configured.model])
+assert.equal(nativeRequests[nativeRequests.length - 1].url, 'https://gateway.example.test/proxy/v1/models')
+assert.equal(nativeRequests[nativeRequests.length - 1].authorization, `Bearer ${configured.apiKey}`)
+nativeResponseChunks = [
+  `data: ${JSON.stringify({ id: 'android-provider-chat', model: configured.model, choices: [{ index: 0, delta: { reasoning_content: '正在思考' }, finish_reason: null }] })}\n\n`,
+  `data: ${JSON.stringify({ id: 'android-provider-chat', choices: [{ index: 0, delta: { content: '第三方接口已正常回复' }, finish_reason: 'stop' }] })}\n\n`,
+  'data: [DONE]\n\n',
+]
+const androidChatEvents = []
+for await (const event of streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, {
+  baseUrl: configured.apiBaseUrl,
+  protocol: 'openai',
+})) androidChatEvents.push(event)
+assert.equal(nativeRequests[nativeRequests.length - 1].url, 'https://gateway.example.test/proxy/v1/chat/completions')
+assert.equal(nativeRequests[nativeRequests.length - 1].authorization, `Bearer ${configured.apiKey}`)
+assert.ok(androidChatEvents.some(event => event.type === 'content_block_delta' && event.delta.type === 'thinking_delta' && event.delta.thinking === '正在思考'))
+assert.ok(androidChatEvents.some(event => event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text === '第三方接口已正常回复'))
+globalThis.__DEEPSTAY_CAPACITOR__ = undefined
+checks.push('Android rejects insecure API URLs before model discovery or chat; native HTTPS model loading and a full third-party reasoning/text stream both work, with timeout errors mapped consistently')
 const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout
 const timers = new Map()
 globalThis.setTimeout = (callback, delay) => { const token = {}; timers.set(token, { callback, delay }); return token }
@@ -218,11 +350,14 @@ assert.equal(getReplyText(official), '官方兼容响应')
 assert.equal(official.stopReason, 'max_tokens')
 assert.equal(getUsageTotal(official.usage), undefined)
 
-for (const [usage, expected] of [
-  [{ total_tokens: 25 }, 25],
-  [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 8 }, completion_tokens: 12 }, 32],
-  [{ prompt_tokens: 20, prompt_cache_hit_tokens: 8, completion_tokens: 12 }, 32],
-  [{ prompt_tokens: 20, completion_tokens: -1, total_tokens: '32' }, undefined],
+for (const [usage, expected, expectedCached] of [
+  [{ total_tokens: 25 }, 25, undefined],
+  [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 8 }, completion_tokens: 12 }, 32, 8],
+  [{ prompt_tokens: 20, prompt_cache_hit_tokens: 8, completion_tokens: 12 }, 32, 8],
+  [{ prompt_tokens: 20, completion_tokens: 12 }, 32, undefined],
+  [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 0 }, completion_tokens: 12 }, 32, 0],
+  [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 21 }, completion_tokens: 12 }, 32, undefined],
+  [{ prompt_tokens: 20, completion_tokens: -1, total_tokens: '32' }, undefined, undefined],
 ]) {
   responder = () => streamedResponse([
     { choices: [{ delta: { content: 'Token fixture' }, finish_reason: 'stop' }] },
@@ -231,6 +366,7 @@ for (const [usage, expected] of [
   ])
   const reply = renderEvents(await collect(streamMessage(configured.apiKey, body, new AbortController().signal)))
   assert.equal(getUsageTotal(reply.usage), expected)
+  assert.equal(reply.usage?.cache_read_input_tokens, expectedCached)
 }
 assert.equal(getUsageTotal(applyEvent(rendered, { type: 'message_start', message: { id: 'continued', model: configured.model } }, 1200, new Map()).usage), undefined)
 

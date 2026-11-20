@@ -7,7 +7,7 @@ const operations = {
   history: ['import', 'export', 'load', 'save', 'delete'],
 } as const
 const details = [
-  'offline', 'network', 'timeout', 'http', 'protocol', 'stream', 'cors', 'redirect',
+  'offline', 'network', 'timeout', 'dns', 'tls', 'http', 'protocol', 'stream', 'cors', 'redirect',
   'invalid-url', 'non-sse', 'cancelled', 'storage', 'unknown',
 ]
 

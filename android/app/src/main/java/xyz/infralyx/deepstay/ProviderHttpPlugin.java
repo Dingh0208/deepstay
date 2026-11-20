@@ -72,12 +72,12 @@ public class ProviderHttpPlugin extends Plugin {
             return;
         }
         String path = uri.getRawPath();
-        boolean models = path != null && path.endsWith("/v1/models") && "GET".equals(method);
-        boolean completions = path != null && path.endsWith("/v1/chat/completions") && "POST".equals(method);
+        boolean models = path != null && path.endsWith("/models") && "GET".equals(method);
+        boolean completions = path != null && path.endsWith("/chat/completions") && "POST".equals(method);
         if (id == null || !id.matches("[A-Za-z0-9-]{1,64}") ||
             !"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost() == null ||
             uri.getUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null ||
-            path == null || path.contains("%") || path.contains("\\") ||
+            !supportsProviderPath(uri) ||
             !(models || completions) || (completions && body == null)) {
             call.reject("Unsupported provider request", "PROVIDER_URL");
             return;
@@ -87,18 +87,11 @@ public class ProviderHttpPlugin extends Plugin {
             return;
         }
 
-        Request.Builder builder = new Request.Builder().url(url).header("Accept", accept == null ? "*/*" : accept);
-        if (authorization != null) builder.header("Authorization", authorization);
-        if (completions) {
-            RequestBody requestBody = RequestBody.create(
-                body,
-                MediaType.parse("application/json; charset=utf-8")
-            );
-            builder.post(requestBody);
-        } else {
-            builder.get();
+        Call networkCall = createProviderCall(client, url, method, authorization, accept, body);
+        if (networkCall == null) {
+            call.reject("Unsupported provider request", "PROVIDER_URL");
+            return;
         }
-        Call networkCall = client.newCall(builder.build());
         RequestState state = new RequestState(networkCall);
         if (requests.putIfAbsent(id, state) != null) {
             call.reject("Duplicate provider request", "PROVIDER_URL");
@@ -126,6 +119,31 @@ public class ProviderHttpPlugin extends Plugin {
                 call.resolve(result);
             }
         });
+    }
+
+    static boolean supportsProviderPath(URI uri) {
+        String raw = uri.getRawPath();
+        if (raw == null || raw.contains("\\") || raw.matches("(?i).*%(?:25|2f|5c).*")) return false;
+        for (String part : uri.getPath().split("/", -1)) {
+            if (".".equals(part) || "..".equals(part)) return false;
+        }
+        return raw.endsWith("/models") || raw.endsWith("/chat/completions");
+    }
+
+    // OkHttp rejects some header values accepted by Fetch Headers. Reject the call instead of crashing the native bridge.
+    static Call createProviderCall(OkHttpClient client, String url, String method, String authorization, String accept, String body) {
+        try {
+            Request.Builder builder = new Request.Builder().url(url).header("Accept", accept == null ? "*/*" : accept);
+            if (authorization != null) builder.header("Authorization", authorization);
+            if ("POST".equals(method)) {
+                builder.post(RequestBody.create(body, MediaType.parse("application/json; charset=utf-8")));
+            } else {
+                builder.get();
+            }
+            return client.newCall(builder.build());
+        } catch (IllegalArgumentException error) {
+            return null;
+        }
     }
 
     @PluginMethod

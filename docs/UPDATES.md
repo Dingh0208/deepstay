@@ -10,15 +10,15 @@ GitHub Release 继续保存源码、正式 APK 和校验和。正式版从自有
 
 ```text
 latest.json
-deepstay-0.1.8-<sha256>.apk
+deepstay-0.1.9-<sha256>.apk
 ```
 
 `latest.json` 格式：
 
 ```json
 {
-  "version": "0.1.8",
-  "apkUrl": "https://ds.herohao.top/updates/deepstay-0.1.8-<sha256>.apk",
+  "version": "0.1.9",
+  "apkUrl": "https://ds.herohao.top/updates/deepstay-0.1.9-<sha256>.apk",
   "sha256": "APK 文件的 64 位 SHA-256 十六进制值"
 }
 ```

@@ -2,8 +2,11 @@ package xyz.infralyx.deepstay;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Build;
 import android.util.Base64;
+import android.widget.TextView;
 import androidx.activity.result.ActivityResult;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -18,6 +21,22 @@ public class LocalFilesPlugin extends Plugin {
     @PluginMethod
     public void getFontScale(PluginCall call) {
         call.resolve(new JSObject().put("scale", getContext().getResources().getConfiguration().fontScale));
+    }
+
+    @PluginMethod
+    public void getSystemFontFamilyName(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            String familyName = "sans-serif";
+            if (Build.VERSION.SDK_INT >= 34) {
+                // The Activity theme may use a different typeface from Typeface.DEFAULT.
+                Typeface typeface = new TextView(getActivity()).getTypeface();
+                String systemFamilyName = typeface == null ? null : typeface.getSystemFontFamilyName();
+                if (systemFamilyName != null && !systemFamilyName.isEmpty()) {
+                    familyName = systemFamilyName;
+                }
+            }
+            call.resolve(new JSObject().put("familyName", familyName));
+        });
     }
 
     @PluginMethod

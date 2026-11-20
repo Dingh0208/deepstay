@@ -39,9 +39,13 @@ const readUsage = (value: unknown): MessageUsage | undefined => {
       ? value.prompt_tokens_details.cached_tokens
       : undefined
     const reportedCache = isTokenCount(details) ? details : value.prompt_cache_hit_tokens
-    const cached = isTokenCount(reportedCache) && reportedCache <= value.prompt_tokens ? reportedCache : 0
-    usage.input_tokens = value.prompt_tokens - cached
-    usage.cache_read_input_tokens = cached
+    const cached =
+      isTokenCount(reportedCache) && reportedCache <= value.prompt_tokens ? reportedCache : undefined
+    const cachedTokens = cached ?? 0
+    usage.input_tokens = value.prompt_tokens - cachedTokens
+    if (cached !== undefined) {
+      usage.cache_read_input_tokens = cached
+    }
   }
   if (isTokenCount(value.completion_tokens)) {
     usage.output_tokens = value.completion_tokens

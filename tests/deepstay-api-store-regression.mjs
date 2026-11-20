@@ -483,17 +483,33 @@ checks.push('An explicit provider length rejection retries once with fewer compl
 
 settings.setApiConnection({ ...changedB, model: 'always-reject-length' })
 let repeatedRejections = 0
-globalThis.fetch = async () => { repeatedRejections += 1; return rejectLength() }
+const repeatedRequestSizes = []
+globalThis.fetch = async (_url, init) => {
+  repeatedRejections += 1
+  repeatedRequestSizes.push(JSON.parse(init.body).messages.length)
+  return rejectLength()
+}
 drafts.setDraftText(limitId, '不能一直重试')
 assert.equal(store.sendMessage(limitId), true)
 await waitIdle()
 assert.equal(repeatedRejections, 2)
+assert.ok(repeatedRequestSizes[1] < repeatedRequestSizes[0])
 assert.equal((await db.loadSession(limitId)).messages.at(-1).error.localMessage.key, 'replyContextLimit')
+const firstRejectedRequestSize = repeatedRequestSizes[0]
+repeatedRequestSizes.length = 0
+drafts.setDraftText(limitId, '继续对话')
+assert.equal(store.sendMessage(limitId), true)
+await waitIdle()
+assert.ok(repeatedRequestSizes[0] < firstRejectedRequestSize, 'the next turn starts from the learned smaller budget')
+checks.push('A failed context-limit retry still teaches the route a smaller input budget for the next turn without trimming current text')
+repeatedRejections = 0
 store.newChat()
 drafts.setDraftText(null, '唯一的新消息')
 assert.equal(store.sendMessage(null), true)
+const newSessionId = store.useChatStore.getState().activeId
+assert.equal(store.useChatStore.getState().sessionCache[newSessionId]?.linearMessagePath, true)
 await waitIdle()
-assert.equal(repeatedRejections, 3, 'no shorter retry is possible with only the current question')
+assert.equal(repeatedRejections, 1, 'no shorter retry is possible with only the current question')
 checks.push('A repeated overflow stops after one retry, and an irreducible current question is sent only once')
 
 settings.setContextMemoryEnabled(true)
@@ -665,6 +681,9 @@ const actualUsage = getReplyMetrics({ usage: { total_tokens: 42 } })
 assert.equal(actualUsage.context.occupied, 42)
 assert.equal(actualUsage.context.input, undefined)
 assert.equal(actualUsage.context.reported, true)
+assert.equal(getReplyMetrics({ usage: { input_tokens: 80, cache_read_input_tokens: 20 } }).cacheHitPercentage, 0.2)
+assert.equal(getReplyMetrics({ usage: { input_tokens: 100, cache_read_input_tokens: 0 } }).cacheHitPercentage, 0)
+assert.equal(getReplyMetrics({ usage: { input_tokens: 100 } }).cacheHitPercentage, undefined)
 store.newChat()
 let metricRequest
 let sendText

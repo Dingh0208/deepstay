@@ -7,7 +7,12 @@ import {
   type ServerSentEvent,
 } from './sse.js'
 import type { ApiErrorBody } from './types.js'
-import { requestAndroidProvider, supportsAndroidProviderTransport } from './androidTransport.js'
+import {
+  normalizeAndroidProviderError,
+  requestAndroidProvider,
+  requiresAndroidHttps,
+  supportsAndroidProviderTransport,
+} from './androidTransport.js'
 
 export type ApiErrorKind = 'http' | 'stream' | 'network' | 'interrupted' | 'protocol'
 
@@ -28,6 +33,25 @@ export class ApiError extends Error {
   }
 }
 
+const ANDROID_PROVIDER_ERRORS = {
+  PROVIDER_DNS: { kind: 'network', key: 'apiProviderDns' },
+  PROVIDER_TIMEOUT: { kind: 'network', key: 'apiProviderTimeout' },
+  PROVIDER_TLS: { kind: 'network', key: 'apiProviderTls' },
+  PROVIDER_NETWORK: { kind: 'network', key: 'apiNetworkUnavailable' },
+  PROVIDER_URL: { kind: 'protocol', key: 'apiProviderRequestUnsupported' },
+  PROVIDER_BUSY: { kind: 'network', key: 'apiProviderBusy' },
+  PROVIDER_CLOSED: { kind: 'network', key: 'apiNetworkUnavailable' },
+} as const
+
+export const toProviderApiError = (error: unknown): ApiError | null => {
+  const providerError = normalizeAndroidProviderError(error)
+  if (!providerError) {
+    return null
+  }
+  const mapped = ANDROID_PROVIDER_ERRORS[providerError.code]
+  return new ApiError(mapped.kind, { key: mapped.key }, undefined, providerError.code)
+}
+
 export const isErrorBody = (value: unknown): value is ApiErrorBody =>
   typeof value === 'object' &&
   value !== null &&
@@ -39,7 +63,9 @@ const INTERRUPTED = { key: 'replyInterrupted' } as const
 
 export const recordApiFailure = (operation: 'models' | 'chat' | 'fetch', error: unknown) => {
   const apiError = error instanceof ApiError ? error : undefined
-  const detail = apiError?.localMessage?.key === 'apiModelsTimeout' ? 'timeout'
+  const detail = apiError?.providerCode === 'PROVIDER_DNS' ? 'dns'
+    : apiError?.providerCode === 'PROVIDER_TIMEOUT' || apiError?.localMessage?.key === 'apiModelsTimeout' ? 'timeout'
+      : apiError?.providerCode === 'PROVIDER_TLS' ? 'tls'
     : apiError?.localMessage?.key === 'apiNetworkOffline' ? 'offline'
       : apiError?.kind === 'interrupted' ? 'stream' : apiError?.kind ?? 'unknown'
   recordDiagnostic({ area: 'api', operation, outcome: 'failed', detail, status: apiError?.status })
@@ -90,6 +116,10 @@ export async function* readMessageEventStream(
     if (signal.aborted || error instanceof ApiError) {
       throw error
     }
+    const providerFailure = toProviderApiError(error)
+    if (providerFailure) {
+      throw providerFailure
+    }
     throw new ApiError('interrupted', INTERRUPTED)
   }
 }
@@ -112,6 +142,9 @@ const readErrorResponse = async (response: Response): Promise<ApiError> => {
 }
 
 export const request = async (url: string, init: RequestInit, logFailure = true): Promise<Response> => {
+  if (requiresAndroidHttps(url)) {
+    throw new ApiError('protocol', { key: 'apiAndroidHttpsRequired' })
+  }
   let response: Response
   try {
     response = supportsAndroidProviderTransport(url)
@@ -121,7 +154,7 @@ export const request = async (url: string, init: RequestInit, logFailure = true)
     if (init.signal?.aborted) {
       throw error
     }
-    const failure = new ApiError('network', {
+    const failure = toProviderApiError(error) ?? new ApiError('network', {
       key: globalThis.navigator?.onLine === false ? 'apiNetworkOffline' : 'apiNetworkUnavailable',
     })
     if (logFailure) {

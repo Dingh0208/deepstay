@@ -28,6 +28,10 @@ export const getReplyMetrics = (reply: AssistantMessage | undefined) => {
   const reportedInput = getUsageInput(usage)
   const total = getUsageTotal(usage)
   const output = isTokenCount(usage?.output_tokens) ? usage.output_tokens : undefined
+  const cacheHitPercentage =
+    isTokenCount(usage?.cache_read_input_tokens) && reportedInput !== undefined && reportedInput > 0
+      ? usage.cache_read_input_tokens / reportedInput
+      : undefined
   const estimatedInput = estimates && estimates.system + estimates.tools + estimates.messages
   const input = reportedInput ?? estimatedInput
   if (total === undefined && input === undefined) {
@@ -35,6 +39,7 @@ export const getReplyMetrics = (reply: AssistantMessage | undefined) => {
   }
   return {
     tokensPerSecond: estimates?.tokensPerSecond,
+    cacheHitPercentage,
     context: {
       system: estimates?.system,
       tools: estimates?.tools,

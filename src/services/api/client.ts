@@ -6,7 +6,7 @@ import {
   type ApiConnection,
 } from './connection.js'
 import { streamOpenAiMessage } from './openai.js'
-import { ApiError, isErrorBody, readMessageEventStream, recordApiFailure, request, streamError } from './http.js'
+import { ApiError, isErrorBody, readMessageEventStream, recordApiFailure, request, streamError, toProviderApiError } from './http.js'
 import { recordDiagnostic } from '../diagnostics/log.js'
 export { ApiError, request, type ApiErrorKind } from './http.js'
 import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent } from './types.js'
@@ -50,6 +50,10 @@ export const fetchModels = async (
     const value: unknown = await response.json().catch((error: unknown) => {
       if (controller.signal.aborted) {
         throw error
+      }
+      const providerFailure = toProviderApiError(error)
+      if (providerFailure) {
+        throw providerFailure
       }
       throw new ApiError('protocol', { key: 'apiModelsInvalid' }, response.status)
     })

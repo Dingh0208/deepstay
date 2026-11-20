@@ -18,6 +18,7 @@ export type AndroidProviderErrorCode =
   | 'PROVIDER_DNS'
   | 'PROVIDER_TIMEOUT'
   | 'PROVIDER_TLS'
+  | 'PROVIDER_CONNECT'
   | 'PROVIDER_NETWORK'
   | 'PROVIDER_URL'
   | 'PROVIDER_BUSY'
@@ -42,6 +43,7 @@ export const normalizeAndroidProviderError = (error: unknown): AndroidProviderTr
     case 'PROVIDER_DNS':
     case 'PROVIDER_TIMEOUT':
     case 'PROVIDER_TLS':
+    case 'PROVIDER_CONNECT':
     case 'PROVIDER_NETWORK':
     case 'PROVIDER_URL':
     case 'PROVIDER_BUSY':

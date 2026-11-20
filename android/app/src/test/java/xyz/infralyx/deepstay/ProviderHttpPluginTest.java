@@ -10,6 +10,15 @@ import org.junit.Test;
 
 public class ProviderHttpPluginTest {
     @Test
+    public void connectionRefusalIsDistinctFromCertificateAndDnsFailures() {
+        assertEquals("PROVIDER_CONNECT", ProviderHttpPlugin.networkErrorCode(new java.net.ConnectException("fixture refused")));
+        assertEquals("PROVIDER_DNS", ProviderHttpPlugin.networkErrorCode(new java.net.UnknownHostException("fixture host")));
+        assertEquals("PROVIDER_TIMEOUT", ProviderHttpPlugin.networkErrorCode(new java.net.SocketTimeoutException("fixture timeout")));
+        assertEquals("PROVIDER_TLS", ProviderHttpPlugin.networkErrorCode(new javax.net.ssl.SSLException("fixture certificate")));
+        assertEquals("PROVIDER_NETWORK", ProviderHttpPlugin.networkErrorCode(new java.io.IOException("fixture network")));
+    }
+
+    @Test
     public void malformedHeaderRejectsWithoutEscapingTheNativeBridge() {
         OkHttpClient client = new OkHttpClient();
         String url = "https://relay.example.test/api/v3/models";

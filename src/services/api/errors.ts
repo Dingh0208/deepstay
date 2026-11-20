@@ -141,6 +141,17 @@ export const getUnsupportedImageError = (
     : { location: { messageIndex: Number(messageIndex), blockIndex: Number(match[3] ?? match[4]) } }
 }
 
+/** An old uploaded image may predate the outbound pixel limit; re-upload a resized local copy. */
+export const getImageSizeError = (
+  error: unknown
+): { messageIndex: number; blockIndex: number } | null => {
+  if (!(error instanceof ApiError) || (error.status !== 400 && error.status !== 422 && error.kind !== 'stream')) {
+    return null
+  }
+  const match = /^messages(?:\.(\d+)|\[(\d+)\])\.content(?:\.(\d+)|\[(\d+)\]):\s*The image is too large to process\b/i.exec(error.message.trim())
+  return match ? { messageIndex: Number(match[1] ?? match[2]), blockIndex: Number(match[3] ?? match[4]) } : null
+}
+
 /** 上传失败里能识别出具体原因的情况；其余统一按「上传失败」处理 */
 export type UploadErrorCode = 'fileCountLimit' | 'storageLimit' | 'parseFailed'
 

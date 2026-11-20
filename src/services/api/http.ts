@@ -7,6 +7,7 @@ import {
   type ServerSentEvent,
 } from './sse.js'
 import type { ApiErrorBody } from './types.js'
+import { isLoopbackApiUrl } from './connection.js'
 import {
   normalizeAndroidProviderError,
   requestAndroidProvider,
@@ -37,10 +38,11 @@ const ANDROID_PROVIDER_ERRORS = {
   PROVIDER_DNS: { kind: 'network', key: 'apiProviderDns' },
   PROVIDER_TIMEOUT: { kind: 'network', key: 'apiProviderTimeout' },
   PROVIDER_TLS: { kind: 'network', key: 'apiProviderTls' },
-  PROVIDER_NETWORK: { kind: 'network', key: 'apiNetworkUnavailable' },
+  PROVIDER_CONNECT: { kind: 'network', key: 'apiProviderConnect' },
+  PROVIDER_NETWORK: { kind: 'network', key: 'apiProviderNetwork' },
   PROVIDER_URL: { kind: 'protocol', key: 'apiProviderRequestUnsupported' },
   PROVIDER_BUSY: { kind: 'network', key: 'apiProviderBusy' },
-  PROVIDER_CLOSED: { kind: 'network', key: 'apiNetworkUnavailable' },
+  PROVIDER_CLOSED: { kind: 'network', key: 'apiProviderNetwork' },
 } as const
 
 export const toProviderApiError = (error: unknown): ApiError | null => {
@@ -143,7 +145,9 @@ const readErrorResponse = async (response: Response): Promise<ApiError> => {
 
 export const request = async (url: string, init: RequestInit, logFailure = true): Promise<Response> => {
   if (requiresAndroidHttps(url)) {
-    throw new ApiError('protocol', { key: 'apiAndroidHttpsRequired' })
+    throw new ApiError('protocol', {
+      key: isLoopbackApiUrl(url) ? 'apiAndroidLocalHttpsRequired' : 'apiAndroidHttpsRequired',
+    })
   }
   let response: Response
   try {
@@ -154,9 +158,15 @@ export const request = async (url: string, init: RequestInit, logFailure = true)
     if (init.signal?.aborted) {
       throw error
     }
-    const failure = toProviderApiError(error) ?? new ApiError('network', {
-      key: globalThis.navigator?.onLine === false ? 'apiNetworkOffline' : 'apiNetworkUnavailable',
-    })
+    const providerFailure = toProviderApiError(error)
+    const localFailure = isLoopbackApiUrl(url) &&
+      (!providerFailure || providerFailure.localMessage?.key === 'apiProviderConnect' ||
+        providerFailure.localMessage?.key === 'apiProviderNetwork')
+    const failure = globalThis.navigator?.onLine === false
+      ? new ApiError('network', { key: 'apiNetworkOffline' })
+      : localFailure
+        ? new ApiError('network', { key: 'apiLocalServiceUnavailable' }, undefined, providerFailure?.providerCode)
+        : providerFailure ?? new ApiError('network', { key: 'apiNetworkUnavailable' })
     if (logFailure) {
       recordApiFailure('fetch', failure)
     }

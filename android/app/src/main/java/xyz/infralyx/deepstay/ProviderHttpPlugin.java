@@ -8,6 +8,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.IOException;
 import java.net.URI;
+import java.net.ConnectException;
 import java.net.UnknownHostException;
 import java.net.SocketTimeoutException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -198,12 +199,16 @@ public class ProviderHttpPlugin extends Plugin {
         if (requests.remove(id, state)) state.close();
     }
 
-    private void rejectNetwork(PluginCall call, IOException error) {
-        String code = error instanceof UnknownHostException ? "PROVIDER_DNS"
+    static String networkErrorCode(IOException error) {
+        return error instanceof UnknownHostException ? "PROVIDER_DNS"
             : error instanceof SocketTimeoutException ? "PROVIDER_TIMEOUT"
             : error instanceof SSLException ? "PROVIDER_TLS"
+            : error instanceof ConnectException ? "PROVIDER_CONNECT"
             : "PROVIDER_NETWORK";
-        call.reject("Provider request failed", code);
+    }
+
+    private void rejectNetwork(PluginCall call, IOException error) {
+        call.reject("Provider request failed", networkErrorCode(error));
     }
 
     @Override

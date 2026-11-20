@@ -5,6 +5,7 @@ import { getApiConnection, type ApiConnection } from './api/connection.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
+import { prepareImageUpload } from './imageUpload.js'
 
 /** 允许上传的扩展名，按扩展名白名单过滤，清单见 uploadExts.ts */
 export const ACCEPTED_EXTS = ACCEPT_FILE_EXTS
@@ -133,7 +134,14 @@ const enqueueUpload = (
         return
       }
       try {
-        const body = file instanceof File ? file : new File([file], name, { type: file.type })
+        const prepared = isImage ? await prepareImageUpload(file) : file
+        if (signal.aborted) {
+          throw signal.reason
+        }
+        const uploadName = prepared !== file && prepared.type === 'image/png'
+          ? `${name.replace(/\.[^.]+$/, '')}.png`
+          : name
+        const body = prepared instanceof File ? prepared : new File([prepared], uploadName, { type: prepared.type })
         resolve((await uploadFile(apiKey, body, getUploadPurpose(name, isImage), signal, connection)).id)
       } catch (error) {
         reject(error)

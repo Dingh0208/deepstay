@@ -49,6 +49,10 @@
     var(--dsw-alias-bg-base) 30%,
     var(--dsw-alias-bg-base) 100%
   );
+
+  [data-chat-background-active] & {
+    background: transparent;
+  }
 }
 
 .caveat {
@@ -64,5 +68,9 @@
 @media not all and (min-width: 768px) {
   .inputContainer {
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .caveat {
+    padding: 2px 0;
   }
 }

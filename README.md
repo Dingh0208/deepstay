@@ -34,6 +34,8 @@ Capabilities depend on the upstream API and account permissions. The default ser
 
 The base URL can include a relay's path prefix and `/v1`. In OpenAI-compatible mode a full `/v1/chat/completions` or `/v1/models` URL also works. Connection testing and model discovery call `/v1/models` on the configured service without verifying credit or generation permissions. If the service exposes chat but no model listing, enter a model ID and save. Web usage requires the provider to allow cross-origin requests. On Android, third-party HTTPS requests use the native connection and require a valid certificate and direct endpoint.
 
+`127.0.0.1` and `localhost` refer to the device running the app; a computer's loopback address cannot connect from a phone. Android currently requires HTTPS APIs. DeepSeek Pro requests omit unsupported server search, link reading and automatic titles. Cache hit rates use provider-reported usage; older chats without request metrics show local context estimates.
+
 ## Data
 
 The API key and settings are stored in the browser or app WebView's localStorage. Conversations and original attachments are stored in IndexedDB. Keys are not uploaded to a deepstay platform; model discovery and chats go directly to the configured provider, while default extension features use DeepSeek. localStorage is not an encrypted key vault.

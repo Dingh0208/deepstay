@@ -127,8 +127,8 @@ export const applyEvent = (
     case 'message_delta':
       return {
         ...next,
-        stopReason: event.delta.stop_reason,
-        stopDetails: event.delta.stop_details,
+        stopReason: event.delta.stop_reason ?? next.stopReason,
+        stopDetails: event.delta.stop_details ?? next.stopDetails,
         usage: event.usage ? { ...next.usage, ...event.usage } : next.usage,
       }
     default:

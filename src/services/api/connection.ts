@@ -3,6 +3,15 @@ import { useSettings, type ApiProtocol } from '../settings.js'
 export type ApiConnection = { baseUrl: string; protocol: ApiProtocol }
 export const DEEPSEEK_OFFICIAL_API_URL = 'https://api.deepseek.com'
 
+export const isLoopbackApiUrl = (input: string): boolean => {
+  try {
+    const { hostname } = new URL(input)
+    return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d+){3}$/.test(hostname)
+  } catch {
+    return false
+  }
+}
+
 export const isSafeApiPath = (path: string): boolean => {
   try {
     return path.split('/').every((part) => {

@@ -6,6 +6,7 @@ import {
   type ApiConnection,
 } from './connection.js'
 import { streamOpenAiMessage } from './openai.js'
+import { adaptDeepSeekRequest } from './modelCapabilities.js'
 import { ApiError, isErrorBody, readMessageEventStream, recordApiFailure, request, streamError, toProviderApiError } from './http.js'
 import { recordDiagnostic } from '../diagnostics/log.js'
 export { ApiError, request, type ApiErrorKind } from './http.js'
@@ -196,7 +197,7 @@ async function* streamProviderMessage(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...body, stream: true }),
+    body: JSON.stringify({ ...adaptDeepSeekRequest(body), stream: true }),
     credentials: 'omit',
     signal,
   }, false)

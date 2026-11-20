@@ -34,15 +34,22 @@ const readUsage = (value: unknown): MessageUsage | undefined => {
     return undefined
   }
   const usage: MessageUsage = {}
-  if (isTokenCount(value.prompt_tokens)) {
+  const promptTokens = isTokenCount(value.prompt_tokens)
+    ? value.prompt_tokens
+    : isTokenCount(value.prompt_cache_hit_tokens) && isTokenCount(value.prompt_cache_miss_tokens)
+      ? value.prompt_cache_hit_tokens + value.prompt_cache_miss_tokens
+      : undefined
+  if (isTokenCount(promptTokens)) {
     const details = isRecord(value.prompt_tokens_details)
       ? value.prompt_tokens_details.cached_tokens
       : undefined
-    const reportedCache = isTokenCount(details) ? details : value.prompt_cache_hit_tokens
+    // DeepSeek's explicit counter takes precedence over a relay's generic cached_tokens placeholder.
+    const direct = value.prompt_cache_hit_tokens
+    const reportedCache = isTokenCount(direct) && direct <= promptTokens ? direct : details
     const cached =
-      isTokenCount(reportedCache) && reportedCache <= value.prompt_tokens ? reportedCache : undefined
+      isTokenCount(reportedCache) && reportedCache <= promptTokens ? reportedCache : undefined
     const cachedTokens = cached ?? 0
-    usage.input_tokens = value.prompt_tokens - cachedTokens
+    usage.input_tokens = promptTokens - cachedTokens
     if (cached !== undefined) {
       usage.cache_read_input_tokens = cached
     }
@@ -71,7 +78,19 @@ export async function* streamOpenAiMessage(
   }
   const endpoint = apiEndpoint(connection.baseUrl, 'v1/chat/completions')
   const officialDeepSeek = new URL(endpoint).hostname === 'api.deepseek.com'
-  const response = await request(endpoint, {
+  const payload = {
+    model: body.model,
+    ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
+    ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+    ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+    ...(body.frequency_penalty === undefined ? {} : { frequency_penalty: body.frequency_penalty }),
+    ...(body.presence_penalty === undefined ? {} : { presence_penalty: body.presence_penalty }),
+    ...(body.stop_sequences === undefined ? {} : { stop: body.stop_sequences }),
+    messages: toMessages(body),
+    stream: true,
+    ...(officialDeepSeek ? { thinking: body.thinking } : {}),
+  }
+  const send = (includeUsage: boolean) => request(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -80,25 +99,32 @@ export async function* streamOpenAiMessage(
     },
     credentials: 'omit',
     body: JSON.stringify({
-      model: body.model,
-      ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
-      ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
-      ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
-      ...(body.frequency_penalty === undefined ? {} : { frequency_penalty: body.frequency_penalty }),
-      ...(body.presence_penalty === undefined ? {} : { presence_penalty: body.presence_penalty }),
-      ...(body.stop_sequences === undefined ? {} : { stop: body.stop_sequences }),
-      messages: toMessages(body),
-      stream: true,
-      ...(officialDeepSeek ? { stream_options: { include_usage: true } } : {}),
-      ...(officialDeepSeek ? { thinking: body.thinking } : {}),
+      ...payload,
+      ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
     }),
     signal,
   }, false)
+  let response: Response
+  try {
+    response = await send(true)
+  } catch (error) {
+    // Retry only a pre-generation rejection naming this optional streaming parameter.
+    if (
+      signal.aborted || officialDeepSeek || !(error instanceof ApiError) ||
+      error.kind !== 'http' || error.status !== 400 ||
+      !/\b(?:stream_options|include_usage)\b/i.test(error.message) ||
+      !/unsupported|not supported|unknown|unrecogni[sz]ed|unexpected|not (?:permitted|allowed)|extra (?:inputs|fields)/i.test(error.message)
+    ) {
+      throw error
+    }
+    response = await send(false)
+  }
   let started = false
   let index = -1
   let channel: 'text' | 'thinking' | null = null
   let stopReason: StopReason | undefined
   let usage: MessageUsage | undefined
+  let usageFields: Record<string, unknown> = {}
   let done = false
   for await (const { data, event } of readMessageEventStream(response, signal)) {
     if (signal.aborted) {
@@ -139,9 +165,18 @@ export async function* streamOpenAiMessage(
       }
       started = true
     }
-    const frameUsage = readUsage(value.usage)
-    if (frameUsage) {
-      usage = { ...usage, ...frameUsage }
+    if (isRecord(value.usage)) {
+      usageFields = {
+        ...usageFields,
+        ...value.usage,
+        ...(isRecord(value.usage.prompt_tokens_details)
+          ? { prompt_tokens_details: {
+              ...(isRecord(usageFields.prompt_tokens_details) ? usageFields.prompt_tokens_details : {}),
+              ...value.usage.prompt_tokens_details,
+            } }
+          : {}),
+      }
+      usage = readUsage(usageFields)
     }
     if (!Array.isArray(value.choices)) {
       throw new ApiError('protocol', 'Invalid OpenAI stream choices')

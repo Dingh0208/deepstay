@@ -73,6 +73,10 @@
     padding: 0 16px env(safe-area-inset-bottom);
   }
 
+  .caveat {
+    padding: 2px 0;
+  }
+
   .intro {
     flex-shrink: 1;
     min-height: 0;

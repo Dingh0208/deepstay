@@ -100,7 +100,7 @@ export const App = () => {
               </Button>
             </div>
           ) : null}
-          <div className={styles.content} data-chat-background-area="">
+          <div className={styles.content} data-chat-background-area="" data-chat-background-active={background ? '' : undefined}>
             {background ? (
               <div
                 className={styles.chatBackground}

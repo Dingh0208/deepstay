@@ -1,6 +1,29 @@
-import type { MessageStreamEvent, MessageUsage } from '../api/types.js'
+import type { CreateMessageRequest, MessageStreamEvent, MessageUsage } from '../api/types.js'
 import { getUsageInput, getUsageTotal, isTokenCount } from '../api/usage.js'
-import type { AssistantMessage } from './types.js'
+import { getVisibleMessages } from './branches.js'
+import { estimateRequestParts } from './contextMemory.js'
+import { toRequestMessages } from './reply.js'
+import type { AssistantMessage, Session, UserMessage } from './types.js'
+
+export type ContextEstimate = Pick<NonNullable<AssistantMessage['metrics']>, 'system' | 'tools' | 'messages'>
+
+/** Local fallback for imported/older conversations without a saved outbound request snapshot. */
+export const estimateSessionContext = (
+  session: Session,
+  system: string,
+  tools: CreateMessageRequest['tools']
+): ContextEstimate => {
+  const visible = getVisibleMessages(session)
+  const last = visible[visible.length - 1]
+  const question: UserMessage = last?.role === 'user'
+    ? last
+    : { id: '', role: 'user', content: '', files: [], createdAt: 0 }
+  const messages = toRequestMessages(last === question ? visible.slice(0, -1) : visible, question)
+  if (last !== question) {
+    messages.pop()
+  }
+  return estimateRequestParts({ system, tools, messages })
+}
 
 export const getGeneratedText = (event: MessageStreamEvent): string => {
   if (event.type === 'content_block_delta') {
@@ -22,14 +45,18 @@ export const getTokenRate = (usage: MessageUsage | undefined, generationMs: numb
     : undefined
 }
 
-export const getReplyMetrics = (reply: AssistantMessage | undefined) => {
-  const estimates = reply?.metrics
+export const getReplyMetrics = (
+  reply: AssistantMessage | undefined,
+  fallback?: ContextEstimate
+) => {
+  const estimates = reply?.metrics ?? fallback
   const usage = reply?.usage
   const reportedInput = getUsageInput(usage)
   const total = getUsageTotal(usage)
   const output = isTokenCount(usage?.output_tokens) ? usage.output_tokens : undefined
   const cacheHitPercentage =
-    isTokenCount(usage?.cache_read_input_tokens) && reportedInput !== undefined && reportedInput > 0
+    isTokenCount(usage?.cache_read_input_tokens) && reportedInput !== undefined && reportedInput > 0 &&
+    usage.cache_read_input_tokens <= reportedInput
       ? usage.cache_read_input_tokens / reportedInput
       : undefined
   const estimatedInput = estimates && estimates.system + estimates.tools + estimates.messages
@@ -38,7 +65,7 @@ export const getReplyMetrics = (reply: AssistantMessage | undefined) => {
     return undefined
   }
   return {
-    tokensPerSecond: estimates?.tokensPerSecond,
+    tokensPerSecond: reply?.metrics?.tokensPerSecond,
     cacheHitPercentage,
     context: {
       system: estimates?.system,

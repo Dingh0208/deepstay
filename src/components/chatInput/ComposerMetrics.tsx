@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { DEFAULT_CONTEXT_WINDOW } from '../../services/api/generation.js'
-import { getReplyMetrics } from '../../services/chat/replyMetrics.js'
+import { getReplyMetrics, type ContextEstimate } from '../../services/chat/replyMetrics.js'
 import type { AssistantMessage } from '../../services/chat/types.js'
 import { useSettings } from '../../services/settings.js'
 import { useTranslate } from '../../i18n/index.js'
@@ -10,6 +10,7 @@ import styles from './ComposerMetrics.module.css'
 
 export const ComposerMetrics = ({
   latestReply,
+  estimatedContext,
   empty,
   compactDisabled,
   progress,
@@ -17,6 +18,7 @@ export const ComposerMetrics = ({
   onStop,
 }: {
   latestReply?: AssistantMessage
+  estimatedContext?: ContextEstimate
   empty: boolean
   compactDisabled: boolean
   progress?: string
@@ -28,7 +30,7 @@ export const ComposerMetrics = ({
   const windowTokens =
     useSettings((state) => state.generation.contextTokens) ?? DEFAULT_CONTEXT_WINDOW
   const [open, setOpen] = useState(false)
-  const metrics = getReplyMetrics(latestReply)
+  const metrics = getReplyMetrics(latestReply, estimatedContext)
   const context = metrics?.context
   const occupied = context?.occupied ?? (empty ? 0 : undefined)
   const ratio = occupied === undefined ? undefined : occupied / windowTokens
@@ -93,15 +95,15 @@ export const ComposerMetrics = ({
           <dl className={styles.breakdown}>
             <div>
               <dt>{t('composerContextSystem')}</dt>
-              <dd>{tokens(context?.system)}</dd>
+              <dd>{context?.system === undefined ? '–' : t('composerEstimate', { value: tokens(context.system) })}</dd>
             </div>
             <div>
               <dt>{t('composerContextTools')}</dt>
-              <dd>{tokens(context?.tools)}</dd>
+              <dd>{context?.tools === undefined ? '–' : t('composerEstimate', { value: tokens(context.tools) })}</dd>
             </div>
             <div>
               <dt>{t('composerContextMessages')}</dt>
-              <dd>{tokens(context?.messages)}</dd>
+              <dd>{context?.messages === undefined ? '–' : t('composerEstimate', { value: tokens(context.messages) })}</dd>
             </div>
           </dl>
           {progress ? <div role="status">{progress}</div> : null}

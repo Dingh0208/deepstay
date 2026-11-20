@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import {
   IconGlobeLanguageOutline14,
   IconPaperclipOutline16,
@@ -9,8 +9,10 @@ import {
 } from '../base/icons.js'
 import { setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
+import { supportsDeepSeekServerTools } from '../../services/api/modelCapabilities.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { compactSession, sendMessage, stopReply, useChatStore } from '../../services/chat/store.js'
+import { compactSession, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
+import { estimateSessionContext } from '../../services/chat/replyMetrics.js'
 import type { AssistantMessage } from '../../services/chat/types.js'
 import { hasOwn } from '../../utils/object.js'
 import {
@@ -64,16 +66,27 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const contextProgress = useChatStore((state) =>
     sessionId === null ? undefined : state.contextProgress[sessionId]
   )
-  const empty = useChatStore(
-    (state) => sessionId === null || state.sessionCache[sessionId]?.messages.length === 0
+  const session = useChatStore(
+    (state) => sessionId === null ? undefined : state.sessionCache[sessionId]
   )
+  const empty = sessionId === null || session?.messages.length === 0
   const thinking = useSettings((state) => state.thinking)
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const apiProtocol = useSettings((state) => state.apiProtocol)
+  const model = useSettings((state) => state.model)
+  const system = useSettings((state) => state.generation.system)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
+  const searchAvailable = extras && supportsDeepSeekServerTools(model)
+  const estimatedContext = useMemo(() => {
+    if (!session || latestReply?.metrics) {
+      return undefined
+    }
+    const prompt = [system ?? SYSTEM_PROMPT, session.contextMemory?.fixed].filter(Boolean).join('\n\n')
+    return estimateSessionContext(session, prompt, searchAvailable ? serverTools(search) : [])
+  }, [session, latestReply?.metrics, system, searchAvailable, search])
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -294,7 +307,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
               <span className={styles.toggleLabel}>{t('thinkingSwitch')}</span>
             </button>
           </Tooltip>
-          {extras ? <Tooltip content={t('deactivatedSearchTooltip')}>
+          {searchAvailable ? <Tooltip content={t('deactivatedSearchTooltip')}>
             <button
               type="button"
               className={clsx(styles.toggle, search && styles.selected)}
@@ -379,6 +392,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       {composer}
       <ComposerMetrics
         latestReply={latestReply}
+        estimatedContext={estimatedContext}
         empty={empty}
         compactDisabled={empty || importingHistory || streaming || voice.status !== 'idle'}
         progress={progress}

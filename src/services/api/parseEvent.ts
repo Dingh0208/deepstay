@@ -223,12 +223,15 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         return null
       }
       break
-    case 'message_delta':
+    case 'message_delta': {
+      const usage = readUsage(value.usage, true)
       if (
         !isRecord(value.delta) ||
-        !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(
-          value.delta.stop_reason as string
-        )
+        (value.delta.stop_reason == null
+          ? !usage
+          : !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(
+              value.delta.stop_reason as string
+            ))
       ) {
         return null
       }
@@ -238,8 +241,9 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
           ...value.delta,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
-        usage: readUsage(value.usage, true),
+        usage,
       } as MessageStreamEvent
+    }
     case 'message_stop':
       break
     default:

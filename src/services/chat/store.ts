@@ -4,11 +4,13 @@ import { hasOwn } from '../../utils/object.js'
 import { ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest } from '../api/types.js'
 import { DEFAULT_CONTEXT_WINDOW, generationParameters } from '../api/generation.js'
+import { supportsDeepSeekServerTools } from '../api/modelCapabilities.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import {
   extractFileIds,
   getContextLengthError,
   getFileErrorCode,
+  getImageSizeError,
   getUnsupportedImageError,
   isRetryableApiError,
 } from '../api/errors.js'
@@ -55,7 +57,7 @@ import {
 } from './types.js'
 
 /** 所有生成请求统一携带的助手身份说明 */
-const SYSTEM_PROMPT = '你是 deepstay 的 AI 助手。认真理解用户的语境，以自然、温和的方式回应。'
+export const SYSTEM_PROMPT = '你是 deepstay 的 AI 助手。认真理解用户的语境，以自然、温和的方式回应。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
 /** 安全审核固定开启，所有请求都走扩展模式 */
@@ -84,8 +86,8 @@ const yieldPastPaint = () =>
     }
   })
 
-/** 阅读链接始终开启，智能搜索开关控制是否另行声明搜索工具（含边想边搜）。 */
-const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
+/** 支持扩展的模型默认声明阅读链接，智能搜索开关控制搜索工具（含边想边搜）。 */
+export const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
   const tools: CreateMessageRequest['tools'] = [
     { type: 'deepseek_read_url', name: 'deepseek_read_url' },
   ]
@@ -311,7 +313,7 @@ const createReply = (): AssistantMessage => {
     createdAt: Date.now(),
     model,
     thinking,
-    search: supportsDeepSeekExtras() && search,
+    search: supportsDeepSeekExtras() && supportsDeepSeekServerTools(model) && search,
     prefix: apiProtocol === 'deepseek',
     status: 'pending',
     blocks: [],
@@ -1119,16 +1121,16 @@ const collectServerFileIds = (request: Request): Set<string> => {
  * 下一次补齐会重新读取本地原件上传。报错里点名了 file_id 就只重置这些，
  * 没点名（如 invalid file_id）则重置本次请求用到的全部附件。
  */
-const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: unknown): boolean => {
-  if (!(error instanceof ApiError) || !getFileErrorCode(error)) {
+const reuploadInvalidatedFiles = (sessionId: string, request: Request, error: unknown, fileIds?: Set<string>): boolean => {
+  if (!fileIds && (!(error instanceof ApiError) || !getFileErrorCode(error))) {
     return false
   }
-  const mentioned = extractFileIds(error.message)
+  const mentioned = error instanceof Error ? extractFileIds(error.message) : []
   // 重试时原始快照里还是上一轮已被清掉的 serverId，先换成会话里的最新消息
   const targets =
-    mentioned.length > 0
+    fileIds ?? (mentioned.length > 0
       ? new Set(mentioned)
-      : collectServerFileIds(refreshRequest(sessionId, request))
+      : collectServerFileIds(refreshRequest(sessionId, request)))
   const session = getSession(sessionId)
   if (targets.size === 0 || !session) {
     return false
@@ -1198,6 +1200,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   let retriedContextLimit = false
   let attachmentRetries = 0
   const extras = supportsDeepSeekExtras(connection)
+  const serverExtras = extras && supportsDeepSeekServerTools(model)
   const imageRoute = JSON.stringify([connection.baseUrl, connection.protocol, model])
   if (extras && (rejectedHistoryImages?.route !== imageRoute || rejectedHistoryImages.key !== apiKey)) {
     rejectedHistoryImages = { route: imageRoute, key: apiKey, ids: new Set() }
@@ -1344,7 +1347,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               estimateContextTokens(
                 baseSystem +
                   (latestReminder ?? '') +
-                  JSON.stringify(extras ? serverTools(initial.search ?? false) : [])
+                  JSON.stringify(serverExtras ? serverTools(initial.search ?? false) : [])
               ) + 256,
             onCommit: async (update) => {
               if (!validSource()) {
@@ -1422,8 +1425,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           messages,
           thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
           safety_check: SAFETY_CHECK,
-          tools: extras ? serverTools(initial.search ?? false) : [],
-          ...(extras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+          tools: serverExtras ? serverTools(initial.search ?? false) : [],
+          ...(serverExtras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
         body = fitRequestHistory(body, compactContext ? memoryBudget() : effectiveBudget(), requiredSystem)
         submitted = body
@@ -1499,6 +1502,23 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
         }
         const messages = submitted?.messages ?? []
+        const oversizedImage = submitted ? getImageSizeError(error) : null
+        if (extras && oversizedImage && !receivedContent && attachmentRetries < FILE_RETRY_LIMIT) {
+          const message = messages[oversizedImage.messageIndex]
+          const block = message?.role === 'user' && Array.isArray(message.content)
+            ? message.content[oversizedImage.blockIndex]
+            : undefined
+          if (block?.type === 'image') {
+            const local = [...request.history, request.question].flatMap((item) => item.role === 'user' ? item.files : [])
+              .find((file) => file.serverId === block.source.file_id)
+            // Only retry when the original is available; never drop the offending image from history.
+            if (local && await db.loadFile(local.id) &&
+              reuploadInvalidatedFiles(sessionId, request, error, new Set([block.source.file_id]))) {
+              attachmentRetries += 1
+              continue
+            }
+          }
+        }
         const unsupportedImage = submitted ? getUnsupportedImageError(error) : null
         let sentImage = false
         if (unsupportedImage) {
@@ -1574,9 +1594,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             status: error.status,
             localMessage: lengthError
               ? { key: 'replyContextLimit' }
-              : unsupportedImage
-                ? { key: sentImage ? 'replyUnsupportedImage' : 'replyImageErrorWithoutAttachment' }
-                : error.localMessage,
+              : oversizedImage
+                ? { key: 'replyImageTooLarge' }
+                : unsupportedImage
+                  ? { key: sentImage ? 'replyUnsupportedImage' : 'replyImageErrorWithoutAttachment' }
+                  : error.localMessage,
           })
         } else {
           reply = settleReply(reply, 'error', Date.now(), {

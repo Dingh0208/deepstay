@@ -231,7 +231,7 @@ export type MessageStreamEvent =
       type: 'message_delta'
       /** title 仅在开启标题且生成成功时出现；stop_details 仅在 refusal 时出现 */
       delta: {
-        stop_reason: StopReason
+        stop_reason?: StopReason | null
         stop_sequence: null
         stop_details?: StopDetails
         title?: string

@@ -131,9 +131,10 @@ const providerErrors = [
   ['PROVIDER_DNS', 'apiProviderDns', 'network', 'dns'],
   ['PROVIDER_TIMEOUT', 'apiProviderTimeout', 'network', 'timeout'],
   ['PROVIDER_TLS', 'apiProviderTls', 'network', 'tls'],
+  ['PROVIDER_CONNECT', 'apiProviderConnect', 'network', 'network'],
   ['PROVIDER_BUSY', 'apiProviderBusy', 'network', 'network'],
-  ['PROVIDER_NETWORK', 'apiNetworkUnavailable', 'network', 'network'],
-  ['PROVIDER_CLOSED', 'apiNetworkUnavailable', 'network', 'network'],
+  ['PROVIDER_NETWORK', 'apiProviderNetwork', 'network', 'network'],
+  ['PROVIDER_CLOSED', 'apiProviderNetwork', 'network', 'network'],
   ['PROVIDER_URL', 'apiProviderRequestUnsupported', 'protocol', 'protocol'],
 ]
 let nativeFailureCode
@@ -182,6 +183,19 @@ const androidChatBody = { model: configured.model, system: '', messages: [{ role
 await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, androidHttpConnection).next(), androidHttpError)
 assert.equal(networkCalls, networkCallsBeforeHttp)
 assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp)
+const localConnection = { baseUrl: 'http://127.0.0.1:8080/v1', protocol: 'openai' }
+const localHttpsError = error => error instanceof ApiError && error.localMessage?.key === 'apiAndroidLocalHttpsRequired'
+await assert.rejects(fetchModels(configured.apiKey, localConnection.baseUrl), localHttpsError)
+await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, localConnection).next(), localHttpsError)
+assert.equal(networkCalls, networkCallsBeforeHttp)
+assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp)
+nativeFailureCode = 'PROVIDER_CONNECT'
+await assert.rejects(fetchModels(configured.apiKey, 'https://127.0.0.1:8080/v1'), error =>
+  error instanceof ApiError && error.localMessage?.key === 'apiLocalServiceUnavailable')
+nativeFailureCode = 'PROVIDER_TLS'
+await assert.rejects(fetchModels(configured.apiKey, 'https://localhost:8080/v1'), error =>
+  error instanceof ApiError && error.localMessage?.key === 'apiProviderTls')
+checks.push('Localhost errors explain the device-local address; HTTP preflight, unavailable local service and TLS failures stay distinct')
 nativeFailureCode = 'PROVIDER_TIMEOUT'
 await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, {
   baseUrl: configured.apiBaseUrl,
@@ -313,7 +327,7 @@ responder = (url, init) => {
   requestBody = JSON.parse(init.body)
   assert.equal(requestBody.model, 'chosen-reasoner')
   assert.equal(requestBody.stream, true)
-  assert.equal('stream_options' in requestBody, false)
+  assert.deepEqual(requestBody.stream_options, { include_usage: true })
   for (const key of ['thinking', 'tools', 'safety_check', 'title']) assert.equal(key in requestBody, false, key)
   return streamedResponse([
     { id: 'chat-test', model: configured.model, choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: '先思考' }, finish_reason: null }] },
@@ -354,6 +368,8 @@ for (const [usage, expected, expectedCached] of [
   [{ total_tokens: 25 }, 25, undefined],
   [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 8 }, completion_tokens: 12 }, 32, 8],
   [{ prompt_tokens: 20, prompt_cache_hit_tokens: 8, completion_tokens: 12 }, 32, 8],
+  [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 0 }, prompt_cache_hit_tokens: 8, completion_tokens: 12 }, 32, 8],
+  [{ prompt_cache_hit_tokens: 8, prompt_cache_miss_tokens: 12, completion_tokens: 12 }, 32, 8],
   [{ prompt_tokens: 20, completion_tokens: 12 }, 32, undefined],
   [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 0 }, completion_tokens: 12 }, 32, 0],
   [{ prompt_tokens: 20, prompt_tokens_details: { cached_tokens: 21 }, completion_tokens: 12 }, 32, undefined],
@@ -368,6 +384,53 @@ for (const [usage, expected, expectedCached] of [
   assert.equal(getUsageTotal(reply.usage), expected)
   assert.equal(reply.usage?.cache_read_input_tokens, expectedCached)
 }
+for (const frames of [
+  [{ prompt_tokens: 20, prompt_cache_hit_tokens: 8 }, { prompt_tokens: 20, completion_tokens: 12 }],
+  [{ prompt_tokens: 20 }, { prompt_tokens_details: { cached_tokens: 8 } }, { completion_tokens: 12 }],
+]) {
+  responder = () => streamedResponse([
+    { choices: [{ delta: { content: '分帧统计' }, finish_reason: 'stop' }] },
+    ...frames.map(usage => ({ choices: [], usage })),
+    '[DONE]',
+  ])
+  const reply = renderEvents(await collect(streamMessage(configured.apiKey, body, new AbortController().signal)))
+  assert.equal(getUsageTotal(reply.usage), 32)
+  assert.equal(reply.usage.input_tokens, 12)
+  assert.equal(reply.usage.cache_read_input_tokens, 8)
+}
+let rejectedUsageRequests = 0
+responder = (_url, init) => {
+  rejectedUsageRequests++
+  const payload = JSON.parse(init.body)
+  if (rejectedUsageRequests === 1) {
+    assert.deepEqual(payload.stream_options, { include_usage: true })
+    return new Response(JSON.stringify({ error: { message: "Unsupported parameter: 'stream_options'" } }), { status: 400 })
+  }
+  assert.equal('stream_options' in payload, false)
+  return streamedResponse([{ choices: [{ delta: { content: '兼容服务正常回答' }, finish_reason: 'stop' }] }, '[DONE]'])
+}
+assert.equal(getReplyText(renderEvents(await collect(streamMessage(configured.apiKey, body, new AbortController().signal)))), '兼容服务正常回答')
+assert.equal(rejectedUsageRequests, 2)
+for (const [status, message] of [[400, 'Invalid messages content'], [401, 'Unsupported stream_options'], [500, 'Unsupported stream_options']]) {
+  let attempts = 0
+  responder = () => {
+    attempts++
+    return new Response(JSON.stringify({ error: { message } }), { status })
+  }
+  await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal)), error => error instanceof ApiError && error.status === status)
+  assert.equal(attempts, 1)
+}
+let streamedUsageErrorAttempts = 0
+responder = () => {
+  streamedUsageErrorAttempts++
+  return streamedResponse([
+    { choices: [{ delta: { content: '已经生成正文' }, finish_reason: null }] },
+    { error: { message: 'Unsupported stream_options' } },
+  ])
+}
+await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal)))
+assert.equal(streamedUsageErrorAttempts, 1)
+checks.push('OpenAI usage is explicitly requested, merged before normalizing split cache counters, and optional usage fallback only follows an explicit pre-generation HTTP 400 parameter rejection')
 assert.equal(getUsageTotal(applyEvent(rendered, { type: 'message_start', message: { id: 'continued', model: configured.model } }, 1200, new Map()).usage), undefined)
 
 for (const [frames, expectedKind] of [

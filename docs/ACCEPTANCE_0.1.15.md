@@ -22,3 +22,9 @@ Android 11 / WebView 83，隔离包 `xyz.infralyx.deepstay.attachmentqa` 从 0.1
 类型检查、lint、两轮全量各 47 套回归通过；Android 单元测试、QA debug 与固定签名 release 构建成功。正式本地 APK 为 `xyz.infralyx.deepstay`、0.1.15/code16、minSdk23/targetSdk35，证书 SHA-256 为 `64dba31f8f30a392fc850dd81ead8bedccb374568a7e4821be0b64fdb2ec2f1f`。无 debug/testOnly 或开发服务器配置。公开 CI 产物哈希在发布后单独记录。
 
 证据保存在本机 `D:/codex_documents/deepstay-port-batch2-qa-20261121/`。仅使用合成聊天和受控响应，未调用收费模型或上传真实对话；未清除用户数据或安装正式包到用户设备。
+
+## 公开发布核验
+
+[v0.1.15](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.15) 已发布，[Android CI 44779865237](https://github.com/Dingh0208/deepstay/actions/runs/44779865237) 成功，构建提交为 `37f5a2258e732c7bbe9efd5095c96babe143f120`。公开完整 GET 返回 HTTP 200，APK 为 19,742,940 字节，SHA-256 为 `f4a782c2cf2200412e07b16dc1f6fe0207d053604a4381488429543324b9378d`；GitHub 附件 digest/大小与国内清单一致。
+
+实际下载 APK 的包名、0.1.15/code16、minSdk23/targetSdk35、正式签名及内置网页版本均核对通过，无开发服务器配置。国内清单完整字节 SHA-256 为 `3d65c82ffa4b2a132f7eda914d35a6e6c3b045a96578cd95c2d9fa3c40305b4c`，与 GitHub 清单附件一致。记录见上述目录 `published-release-verification.json`；公开 CI APK 与本地构建分别核验，不混用哈希。

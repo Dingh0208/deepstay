@@ -20,7 +20,7 @@ android {
         applicationId "xyz.infralyx.deepstay"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 16
+        versionCode 17
         versionName appVersion
         buildConfigField 'String', 'DEEPSTAY_UPDATE_MANIFEST_URL', groovy.json.JsonOutput.toJson(updateManifestUrl)
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"

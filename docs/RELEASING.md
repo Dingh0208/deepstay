@@ -1,6 +1,6 @@
 # deepstay Android 发布
 
-本轮待发布版本：`v0.1.13`（Android versionCode 14）；当前公开最新版为 `v0.1.11`。`v0.1.12` 已创建标签，但在用户追加人物需求后取消发布，不移动旧标签，原附件与搜索改动一并纳入本轮。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
+当前版本：`v0.1.13`（Android versionCode 14），已发布为公开最新版。`v0.1.12` 在用户追加人物需求后取消发布，其标签保留，原附件与搜索改动一并纳入本版。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 本地构建
 

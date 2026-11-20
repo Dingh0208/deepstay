@@ -3,15 +3,16 @@ import { create } from 'zustand'
 import { compareVersions, fetchLatestRelease, type AppRelease } from './updates.js'
 
 type DownloadProgress = { receivedBytes: number; totalBytes: number }
+type ApkTarget = { sha256: string; expectedVersion: string; expectedVersionCode?: number }
 
 type ApkUpdatePlugin = {
   addListener(
     eventName: 'downloadProgress',
     listener: (progress: DownloadProgress) => void
   ): Promise<PluginListenerHandle>
-  downloadApk(options: { url: string; sha256: string }): Promise<{ bytes: number }>
-  installApk(): Promise<{ permissionRequired?: boolean }>
-  getPendingApk(): Promise<{ ready: boolean; version?: string; bytes?: number }>
+  downloadApk(options: ApkTarget & { url: string }): Promise<{ bytes: number }>
+  installApk(options: ApkTarget): Promise<{ permissionRequired?: boolean }>
+  getPendingApk(): Promise<{ ready: boolean; version?: string; versionCode?: number; sha256?: string; bytes?: number }>
   getInstallStatus(): Promise<{ updated: boolean }>
 }
 
@@ -116,10 +117,10 @@ const restorePendingApk = async () => {
   if (Capacitor.getPlatform() !== 'android') {
     return
   }
-  // 开启安装权限可能重启进程；待安装包优先于自动检查的结果。
+  // 开启安装权限可能重启进程；只恢复原生重新校验过的目标包。
   try {
-    const { ready, version } = await apkUpdate.getPendingApk()
-    if (ready && version && compareVersions(version, getCurrentVersion()) === 1) {
+    const { ready, version, versionCode, sha256 } = await apkUpdate.getPendingApk()
+    if (ready && version && sha256 && /^[\da-f]{64}$/i.test(sha256) && compareVersions(version, getCurrentVersion()) === 1) {
       useUpdateState.setState({
         hasUpdate: true,
         value: {
@@ -128,7 +129,8 @@ const restorePendingApk = async () => {
             version,
             releaseUrl: `https://github.com/Dingh0208/deepstay/releases/tag/v${version}`,
             apkUrl: null,
-            apkSha256: null,
+            apkSha256: sha256,
+            apkVersionCode: versionCode,
           },
         },
       })
@@ -154,8 +156,26 @@ export const checkForUpdates = (manual = true) => {
     await restore
     try {
       const release = await request
-      if (hasInstallWork(useUpdateState.getState().value)) {
+      const current = useUpdateState.getState().value
+      // 正在下载/打开安装器时不切换目标；空闲缓存可由更新的清单取代。
+      if (current.status === 'downloading' || current.status === 'installing') {
         return
+      }
+      if (hasInstallWork(current)) {
+        if (!release || !('release' in current)) {
+          return
+        }
+        const newer = compareVersions(release.version, current.release.version) === 1
+        const replaced = release.version === current.release.version && release.apkSha256 &&
+          release.apkSha256 !== current.release.apkSha256
+        if (!newer && !replaced) {
+          if (release.version === current.release.version && release.apkSha256 === current.release.apkSha256) {
+            setUpdateState({ ...current, release: {
+              ...release, apkVersionCode: release.apkVersionCode ?? current.release.apkVersionCode,
+            } })
+          }
+          return
+        }
       }
       if (release === undefined) {
         throw new Error('Update check failed')

@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const { version } = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+const versionCode = Number(/\bversionCode\s+(\d+)/.exec(readFileSync(path.join(root, 'android/app/build.gradle'), 'utf8'))?.[1])
+if (!Number.isSafeInteger(versionCode) || versionCode <= 0) throw new Error('A positive Android versionCode is required')
 const apkName = `deepstay-${version}.apk`
 const baseUrl = process.argv[2]
 if (!baseUrl || !baseUrl.endsWith('/') || new URL(baseUrl).protocol !== 'https:') {
@@ -14,6 +16,7 @@ const apk = readFileSync(path.join(root, 'release', apkName))
 const sha256 = createHash('sha256').update(apk).digest('hex')
 const manifest = {
   version,
+  versionCode,
   apkUrl: new URL(`deepstay-${version}-${sha256}.apk`, baseUrl).href,
   sha256,
 }

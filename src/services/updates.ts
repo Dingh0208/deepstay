@@ -7,6 +7,7 @@ export type AppRelease = {
   releaseUrl: string
   apkUrl: string | null
   apkSha256: string | null
+  apkVersionCode?: number
 }
 
 const parseVersion = (value: string) => {
@@ -60,26 +61,31 @@ export const readUpdateManifest = (value: unknown, manifestUrl: string): AppRele
     !isObject(value) || typeof value.version !== 'string' ||
     !parseVersion(value.version) || parseVersion(value.version)?.prerelease ||
     typeof value.apkUrl !== 'string' || typeof value.sha256 !== 'string' ||
-    !/^[\da-f]{64}$/i.test(value.sha256)
+    !/^[\da-f]{64}$/i.test(value.sha256) ||
+    (value.versionCode !== undefined && (!Number.isSafeInteger(value.versionCode) || Number(value.versionCode) <= 0))
   ) {
     return null
   }
   try {
     const base = new URL('.', manifestUrl)
     const apk = new URL(value.apkUrl)
+    const version = value.version.replace(/^v/i, '')
+    const sha256 = value.sha256.toLowerCase()
     if (
       base.protocol !== 'https:' || apk.protocol !== 'https:' ||
       apk.username || apk.password || apk.hash ||
       apk.origin !== base.origin || new URL('.', apk).pathname !== base.pathname ||
-      apk.pathname.includes('%') || !apk.pathname.endsWith('.apk')
+      apk.pathname.includes('%') || !apk.pathname.endsWith('.apk') ||
+      ![`deepstay-${version}.apk`, `deepstay-${version}-${sha256}.apk`].includes(apk.pathname.slice(base.pathname.length))
     ) {
       return null
     }
     return {
-      version: value.version.replace(/^v/i, ''),
-      releaseUrl: `${RELEASES_URL}tag/v${value.version.replace(/^v/i, '')}`,
+      version,
+      releaseUrl: `${RELEASES_URL}tag/v${version}`,
       apkUrl: apk.href,
-      apkSha256: value.sha256.toLowerCase(),
+      apkSha256: sha256,
+      ...(value.versionCode !== undefined ? { apkVersionCode: Number(value.versionCode) } : {}),
     }
   } catch {
     return null
@@ -91,23 +97,23 @@ export const readAppRelease = (value: unknown): AppRelease | null => {
   if (
     !isObject(value) || value.draft !== false || value.prerelease !== false ||
     typeof value.tag_name !== 'string' || !parseVersion(value.tag_name) ||
-    typeof value.html_url !== 'string' || !value.html_url.startsWith(`${RELEASES_URL}tag/`) ||
+    value.html_url !== `${RELEASES_URL}tag/${value.tag_name}` ||
     !Array.isArray(value.assets)
   ) {
     return null
   }
+  const version = value.tag_name.replace(/^v/i, '')
+  const apkName = `deepstay-${version}.apk`
   const apk = value.assets.find((asset: unknown) =>
-    isObject(asset) && typeof asset.name === 'string' && /\.apk$/i.test(asset.name) &&
-    typeof asset.browser_download_url === 'string' &&
-    asset.browser_download_url.startsWith(`${RELEASES_URL}download/`) &&
-    /\.apk$/i.test(asset.browser_download_url)
+    isObject(asset) && asset.name === apkName &&
+    asset.browser_download_url === `${RELEASES_URL}download/${value.tag_name}/${apkName}`
   ) as Record<string, unknown> | undefined
   const digest = apk && typeof apk.digest === 'string' && /^sha256:[\da-f]{64}$/i.test(apk.digest)
     ? apk.digest.slice('sha256:'.length)
     : null
   return {
     version: value.tag_name.replace(/^v/i, ''),
-    releaseUrl: value.html_url,
+    releaseUrl: String(value.html_url),
     apkUrl: apk ? String(apk.browser_download_url) : null,
     apkSha256: digest,
   }

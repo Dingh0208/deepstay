@@ -43,6 +43,11 @@ const fields: [GenerationNumber, TranslationKey][] = [
 ]
 
 export const GenerationSetting = () => {
+  const route = useSettings((state) => JSON.stringify([state.apiBaseUrl, state.apiProtocol, state.model]))
+  return <GenerationForm key={route} />
+}
+
+const GenerationForm = () => {
   const t = useTranslate()
   const current = useSettings((state) => state.generation)
   const [draft, setDraft] = useState<Record<string, string>>(() => ({

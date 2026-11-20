@@ -1,5 +1,7 @@
 # deepstay Android 发布
 
+0.1.14（versionCode 15）在本地验收中，发布完成前公开最新版仍为下述 0.1.13。此版本首批修复更新目标校验、模型窗口隔离和文字草稿恢复，发布证据随后记录。
+
 当前版本：`v0.1.13`（Android versionCode 14），已发布为公开最新版。`v0.1.12` 在用户追加人物需求后取消发布，其标签保留，原附件与搜索改动一并纳入本版。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。本版支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ## 本地构建

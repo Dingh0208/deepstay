@@ -165,15 +165,42 @@ globalThis.__fetchRelease = undefined
 globalThis.__release = { version: '0.3.0' }
 globalThis.__plugin = {
   getInstallStatus: async () => ({ updated: false }),
-  getPendingApk: async () => ({ ready: true, version: '0.2.0' }),
+  getPendingApk: async () => ({ ready: true, version: '0.2.0', versionCode: 20, sha256: 'a'.repeat(64) }),
 }
 const downloaded = await compile('android')
 await initialize(downloaded)
-assert.equal(downloaded.useUpdateState.getState().value.status, 'downloaded',
-  'A restored APK ready for installation takes priority over automatic release checks')
-await downloaded.checkForUpdates()
-assert.equal(downloaded.useUpdateState.getState().value.status, 'downloaded',
-  'A manual check also keeps the validated pending APK available')
+assert.equal(downloaded.useUpdateState.getState().value.status, 'available',
+  'A newer release supersedes an older restored APK instead of trapping the user on an obsolete download')
+assert.equal(downloaded.useUpdateState.getState().value.release.version, '0.3.0')
+globalThis.__release = { version: '0.2.0', apkSha256: 'a'.repeat(64), apkUrl: 'https://downloads.example.test/new.apk' }
+const samePending = await compile('android')
+await initialize(samePending)
+assert.equal(samePending.useUpdateState.getState().value.status, 'downloaded')
+assert.equal(samePending.useUpdateState.getState().value.release.apkSha256, 'a'.repeat(64))
+assert.equal(samePending.useUpdateState.getState().value.release.apkVersionCode, 20)
+assert.equal(samePending.useUpdateState.getState().value.release.apkUrl, 'https://downloads.example.test/new.apk',
+  'A matching manifest restores the download URL so a corrupted cache can be downloaded again')
+await samePending.checkForUpdates()
+assert.equal(samePending.useUpdateState.getState().value.status, 'downloaded',
+  'A matching verified pending APK remains installable after permission restoration')
+globalThis.__release = { version: '0.2.0', apkSha256: 'b'.repeat(64) }
+await samePending.checkForUpdates()
+assert.equal(samePending.useUpdateState.getState().value.status, 'available',
+  'A manifest with a different target digest invalidates a stale cached build')
+globalThis.__fetchRelease = async () => { throw new Error('offline') }
+const offlinePending = await compile('android')
+await initialize(offlinePending)
+await offlinePending.checkForUpdates()
+assert.equal(offlinePending.useUpdateState.getState().value.status, 'downloaded',
+  'Offline checks preserve a validated newer pending APK')
+globalThis.__fetchRelease = undefined
+globalThis.__plugin.getPendingApk = async () => ({ ready: true, version: currentVersion, sha256: 'a'.repeat(64) })
+globalThis.__release = { version: currentVersion }
+const alreadyInstalled = await compile('android')
+await initialize(alreadyInstalled)
+await alreadyInstalled.checkForUpdates()
+assert.equal(alreadyInstalled.useUpdateState.getState().value.status, 'current',
+  'A same-version leftover must not become an installable update')
 
 console.log(JSON.stringify({
   passed: true,
@@ -183,7 +210,7 @@ console.log(JSON.stringify({
     'Pre-0.1.8 local installations without a seen-version marker are migrated and version-number clicks reopen all history',
     'Web upgrade prompting is shown once per version and available updates drive the Settings indicator state',
     'Cold-launch, foreground and manual checks share one in-flight request, remove listeners on unmount, and clear stale update dots',
-    'Background failures stay silent, manual failures can be retried, and a validated pending APK wins over release refreshes',
+    'Validated pending APKs survive offline checks and permission restoration; a newer release or different digest supersedes stale cache and same-version leftovers are ignored',
   ],
   scope: 'App update state with stubbed platform/native plugin/release API plus the bundled release history; no APK was downloaded or installed',
 }, null, 2))

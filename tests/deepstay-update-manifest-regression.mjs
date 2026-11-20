@@ -9,6 +9,8 @@ const fixture = await mkdtemp(path.join(tmpdir(), 'deepstay-update-manifest-'))
 try {
   await mkdir(path.join(fixture, 'scripts'))
   await mkdir(path.join(fixture, 'release'))
+  await mkdir(path.join(fixture, 'android/app'), { recursive: true })
+  await writeFile(path.join(fixture, 'android/app/build.gradle'), 'versionCode 9\n')
   await copyFile(new URL('../scripts/update-manifest.mjs', import.meta.url), path.join(fixture, 'scripts/update-manifest.mjs'))
   await writeFile(path.join(fixture, 'package.json'), JSON.stringify({ version: '0.1.8' }))
   const apkPath = path.join(fixture, 'release/deepstay-0.1.8.apk')
@@ -25,6 +27,7 @@ try {
     const digest = createHash('sha256').update(content).digest('hex')
     assert.deepEqual(manifest, {
       version: '0.1.8',
+      versionCode: 9,
       apkUrl: `https://downloads.example.test/updates/deepstay-0.1.8-${digest}.apk`,
       sha256: digest,
     })

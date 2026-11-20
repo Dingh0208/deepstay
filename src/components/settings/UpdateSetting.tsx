@@ -31,7 +31,10 @@ export const UpdateSetting = () => {
           current.status === 'downloading' ? { ...current, ...progress } : current
         )
       })
-      await apkUpdate.downloadApk({ url: release.apkUrl, sha256: release.apkSha256 })
+      await apkUpdate.downloadApk({
+        url: release.apkUrl, sha256: release.apkSha256,
+        expectedVersion: release.version, expectedVersionCode: release.apkVersionCode,
+      })
       setUpdateState({ status: 'downloaded', release })
     } catch {
       setUpdateState({ status: 'downloadError', release })
@@ -41,9 +44,15 @@ export const UpdateSetting = () => {
   }
 
   const install = async (release: AppRelease) => {
+    if (!release.apkSha256) {
+      return
+    }
     setUpdateState({ status: 'installing', release })
     try {
-      const result = await apkUpdate.installApk()
+      const result = await apkUpdate.installApk({
+        sha256: release.apkSha256,
+        expectedVersion: release.version, expectedVersionCode: release.apkVersionCode,
+      })
       setUpdateState({
         status: result.permissionRequired ? 'installPermissionRequired' : 'installerOpened',
         release,
@@ -139,6 +148,11 @@ export const UpdateSetting = () => {
           <Button variant="outlined" size="m" onClick={() => void install(state.release)}>
             {t('updateInstallNow')}
           </Button>
+          {state.status === 'installError' && state.release.apkUrl && state.release.apkSha256 ? (
+            <Button variant="outlined" size="m" onClick={() => void download(state.release)}>
+              {t('updateDownloadAndInstall')}
+            </Button>
+          ) : null}
         </div>
       ) : null}
     </div>

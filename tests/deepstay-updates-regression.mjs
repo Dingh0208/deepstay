@@ -36,6 +36,9 @@ for (const invalid of [null, {}, { ...release, prerelease: true }, { ...release,
   assert.equal(readAppRelease(invalid), null)
 }
 assert.equal(readAppRelease({ ...release, assets: [{ name: 'update.apk', browser_download_url: 'https://example.com/update.apk' }] }).apkUrl, null)
+assert.equal(readAppRelease({ ...release, html_url: release.html_url.replace('v0.2.0', 'v0.1.0') }), null)
+assert.equal(readAppRelease({ ...release, assets: [{ ...release.assets[0], browser_download_url: release.assets[0].browser_download_url.replace('/v0.2.0/', '/v0.1.0/') }] }).apkUrl, null)
+assert.equal(readAppRelease({ ...release, assets: [{ name: 'old.apk', browser_download_url: 'https://github.com/Dingh0208/deepstay/releases/download/v0.1.0/old.apk' }, ...release.assets] }).apkUrl, release.assets[0].browser_download_url)
 const hash = 'a1'.repeat(32)
 assert.equal(readAppRelease(release).apkSha256, null)
 assert.equal(readAppRelease({ ...release, assets: [{ ...release.assets[0], digest: `sha256:${hash}` }] }).apkSha256, hash)
@@ -53,7 +56,13 @@ assert.deepEqual(readUpdateManifest(manifest, manifestUrl), {
 })
 const hashedApkUrl = `https://downloads.example.cn/deepstay/deepstay-0.2.0-${hash}.apk`
 assert.equal(readUpdateManifest({ ...manifest, apkUrl: hashedApkUrl }, manifestUrl).apkUrl, hashedApkUrl)
-assert.equal(readUpdateManifest({ ...manifest, version: '0.2.0+build.1' }, manifestUrl).version, '0.2.0+build.1')
+assert.equal(readUpdateManifest({ ...manifest, versionCode: 15 }, manifestUrl).apkVersionCode, 15)
+assert.equal(readUpdateManifest({ ...manifest, version: '0.2.0+build.1', apkUrl: manifest.apkUrl.replace('0.2.0.apk', '0.2.0+build.1.apk') }, manifestUrl).version, '0.2.0+build.1')
+for (const mismatch of [
+  { ...manifest, apkUrl: manifest.apkUrl.replace('0.2.0', '0.1.0') },
+  { ...manifest, apkUrl: hashedApkUrl.replace(hash, 'b2'.repeat(32)) },
+  ...[0, -1, 1.5, '15', Number.MAX_SAFE_INTEGER + 1].map(versionCode => ({ ...manifest, versionCode })),
+]) assert.equal(readUpdateManifest(mismatch, manifestUrl), null, 'Manifest version, code and content-addressed filename must agree')
 for (const invalid of [null, {}, { ...manifest, version: 'bad' }, { ...manifest, version: '0.2' },
   { ...manifest, version: '0.2.0-rc.1' }, { ...manifest, version: 'v0.2.0-beta' },
   { ...manifest, sha256: '' }, { ...manifest, sha256: '0'.repeat(63) }, { ...manifest, sha256: 'g'.repeat(64) },

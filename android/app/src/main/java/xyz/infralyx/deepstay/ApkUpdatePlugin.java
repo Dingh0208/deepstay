@@ -17,6 +17,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
@@ -35,6 +36,7 @@ public class ApkUpdatePlugin extends Plugin {
     private volatile boolean cancelled;
     private volatile HttpURLConnection activeConnection;
     private boolean downloading;
+    private boolean installing;
 
     @PluginMethod
     public void getInstallStatus(PluginCall call) {
@@ -57,23 +59,50 @@ public class ApkUpdatePlugin extends Plugin {
         }
     }
 
-    private File updateFile() {
-        return new File(new File(getContext().getCacheDir(), "updates"), "deepstay.apk");
+    private SharedPreferences updatePreferences() {
+        return getContext().getSharedPreferences("deepstay_app_updates", android.content.Context.MODE_PRIVATE);
+    }
+
+    private File updateFile(String sha256) {
+        return new File(new File(getContext().getCacheDir(), "updates"), "deepstay-" + sha256.toLowerCase(Locale.ROOT) + ".apk");
+    }
+
+    private boolean isChecksum(String value) {
+        return value != null && value.matches("(?i)[a-f0-9]{64}");
+    }
+
+    private Long expectedVersionCode(PluginCall call) throws IOException {
+        Object value = call.getData().opt("expectedVersionCode");
+        if (value == null || value == org.json.JSONObject.NULL) return null;
+        if (!(value instanceof Number)) throw new IOException("Invalid target version code");
+        double number = ((Number) value).doubleValue();
+        if (Double.isNaN(number) || Double.isInfinite(number) || number < 1 || number > 9007199254740991L || number != Math.floor(number)) {
+            throw new IOException("Invalid target version code");
+        }
+        return ((Number) value).longValue();
     }
 
     @PluginMethod
     public void downloadApk(PluginCall call) {
         String url = call.getString("url");
         String expectedSha256 = call.getString("sha256");
-        if (!isAllowedApkUrl(url) ||
-            expectedSha256 == null || !expectedSha256.matches("(?i)[a-f0-9]{64}")) {
-            call.reject("Invalid APK release URL or checksum");
+        String expectedVersion = call.getString("expectedVersion");
+        final Long expectedCode;
+        try {
+            expectedCode = expectedVersionCode(call);
+        } catch (IOException error) {
+            call.reject(error.getMessage(), error);
+            return;
+        }
+        if (!isAllowedApkUrl(url) || !isChecksum(expectedSha256) ||
+            expectedVersion == null || expectedVersion.trim().isEmpty()) {
+            call.reject("Invalid APK release URL, checksum or target version");
             return;
         }
 
         synchronized (downloadLock) {
-            if (downloading) {
-                call.reject("An update is already downloading");
+            if (downloading || installing) {
+                call.reject("An update download or installation is already in progress");
                 return;
             }
             downloading = true;
@@ -81,7 +110,7 @@ public class ApkUpdatePlugin extends Plugin {
         }
         // Keep Capacitor's shared plugin thread free so cancelDownload can interrupt network I/O.
         new Thread(() -> {
-            File output = updateFile();
+            File output = updateFile(expectedSha256);
             File partial = new File(output.getPath() + ".part");
             HttpURLConnection connection = null;
             try {
@@ -89,7 +118,6 @@ public class ApkUpdatePlugin extends Plugin {
                 if (!directory.exists() && !directory.mkdirs()) {
                     throw new IOException("Cannot create update directory");
                 }
-                output.delete();
                 partial.delete();
                 connection = openDownload(new URL(url));
                 long contentLength = connection.getContentLength();
@@ -123,15 +151,28 @@ public class ApkUpdatePlugin extends Plugin {
                 if (!actualSha256.equalsIgnoreCase(expectedSha256)) {
                     throw new IOException("APK checksum does not match the release manifest");
                 }
-                verifyArchive(partial, false);
+                PackageInfo archive = verifyArchive(partial, expectedVersion, expectedCode);
                 checkCancelled();
-                if (!partial.renameTo(output)) throw new IOException("Cannot finish the verified download");
+                if (output.exists()) {
+                    // A hash identifies immutable bytes; keep an existing URI's file in place.
+                    try {
+                        verifyChecksum(output, expectedSha256);
+                    } catch (IOException error) {
+                        if (!output.delete()) throw error;
+                    }
+                }
+                if (!output.exists() && !partial.renameTo(output)) {
+                    throw new IOException("Cannot finish the verified download");
+                }
+                if (!updatePreferences().edit().putString("pending_sha256", expectedSha256.toLowerCase(Locale.ROOT))
+                    .putString("pending_version", archive.versionName).putLong("pending_version_code", versionCode(archive)).commit()) {
+                    throw new IOException("Cannot save verified update metadata");
+                }
                 sendProgress(received, received);
                 JSObject result = new JSObject();
                 result.put("bytes", received);
                 call.resolve(result);
             } catch (Exception error) {
-                output.delete();
                 call.reject(cancelled ? "Update download cancelled" : "Unable to download or verify the APK", error);
             } finally {
                 partial.delete();
@@ -177,8 +218,10 @@ public class ApkUpdatePlugin extends Plugin {
             activeConnection = connection;
             connection.setConnectTimeout(15000);
             connection.setReadTimeout(30000);
+            connection.setUseCaches(false);
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Accept", "application/vnd.android.package-archive");
+            connection.setRequestProperty("Cache-Control", "no-cache");
             checkCancelled();
             int status = connection.getResponseCode();
             if (status == HttpURLConnection.HTTP_OK) return connection;
@@ -221,24 +264,42 @@ public class ApkUpdatePlugin extends Plugin {
         cancelDownload();
     }
 
+    private void finishInstallation() {
+        synchronized (downloadLock) {
+            installing = false;
+        }
+    }
+
     @PluginMethod
     public void getPendingApk(PluginCall call) {
         synchronized (downloadLock) {
             JSObject result = new JSObject();
             result.put("ready", false);
             if (!downloading) {
-                File apk = updateFile();
+                // Legacy downloads have no release identity and must not be offered for installation.
+                File legacy = new File(new File(getContext().getCacheDir(), "updates"), "deepstay.apk");
+                legacy.delete();
+                new File(legacy.getPath() + ".part").delete();
+                SharedPreferences preferences = updatePreferences();
+                String sha256 = preferences.getString("pending_sha256", null);
+                if (!isChecksum(sha256)) {
+                    call.resolve(result);
+                    return;
+                }
+                File apk = updateFile(sha256);
                 new File(apk.getPath() + ".part").delete();
                 try {
-                    PackageInfo archive = verifyArchive(apk, true);
-                    if (archive.versionName == null || archive.versionName.trim().isEmpty()) {
-                        throw new IOException("Update version name is missing");
-                    }
+                    verifyChecksum(apk, sha256);
+                    PackageInfo archive = verifyArchive(apk, preferences.getString("pending_version", null),
+                        preferences.getLong("pending_version_code", 0L));
                     result.put("ready", true);
                     result.put("version", archive.versionName);
+                    result.put("versionCode", versionCode(archive));
+                    result.put("sha256", sha256);
                     result.put("bytes", apk.length());
                 } catch (Exception error) {
                     apk.delete();
+                    preferences.edit().remove("pending_sha256").remove("pending_version").remove("pending_version_code").apply();
                 }
             }
             call.resolve(result);
@@ -246,7 +307,7 @@ public class ApkUpdatePlugin extends Plugin {
     }
 
     @SuppressWarnings("deprecation")
-    private PackageInfo verifyArchive(File apk, boolean requireNewer) throws Exception {
+    private PackageInfo verifyArchive(File apk, String expectedVersion, Long expectedCode) throws Exception {
         PackageManager manager = getContext().getPackageManager();
         PackageInfo current = manager.getPackageInfo(getContext().getPackageName(), PackageManager.GET_SIGNATURES);
         PackageInfo archive = manager.getPackageArchiveInfo(apk.getAbsolutePath(), PackageManager.GET_SIGNATURES);
@@ -255,14 +316,38 @@ public class ApkUpdatePlugin extends Plugin {
             !new HashSet<Signature>(Arrays.asList(current.signatures)).equals(new HashSet<Signature>(Arrays.asList(archive.signatures)))) {
             throw new IOException("Update package or signing certificate does not match this app");
         }
-        long currentVersion = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? current.getLongVersionCode() : current.versionCode;
-        long archiveVersion = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? archive.getLongVersionCode() : archive.versionCode;
-        if (archiveVersion < currentVersion) throw new IOException("Update would downgrade this app");
-        if (requireNewer && archiveVersion == currentVersion) throw new IOException("Update is already installed");
+        verifyReleaseVersion(versionCode(current), versionCode(archive), archive.versionName, expectedVersion, expectedCode);
         return archive;
     }
 
-    private String toHex(byte[] bytes) {
+    @SuppressWarnings("deprecation")
+    private long versionCode(PackageInfo info) {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.P ? info.getLongVersionCode() : info.versionCode;
+    }
+
+    static void verifyReleaseVersion(long currentCode, long archiveCode, String archiveVersion,
+        String expectedVersion, Long expectedCode) throws IOException {
+        if (archiveCode < currentCode) throw new IOException("Update would downgrade this app");
+        if (archiveCode == currentCode) throw new IOException("Update is already installed");
+        if (expectedVersion == null || !expectedVersion.equals(archiveVersion) ||
+            (expectedCode != null && expectedCode != archiveCode)) {
+            throw new IOException("APK version does not match the selected release");
+        }
+    }
+
+    static void verifyChecksum(File apk, String expectedSha256) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] buffer = new byte[32768];
+        try (InputStream input = new FileInputStream(apk)) {
+            int count;
+            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
+        }
+        if (!toHex(digest.digest()).equalsIgnoreCase(expectedSha256)) {
+            throw new IOException("APK checksum does not match the selected release");
+        }
+    }
+
+    private static String toHex(byte[] bytes) {
         StringBuilder result = new StringBuilder(bytes.length * 2);
         for (byte value : bytes) result.append(String.format(Locale.ROOT, "%02x", value));
         return result.toString();
@@ -270,6 +355,13 @@ public class ApkUpdatePlugin extends Plugin {
 
     @PluginMethod
     public void installApk(PluginCall call) {
+        synchronized (downloadLock) {
+            if (downloading || installing) {
+                call.reject("An update download or installation is already in progress");
+                return;
+            }
+            installing = true;
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 !getContext().getPackageManager().canRequestPackageInstalls()) {
@@ -280,17 +372,22 @@ public class ApkUpdatePlugin extends Plugin {
             }
             launchInstaller(call);
         } catch (Exception error) {
+            finishInstallation();
             call.reject("Unable to open the Android install permission settings", error);
         }
     }
 
     @ActivityCallback
     private void installPermissionResult(PluginCall call, ActivityResult result) {
-        if (call == null) return;
+        if (call == null) {
+            finishInstallation();
+            return;
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !getContext().getPackageManager().canRequestPackageInstalls()) {
             JSObject response = new JSObject();
             response.put("permissionRequired", true);
+            finishInstallation();
             call.resolve(response);
             return;
         }
@@ -298,13 +395,19 @@ public class ApkUpdatePlugin extends Plugin {
     }
 
     private void launchInstaller(PluginCall call) {
-        File apk = updateFile();
-        if (!apk.isFile() || apk.length() == 0) {
-            call.reject("Download the update before installing it");
-            return;
-        }
         try {
-            verifyArchive(apk, false);
+            String sha256 = call.getString("sha256");
+            String expectedVersion = call.getString("expectedVersion");
+            Long expectedCode = expectedVersionCode(call);
+            if (!isChecksum(sha256) || expectedVersion == null || expectedVersion.trim().isEmpty()) {
+                throw new IOException("Select a verified update before installing it");
+            }
+            synchronized (downloadLock) {
+                if (downloading) throw new IOException("Wait for the update download to finish");
+            }
+            File apk = updateFile(sha256);
+            verifyChecksum(apk, sha256);
+            verifyArchive(apk, expectedVersion, expectedCode);
             Uri uri = FileProvider.getUriForFile(getContext(), getContext().getPackageName() + ".fileprovider", apk);
             Intent installer = new Intent(Intent.ACTION_VIEW);
             installer.setDataAndType(uri, "application/vnd.android.package-archive");
@@ -313,6 +416,8 @@ public class ApkUpdatePlugin extends Plugin {
             call.resolve(new JSObject());
         } catch (Exception error) {
             call.reject("Unable to open the Android package installer", error);
+        } finally {
+            finishInstallation();
         }
     }
 }

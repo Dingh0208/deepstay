@@ -59,6 +59,19 @@ jobs:
         run: pnpm android:release
       - name: Verify APK
         run: |
+          APK="release/deepstay-$(node -p 'require("./package.json").version').apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" > "$RUNNER_TEMP/apk-badging.txt"
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs'
+          const version = JSON.parse(fs.readFileSync('package.json')).version
+          const code = /\bversionCode\s+(\d+)/.exec(fs.readFileSync('android/app/build.gradle', 'utf8'))?.[1]
+          const badging = fs.readFileSync(`${process.env.RUNNER_TEMP}/apk-badging.txt`, 'utf8')
+          const actual = /package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'/.exec(badging)
+          if (!actual || actual[1] !== 'xyz.infralyx.deepstay' || actual[2] !== code || actual[3] !== version) {
+            throw new Error('Built APK package/version does not match the release source')
+          }
+          console.log(`Verified APK ${actual[1]} ${actual[3]} (${actual[2]})`)
+          NODE
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs release/deepstay-*.apk
           cd release
           sha256sum deepstay-*.apk > SHA256SUMS.txt

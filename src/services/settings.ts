@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
 import { normalizeGeneration, type GenerationSettings } from './api/generation.js'
+import { apiEndpoint } from './api/endpoints.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
@@ -97,6 +98,7 @@ const KEYS = {
   autoReadAloud: 'deepstay:auto-read-aloud',
   showReplyTokenUsage: 'deepstay:show-reply-token-usage',
   generation: 'deepstay:generation',
+  modelContextWindows: 'deepstay:model-context-windows',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
   pinnedSessionIds: 'deepstay:pinned-session-ids',
@@ -118,8 +120,10 @@ const write = (key: string, value: string | null) => {
     } else {
       localStorage.setItem(key, value)
     }
+    return true
   } catch {
     // 存储不可用时只在内存中生效
+    return false
   }
 }
 
@@ -175,6 +179,62 @@ const initialGeneration = () => {
   }
 }
 
+type ModelRoute = Pick<Settings, 'apiBaseUrl' | 'apiProtocol' | 'model'>
+
+const contextWindowKey = ({ apiBaseUrl, apiProtocol, model }: ModelRoute) => {
+  let endpoint = apiBaseUrl
+  try {
+    endpoint = apiEndpoint(apiBaseUrl, apiProtocol === 'openai' ? 'v1/chat/completions' : 'anthropic/v1/messages')
+  } catch {
+    // Keep a previously saved invalid connection editable in settings.
+  }
+  return JSON.stringify([apiProtocol, endpoint, model])
+}
+
+const readModelContextWindows = (): Map<string, number> => {
+  try {
+    const raw: unknown = JSON.parse(read(KEYS.modelContextWindows) ?? '{}')
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return new Map(Object.entries(raw).flatMap(([key, value]) => {
+        const tokens = normalizeGeneration({ contextTokens: value }).contextTokens
+        return tokens === undefined ? [] : [[key, tokens] as const]
+      }))
+    }
+  } catch {
+    // Invalid preferences use the default context window.
+  }
+  return new Map()
+}
+
+const modelContextWindows = readModelContextWindows()
+const saveModelContextWindows = () => write(KEYS.modelContextWindows,
+  modelContextWindows.size ? JSON.stringify(Object.fromEntries(modelContextWindows)) : null)
+
+const generationForRoute = (generation: GenerationSettings, route: ModelRoute): GenerationSettings => {
+  const next = { ...generation }
+  delete next.contextTokens
+  const contextTokens = modelContextWindows.get(contextWindowKey(route))
+  return contextTokens === undefined ? next : { ...next, contextTokens }
+}
+
+const initialRoute: ModelRoute = {
+  apiBaseUrl: read(KEYS.apiBaseUrl) || __API_ORIGIN__,
+  apiProtocol: read(KEYS.apiProtocol) === 'openai' ? 'openai' : 'deepseek',
+  model: read(KEYS.model) || 'deepseek-flash',
+}
+const savedGeneration = initialGeneration()
+if (savedGeneration.contextTokens !== undefined) {
+  const key = contextWindowKey(initialRoute)
+  if (!modelContextWindows.has(key)) {
+    modelContextWindows.set(key, savedGeneration.contextTokens)
+  }
+  const migrated = saveModelContextWindows()
+  delete savedGeneration.contextTokens
+  if (migrated) {
+    write(KEYS.generation, Object.keys(savedGeneration).length ? JSON.stringify(savedGeneration) : null)
+  }
+}
+
 const readFavoriteMessages = (): FavoriteMessage[] => {
   try {
     const value: unknown = JSON.parse(read(KEYS.favoriteMessages) ?? '[]')
@@ -192,9 +252,7 @@ const readFavoriteMessages = (): FavoriteMessage[] => {
 
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
-  apiBaseUrl: read(KEYS.apiBaseUrl) || __API_ORIGIN__,
-  apiProtocol: read(KEYS.apiProtocol) === 'openai' ? 'openai' : 'deepseek',
-  model: read(KEYS.model) || 'deepseek-flash',
+  ...initialRoute,
   models: readStringList(KEYS.models),
   locale: initialLocale(),
   themePreference: initialThemePreference(),
@@ -206,7 +264,7 @@ export const useSettings = create<Settings>(() => ({
   contextMemoryEnabled: read(KEYS.contextMemoryEnabled) === 'true',
   autoReadAloud: read(KEYS.autoReadAloud) === 'true',
   showReplyTokenUsage: read(KEYS.showReplyTokenUsage) === 'true',
-  generation: initialGeneration(),
+  generation: generationForRoute(savedGeneration, initialRoute),
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
   pinnedSessionIds: [...new Set(readStringList(KEYS.pinnedSessionIds))],
@@ -249,12 +307,13 @@ export const setApiConnection = (connection: Pick<Settings, 'apiKey' | 'apiBaseU
   write(KEYS.apiProtocol, connection.apiProtocol)
   write(KEYS.model, connection.model)
   write(KEYS.models, JSON.stringify(connection.models))
-  useSettings.setState(connection)
+  useSettings.setState({ ...connection, generation: generationForRoute(useSettings.getState().generation, connection) })
 }
 
 export const setModel = (model: string) => {
   write(KEYS.model, model)
-  useSettings.setState({ model })
+  const current = useSettings.getState()
+  useSettings.setState({ model, generation: generationForRoute(current.generation, { ...current, model }) })
 }
 
 export const setThinkingCollapsed = (thinkingCollapsed: boolean) => {
@@ -279,7 +338,16 @@ export const setShowReplyTokenUsage = (showReplyTokenUsage: boolean) => {
 
 export const setGeneration = (value: GenerationSettings) => {
   const generation = normalizeGeneration(value)
-  write(KEYS.generation, Object.keys(generation).length ? JSON.stringify(generation) : null)
+  const key = contextWindowKey(useSettings.getState())
+  if (generation.contextTokens === undefined) {
+    modelContextWindows.delete(key)
+  } else {
+    modelContextWindows.set(key, generation.contextTokens)
+  }
+  saveModelContextWindows()
+  const globalGeneration = { ...generation }
+  delete globalGeneration.contextTokens
+  write(KEYS.generation, Object.keys(globalGeneration).length ? JSON.stringify(globalGeneration) : null)
   useSettings.setState({ generation })
 }
 

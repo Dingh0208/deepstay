@@ -1,5 +1,7 @@
 # 应用内更新与国内分发
 
+从 0.1.14 起，应用内更新只安装 versionCode 严格高于当前的 APK，且必须匹配清单目标版本、可选 versionCode 和 SHA-256。下载与安装前都校验包名、签名和目标身份。缓存文件按 SHA-256 分开保存；旧版无目标元数据的缓存不再作为更新恢复。较新的远端版本会取代较旧的待安装缓存，离线时仍保留已验证的新版安装入口。
+
 每次启动或重新进入前台时自动检查更新；发现新版时，设置入口显示提示点。点击设置中的 deepstay 版本号可浏览完整更新历史，升级后首次进入会展示最近三个版本。Android 在应用内下载 APK，显示进度并核对 SHA-256、包名及签名，通过后由系统安装器确认更新。首次安装更新需用户允许 deepstay 安装应用。关闭设置不会丢失当前下载状态；授权导致进程重启时，重新进入设置可恢复缓存中已验证新版的安装入口。清缓存后需重新下载。
 
 GitHub Release 继续保存源码、正式 APK 和校验和。正式版从自有服务器 `https://ds.herohao.top/updates/latest.json` 检查更新，同目录下载 APK，不依赖 GitHub 连通性。也可配置腾讯云 COS 或阿里云 OSS。
@@ -17,8 +19,9 @@ deepstay-0.1.11-<sha256>.apk
 
 ```json
 {
-  "version": "0.1.11",
-  "apkUrl": "https://ds.herohao.top/updates/deepstay-0.1.11-<sha256>.apk",
+  "version": "0.1.14",
+  "versionCode": 15,
+  "apkUrl": "https://ds.herohao.top/updates/deepstay-0.1.14-<sha256>.apk",
   "sha256": "APK 文件的 64 位 SHA-256 十六进制值"
 }
 ```

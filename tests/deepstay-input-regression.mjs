@@ -13,14 +13,13 @@ const mocks = new Map([
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
   ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconPaperclipOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
   ['../../services/settings.js', 'export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
-  ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek";'],
-  ['../../services/api/modelCapabilities.js', 'export const supportsDeepSeekServerTools=model=>model!=="deepseek-v4-pro";'],
+  ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek"&&connection.baseUrl.replace(/\\/(?:anthropic(?:\\/v1)?|v1)(?:\\/messages)?$/,"")==="https://api.deepseek.com";'],
   ['../../services/api/generation.js', 'export const DEFAULT_CONTEXT_WINDOW=1000000;'],
   ['../../services/chat/latestReminder.js', 'export const createLatestReminder=()=>"fixture reminder";'],
   ['./useContextPrediction.js', 'export const useContextPrediction=(options,paused)=>{globalThis.__estimated.push({...options,paused});return {estimate:paused?undefined:{system:5,tools:options.tools.length,messages:200},estimating:false}};'],
   ['../../services/characters.js', 'export const characterSystemPrompt=base=>base;'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>globalThis.__mobile;'],
-  ['../../services/chat/store.js', 'export const getEffectiveContextInputBudget=()=>globalThis.__settings.generation.contextTokens??1000000;export const SYSTEM_PROMPT="default system";export const serverTools=search=>search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
+  ['../../services/chat/store.js', 'export const getEffectiveContextInputBudget=()=>globalThis.__settings.generation.contextTokens??1000000;export const SYSTEM_PROMPT="default system";export const serverTools=(search,model)=>model==="deepseek-v4-pro"?(search?[{type:"web_search_20250305",name:"web_search"}]:[]):search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
   ['../../utils/object.js', 'export const hasOwn=(object,key)=>Object.hasOwn(object,key);'],
   ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:{get:()=>globalThis.__draft}}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
@@ -108,17 +107,16 @@ try {
   globalThis.__settings.apiProtocol = 'openai'
   let tree = Input({ sessionId: null })
   find(tree, node => node.type?.name === 'DraftAttachments').props.onRetry('old-file')
-  assert.equal(globalThis.__retries.length, 0)
-  assert.deepEqual(globalThis.__notices.at(-1), { key: 'apiTextOnly' })
+  assert.deepEqual(globalThis.__retries, [[null, 'old-file', 'fixture']], 'Custom-provider attachment retries use their local parser')
   globalThis.__settings.apiProtocol = 'deepseek'
   tree = Input({ sessionId: null })
   find(tree, node => node.type?.name === 'DraftAttachments').props.onRetry('old-file')
-  assert.deepEqual(globalThis.__retries, [[null, 'old-file', 'fixture']])
+  assert.deepEqual(globalThis.__retries, [[null, 'old-file', 'fixture'], [null, 'old-file', 'fixture']])
   globalThis.__chat.importingHistory = true
   tree = Input({ sessionId: null })
   find(tree, node => node.type?.name === 'DraftAttachments').props.onRetry('old-file')
-  assert.equal(globalThis.__retries.length, 1)
-  checks.push('Existing attachment retry is blocked in text-only mode, allowed for DeepSeek and still blocked during history replacement')
+  assert.equal(globalThis.__retries.length, 2)
+  checks.push('Existing attachment retries use local parsing on third-party routes or DeepSeek upload on official routes, and remain blocked during history replacement')
   globalThis.__chat.importingHistory = false
   tree = Input({ sessionId: 'current-chat' })
   const picker = find(tree, node => node.type === 'input' && node.props.type === 'file')
@@ -233,10 +231,28 @@ try {
   delete globalThis.__chat.streaming['imported-chat']
   globalThis.__settings.model = 'deepseek-v4-pro'
   tree = Input({ sessionId: 'imported-chat' })
-  assert.equal(find(tree, node => node.type === 'button' && node.props['aria-label'] === 'search'), null)
+  assert.ok(find(tree, node => node.type === 'button' && node.props['aria-label'] === 'search'))
   assert.ok(find(tree, node => node.type?.name === 'VoiceButton'), 'Unsupported server tools do not disable unrelated attachment and voice capabilities')
-  assert.deepEqual(globalThis.__estimated.at(-1).tools, [])
-  checks.push('Next-request prediction receives current draft, session memory, tools and route budget even with old metrics, pauses while streaming, and Pro hides unsupported search without disabling voice')
+  assert.ok(find(tree, node => node.type?.name === 'IconButton' && node.props.tooltip === 'uploadFile'))
+  assert.deepEqual(globalThis.__estimated.at(-1).tools, [{ type: 'web_search_20250305', name: 'web_search' }])
+  globalThis.__settings.model = 'deepseek-v4-flash'
+  globalThis.__settings.apiBaseUrl = 'https://api.deepseek.com/anthropic/v1/messages'
+  tree = Input({ sessionId: 'imported-chat' })
+  assert.ok(find(tree, node => node.type === 'button' && node.props['aria-label'] === 'search'), 'The official full Messages URL keeps search available')
+  assert.ok(find(tree, node => node.type?.name === 'VoiceButton'), 'The official full Messages URL keeps voice input available')
+  assert.ok(find(tree, node => node.type?.name === 'IconButton' && node.props.tooltip === 'uploadFile'), 'The official full Messages URL keeps file uploads available')
+  assert.deepEqual(globalThis.__estimated.at(-1).tools, ['read', 'search'])
+  globalThis.__settings.apiProtocol = 'openai'
+  globalThis.__settings.apiBaseUrl = 'https://relay.example.test/v1'
+  tree = Input({ sessionId: 'imported-chat' })
+  assert.ok(find(tree, node => node.type?.name === 'IconButton' && node.props.tooltip === 'uploadFile'), 'Third-party routes expose the local attachment path')
+  assert.equal(find(tree, node => node.type?.name === 'VoiceButton'), null, 'A custom provider must not send speech to the DeepSeek-only ASR endpoint')
+  const beforeLocalDocument = globalThis.__fileBatches.length
+  const customInput = find(tree, node => node.type === 'input' && node.props.type === 'file')
+  customInput.props.onChange({ target: { files: [new File(['fixture'], 'notes.pdf', { type: 'application/pdf' })], value: 'selected' } })
+  assert.equal(globalThis.__fileBatches.length, beforeLocalDocument + 1, 'Third-party PDF is handed to local attachment parsing without the paid DeepSeek confirmation dialog')
+  assert.equal(find(tree, node => node.type?.name === 'Modal'), null)
+  checks.push('Search prediction and entry points use the model-specific V4 schemas; official routes expose supported search, upload and voice, while custom routes expose local PDF/image attachments and never call the private DeepSeek ASR endpoint')
   const evidence = { passed: true, runtime: process.version, checks, scope: 'Actual ChatInput TSX with mocked application services; verifies event handling and retry calls. Native textarea newline is left to browser.' }
   await writeFile(new URL('./deepstay-input-evidence.json', import.meta.url), JSON.stringify(evidence, null, 2) + '\n')
   console.log(JSON.stringify(evidence, null, 2))

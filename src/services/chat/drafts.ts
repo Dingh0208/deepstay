@@ -6,8 +6,8 @@ import {
   cancelUpload,
   getUploadPurpose,
   isImage,
+  prepareAttachment,
   resolveMimeType,
-  uploadAttachment,
   validateFiles,
   type UploadTask,
 } from '../attachments.js'
@@ -119,13 +119,13 @@ export const setDraftText = (sessionId: string | null, text: string) => {
 }
 
 const upload = (attachment: DraftAttachment, apiKey: string) => {
-  // 上传任务负责记录错误，输入框的附件卡片展示失败及重试入口。
-  void uploadAttachment(
+  void prepareAttachment(
     apiKey,
     attachment.id,
     attachment.file,
     attachment.file.name,
     attachment.isImage,
+    resolveMimeType(attachment.file),
     undefined,
     attachment.uploadPurpose
   ).catch(() => {})
@@ -177,20 +177,21 @@ export const prepareDraftMessage = (draft: Draft, tasks: Record<string, UploadTa
   if (!text && draft.attachments.length === 0) {
     return null
   }
-  const files: (FileAttachment & { serverId: string; blob: Blob })[] = []
+  const files: (FileAttachment & { blob: Blob; localText?: string })[] = []
   for (const attachment of draft.attachments) {
     const task = tasks[attachment.id]
-    if (task?.status !== 'done' || !task.serverId) {
+    if (task?.status !== 'done') {
       return null
     }
     files.push({
       id: attachment.id,
-      serverId: task.serverId,
+      serverId: task.serverId ?? null,
       name: attachment.file.name,
       size: attachment.file.size,
       isImage: attachment.isImage,
       mimeType: resolveMimeType(attachment.file),
       uploadPurpose: attachment.uploadPurpose,
+      ...(task.localText ? { localText: task.localText } : {}),
       blob: attachment.file,
     })
   }

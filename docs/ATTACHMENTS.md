@@ -1,6 +1,8 @@
 # 附件上传、引用与费用
 
-DeepStay 通过 DeepSeek Anthropic 兼容 Files API 上传附件，再在消息中引用返回的 `file_id`。Word、PDF、PPT 默认选择 `text_recognition`；需要文档中的图片和图表时，可在上传确认框选择 `rich_layout_recognition`。普通文本、代码、表格和电子书沿用 `user_data`。请求表单先写 purpose，再写 file。
+DeepSeek 官方连接通过 Anthropic 兼容 Files API 上传附件，再在消息中引用返回的 `file_id`。Word、PDF、PPT 默认选择 `text_recognition`；需要文档中的图片和图表时，可在上传确认框选择 `rich_layout_recognition`。普通文本、代码、表格和电子书沿用 `user_data`。请求表单先写 purpose，再写 file。官方服务支持的模型都显示附件入口；文件与联网搜索工具能力分开判断。
+
+第三方 OpenAI-compatible 与 Anthropic-compatible 连接使用同一附件入口，不调用 DeepSeek Files API。图片先在本机按现有尺寸规则处理，再以 OpenAI `image_url` 数据 URL 或 Anthropic base64 图片块发送；PDF、DOCX、DOC 和文本附件在本机提取文字，随当前消息作为文本发送。提取结果保存在本机附件记录中，后续续聊复用，不会每轮重复解析同一文件，也不会把 DeepSeek `file_id` 发给第三方。DeepSeek 官方 PDF/Word 收费解析确认只用于官方 Files API；第三方不弹收费解析选项。
 
 Word / PDF 的字节大小不能代表模型展开后的上下文长度。官方返回文件 ID 前已执行解析；聊天报错不代表上传失败。上传解析成功可能按页计费，历史文件的全文在后续请求中仍计入模型输入 Token。复用文件 ID 只避免再次上传解析，不代表以后免费读取。客户端中断时，服务端仍可能完成解析并计费，不能靠自动重传来判断第一次是否成功。
 

@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@file-viewer/doc@3.3.5'

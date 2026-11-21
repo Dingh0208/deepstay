@@ -86,7 +86,9 @@ export const getContextLengthError = (
   // OpenAI 报出的上下文窗口也包含输出预算，不能直接作为输入上限。
   return providerCode === 'context_length_exceeded' ||
     /^(?:maximum )?context[ _]length[ _]exceeded\b/i.test(message) ||
-    /^this model's maximum context length is [\d,]+ tokens?[.\s]+however,\s*you requested\b/i.test(message)
+    /^this model's maximum context length is [\d,]+ tokens?[.\s]+however,\s*you requested\b/i.test(message) ||
+    /\b(?:prompt|input)\b.{0,100}\b(?:too long|too large|exceed\w*|limit|maximum|max(?:imum)?\b)/i.test(message) ||
+    /\b(?:context|tokens?|token count)\b.{0,100}\b(?:too long|too large|exceed\w*|over|limit|maximum|max)\b/i.test(message)
     ? {}
     : null
 }

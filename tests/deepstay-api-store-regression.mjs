@@ -38,6 +38,12 @@ const db = await import(new URL('services/chat/db.ts', sourceRoot))
 const { getReplyMetrics, getTokenRate } = await import(new URL('services/chat/replyMetrics.ts', sourceRoot))
 const { estimateRequestParts, estimateRequestTokens } = await import(new URL('services/chat/contextMemory.ts', sourceRoot))
 const checks = [], requests = []
+assert.deepEqual(store.serverTools(true, 'deepseek-v4-pro'), [{ type: 'web_search_20250305', name: 'web_search' }])
+assert.deepEqual(store.serverTools(false, 'deepseek-v4-pro'), [])
+assert.deepEqual(store.serverTools(true, 'deepseek-v4-flash'), [
+  { type: 'deepseek_read_url', name: 'deepseek_read_url' },
+  { type: 'deepseek_web_search', name: 'deepseek_web_search' },
+])
 const encoder = new TextEncoder()
 globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body)
@@ -211,7 +217,7 @@ await waitIdle()
 assert.equal(officialRequests.length, 2)
 for (const request of officialRequests) {
   assert.equal(request.url, 'https://api.deepseek.com/anthropic/v1/messages')
-  assert.equal(request.body.messages.length, rounds * 2 + 2) // The latest reminder adds one message.
+  assert.equal(request.body.messages.length, rounds * 2 + 1) // V4 Pro does not accept latest_reminder.
   assert.equal(request.body.messages[0].content[0].source.file_id, 'fixture-image')
   assert.equal(request.body.messages.at(-1).content, '续聊')
 }
@@ -277,11 +283,11 @@ drafts.setDraftText(imageHistory, '好')
 assert.equal(store.sendMessage(imageHistory), true)
 await waitIdle()
 assert.equal(imageRequests.length, 3)
-assert.equal(imageRequests[0][0].role, 'latest_reminder')
-assert.equal(imageRequests[0][1].content[0].source.file_id, badImage.serverId)
-assert.equal(imageRequests[1][1].content[0].source.file_id, goodImage.serverId)
+assert.equal(imageRequests[0][0].role, 'user')
+assert.equal(imageRequests[0][0].content[0].source.file_id, badImage.serverId)
+assert.equal(imageRequests[1][0].content[0].source.file_id, goodImage.serverId)
 assert.equal(imageRequests[1].some(message => message.content[0]?.source?.file_id === badOnly.serverId), true)
-assert.deepEqual(imageRequests[2][1].content,
+assert.deepEqual(imageRequests[2][0].content,
   [{ type: 'image', source: { type: 'file', file_id: goodImage.serverId } }, { type: 'text', text: '旧问题' }])
 assert.equal(imageRequests[2].some(message => message.content[0]?.text === '旧回答1'), false)
 assert.equal(imageRequests[2].at(-1).content, '好')
@@ -298,7 +304,7 @@ drafts.setDraftText(imageHistory, '继续刚才的对话')
 assert.equal(store.sendMessage(imageHistory), true)
 await waitIdle()
 assert.equal(imageRequests.length, beforeFollowUp + 1)
-assert.deepEqual(imageRequests.at(-1)[1].content, imageRequests[2][1].content)
+assert.deepEqual(imageRequests.at(-1)[0].content, imageRequests[2][0].content)
 checks.push('Later sends do not resubmit confirmed rejected historical image references on the same connection')
 
 const currentImage = 'image-error-in-current-turn'
@@ -565,6 +571,7 @@ settings.setApiConnection({
   apiKey: 'fixture-only', apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek',
   model: 'deepseek-v4-pro', models: ['deepseek-v4-pro'],
 })
+settings.setGeneration({ contextTokens: 24_000 })
 drafts.setDraftText(oversizedId, oversizedText)
 assert.equal(store.sendMessage(oversizedId), true)
 await waitIdle()
@@ -576,6 +583,7 @@ const oversizedSaved = (await db.loadSession(oversizedId)).messages
 assert.equal(oversizedSaved.at(-1).status, 'done')
 assert.equal(oversizedSaved.at(-2).content, oversizedText)
 assert.deepEqual(oversizedSaved.slice(0, 2).map(({id}) => id), limitHistory.slice(0, 2).map(({id}) => id))
+settings.setGeneration({})
 
 store.newChat()
 globalThis.fetch = async (_url, init) => {
@@ -596,6 +604,7 @@ checks.push('A conservative estimate never blocks the current text or removes fi
 const continuationId = 'large-continuation-with-current-document'
 const continuationSummary = { id: continuationId, title: continuationId, createdAt: 1, updatedAt: 4 }
 const document = { id: 'current-document', serverId: null, name: 'test.txt', isImage: false, size: 4, mimeType: 'text/plain' }
+settings.setGeneration({ contextTokens: 24_000 })
 await db.saveSession({
   ...continuationSummary,
   contextMemory: { fixed: fixedMemory },
@@ -625,7 +634,6 @@ assert.equal(docUploads, 1)
 assert.equal(oversizedRequests.length, 3)
 assert.ok(oversizedRequests[2].system.includes(fixedMemory))
 assert.deepEqual(oversizedRequests[2].messages, [
-  { role: 'latest_reminder', content: '本轮提醒' },
   { role: 'user', content: [
     { type: 'document', source: { type: 'file', file_id: 'uploaded-document' } },
     { type: 'text', text: '接着说' },
@@ -635,7 +643,8 @@ assert.deepEqual(oversizedRequests[2].messages, [
 const continued = (await db.loadSession(continuationId)).messages.at(-1)
 assert.equal(continued.status, 'done')
 assert.equal(continued.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), oversizedText + '新回答')
-checks.push('Continuing an oversized prefix uploads and preserves the current document, keeps the whole prefix and reminder, and only omits optional old history')
+checks.push('Continuing an oversized prefix uploads and preserves the current document and whole prefix; V4 Pro omits its unsupported reminder and only optional old history is trimmed')
+settings.setGeneration({})
 
 const { describeReply } = await import(new URL('services/chat/describe.ts', sourceRoot))
 const { canContinueReply, getContextRounds } = await import(new URL('services/chat/reply.ts', sourceRoot))
@@ -766,6 +775,26 @@ const estimateOnly = getReplyMetrics({ ...metricReply, usage: undefined })
 assert.equal(estimateOnly.context.occupied, estimateRequestTokens(metricRequest))
 assert.equal(estimateOnly.context.reported, false)
 checks.push('Stream rate waits for measured provider output and separated content frames; stored request metrics count cache once and describe the actual payload after a history-limit retry')
+
+settings.setApiConnection(changedB)
+settings.setThinking(false)
+store.newChat()
+globalThis.fetch = async () => new Response(new ReadableStream({
+  start(controller) {
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: 'disabled-thinking', choices: [{ delta: { reasoning_content: '不应展示或保存的思考' }, finish_reason: null }] })}\n\n`))
+    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: 'disabled-thinking', choices: [{ delta: { content: '正常回答' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`))
+    controller.close()
+  },
+}), { headers: { 'Content-Type': 'text/event-stream' } })
+drafts.setDraftText(null, '关闭深度思考')
+assert.equal(store.sendMessage(null), true)
+const disabledThinkingId = store.useChatStore.getState().activeId
+await waitIdle()
+const disabledThinkingReply = (await db.loadSession(disabledThinkingId)).messages.at(-1)
+assert.equal(disabledThinkingReply.thinking, false)
+assert.equal(disabledThinkingReply.blocks.some(block => block.type === 'thinking'), false)
+assert.equal(disabledThinkingReply.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), '正常回答')
+checks.push('A model-provided reasoning stream is discarded from the reply when the request has deep thinking disabled')
 
 const evidence = { passed: true, runtime: process.version, checks,
   requests: requests.map(({ url, body }) => ({ url, model: body.model, messages: body.messages.length })),

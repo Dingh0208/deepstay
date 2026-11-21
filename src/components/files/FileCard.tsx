@@ -22,7 +22,7 @@ export const FileCard = ({
 }: {
   name: string
   size: number
-  status?: 'uploading' | 'done' | 'error'
+  status?: 'uploading' | 'processing' | 'done' | 'error'
   error?: string
   onRetry?: () => void
   onRemove?: () => void
@@ -32,9 +32,9 @@ export const FileCard = ({
   const ext = getExtension(name)
   let icon: ReactNode = <FileIcon ext={ext} />
   let description = [ext, formatSize(size)].filter(Boolean).join(' ')
-  if (status === 'uploading') {
+  if (status === 'uploading' || status === 'processing') {
     icon = <span className={styles.spinner} />
-    description = t('uploadFileStatusUploading')
+    description = status === 'processing' ? t('uploadFileStatusProcessing') : t('uploadFileStatusUploading')
   } else if (status === 'error') {
     // 不可重试（过大、格式不支持）时保留文件图标并显示原因
     if (onRetry) {

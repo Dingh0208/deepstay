@@ -144,11 +144,12 @@ try {
   const modelReasoningRender=runner(ReplyArea)
   const modelReasoningProps={...props,message:{...props.message,thinking:false}}
   tree=modelReasoningRender(modelReasoningProps)
-  assert.equal(expanded(tree),false)
-  assert.equal(tree.props.children[1],null)
-  title(tree).props.onClick()
-  assert.equal(expanded(modelReasoningRender({...modelReasoningProps,streaming:false,hasResponse:true})),true)
-  checks.push('Reasoning returned by a model also respects collapse mode when the local thinking request toggle was off')
+  assert.equal(tree,null)
+  const ordinarySearch={...modelReasoningProps,view:{...props.view,steps:[{type:'search',key:'search1',kind:'search',queries:['fixture'],results:[],status:'wip'}]}}
+  tree=modelReasoningRender(ordinarySearch)
+  assert.equal(tree.props.children[0],null)
+  assert.equal(tree.props.children[1].props.children[0].props.step.type,'search')
+  checks.push('Unexpected model reasoning is hidden when local deep thinking is off, while regular search steps remain visible')
 
   const evidence={passed:true,runtime:process.version,checks,scope:'Actual background service/IndexedDB with in-memory browser database and deterministic image/canvas; actual ReplyArea TSX with deterministic hooks. Visual contrast/mobile gallery tested separately by parent.'}
   await writeFile(new URL('./deepstay-appearance-evidence.json',import.meta.url),JSON.stringify(evidence,null,2)+'\n')

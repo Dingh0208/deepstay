@@ -51,15 +51,28 @@ const readBlock = (value: unknown): OutputBlockStart | null => {
       } as OutputBlockStart
     case 'server_tool_use': {
       const input = value.input
+      const standardSearch = value.name === 'web_search'
+      const kind = value.kind ?? (standardSearch ? 'search' : undefined)
       if (
         !isString(value.id) ||
         !['search', 'deep_search', 'read_link', 'image_search', 'deep_image_search'].includes(
-          value.kind as string
+          kind as string
         ) ||
-        !['deepseek_web_search', 'deepseek_read_url'].includes(value.name as string) ||
+        !['deepseek_web_search', 'deepseek_read_url', 'web_search'].includes(value.name as string) ||
         !isRecord(input)
       ) {
         return null
+      }
+      if (standardSearch) {
+        if (!isString(input.query)) {
+          return null
+        }
+        return {
+          ...value,
+          name: 'web_search',
+          input: { action: 'search', query: input.query, queries: [input.query] },
+          kind,
+        } as OutputBlockStart
       }
       switch (input.action) {
         case 'search':
@@ -83,18 +96,18 @@ const readBlock = (value: unknown): OutputBlockStart | null => {
       }
       break
     }
-    case 'web_search_tool_result':
+    case 'web_search_tool_result': {
+      const kind = value.kind ?? 'search'
       if (
         !isString(value.tool_use_id) ||
-        !['search', 'deep_search', 'image_search', 'deep_image_search'].includes(
-          value.kind as string
-        ) ||
+        !['search', 'deep_search', 'image_search', 'deep_image_search'].includes(kind as string) ||
         !Array.isArray(value.content)
       ) {
         return null
       }
       return {
         ...value,
+        kind,
         content: value.content.filter((item) => {
           if (!isRecord(item)) {
             return false
@@ -113,6 +126,7 @@ const readBlock = (value: unknown): OutputBlockStart | null => {
           )
         }),
       } as OutputBlockStart
+    }
     case 'web_fetch_tool_result': {
       const content = value.content
       if (
@@ -225,13 +239,14 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
       break
     case 'message_delta': {
       const usage = readUsage(value.usage, true)
+      const stopReason = isRecord(value.delta) && value.delta.stop_reason === 'stop_sequence'
+        ? 'end_turn'
+        : isRecord(value.delta) ? value.delta.stop_reason : undefined
       if (
         !isRecord(value.delta) ||
-        (value.delta.stop_reason == null
+        (stopReason == null
           ? !usage
-          : !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(
-              value.delta.stop_reason as string
-            ))
+          : !['end_turn', 'max_tokens', 'tool_use', 'refusal'].includes(stopReason as string))
       ) {
         return null
       }
@@ -239,6 +254,7 @@ export const readMessageEvent = (value: unknown): MessageStreamEvent | null => {
         ...value,
         delta: {
           ...value.delta,
+          stop_reason: stopReason,
           title: isOptionalString(value.delta.title) ? value.delta.title : undefined,
         },
         usage,

@@ -18,6 +18,8 @@ const DB_VERSION = 14
 export type StoredFile = {
   id: string
   blob: Blob
+  /** Local text extraction cache for third-party model requests. */
+  extractedText?: string
 }
 
 /** 文件引用留在摘要中，删除会话时通过索引判断原件是否仍被引用。 */
@@ -458,6 +460,9 @@ export const saveFiles = (files: StoredFile[]): Promise<void> => putFiles('files
 
 export const loadFile = async (id: string): Promise<Blob | undefined> =>
   (await (await getDB()).get('files', id))?.blob
+
+export const loadStoredFile = async (id: string): Promise<StoredFile | undefined> =>
+  (await getDB()).get('files', id)
 
 /** 清空导入暂存：开始导入前清除上次中断（如关闭页面）遗留的数据，导入失败后清除本次写入。 */
 export const clearStaging = async (): Promise<void> => {

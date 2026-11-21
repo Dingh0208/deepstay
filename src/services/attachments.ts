@@ -1,11 +1,12 @@
 import { create } from 'zustand'
 import type { LinkedMessage, TranslationMessage } from '../i18n/index.js'
 import { uploadFile } from './api/client.js'
-import { getApiConnection, type ApiConnection } from './api/connection.js'
+import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from './api/connection.js'
 import { classifyApiError, getUploadErrorInfo, isRetryableApiError } from './api/errors.js'
 import type { FilePurpose } from './api/types.js'
 import { ACCEPT_FILE_EXTS } from './uploadExts.js'
 import { prepareImageUpload } from './imageUpload.js'
+import { extractLocalAttachmentText, LocalAttachmentError } from './localAttachments.js'
 
 /** 允许上传的扩展名，按扩展名白名单过滤，清单见 uploadExts.ts */
 export const ACCEPTED_EXTS = ACCEPT_FILE_EXTS
@@ -158,7 +159,8 @@ const enqueueUpload = (
  */
 export type UploadTask =
   | { status: 'uploading' }
-  | { status: 'done'; serverId: string }
+  | { status: 'processing' }
+  | { status: 'done'; serverId?: string; localText?: string }
   | { status: 'error'; error: TranslationMessage; retryable: boolean }
 
 type UploadState = { tasks: Record<string, UploadTask> }
@@ -173,6 +175,85 @@ const setTask = (id: string, task: UploadTask | null) =>
   }))
 
 const pending = new Map<string, { promise: Promise<string>; controller: AbortController }>()
+const localPending = new Map<string, Promise<void>>()
+const cancelledLocal = new Set<string>()
+const localQueue: (() => Promise<void>)[] = []
+let localRunning = false
+
+const nextLocal = () => {
+  if (localRunning) {
+    return
+  }
+  const job = localQueue.shift()
+  if (!job) {
+    return
+  }
+  localRunning = true
+  void job().finally(() => {
+    localRunning = false
+    nextLocal()
+  })
+}
+
+/** Parse third-party attachments locally so their bytes and DeepSeek file IDs stay local. */
+export const prepareLocalAttachment = (
+  id: string,
+  blob: Blob,
+  name: string,
+  isImage: boolean,
+  mimeType: string
+): Promise<void> => {
+  cancelledLocal.delete(id)
+  const existing = localPending.get(id)
+  if (existing) {
+    return existing
+  }
+  if (isImage) {
+    setTask(id, { status: 'done' })
+    return Promise.resolve()
+  }
+  setTask(id, { status: 'processing' })
+  const promise = new Promise<void>((resolve, reject) => {
+    localQueue.push(async () => {
+      try {
+        const localText = await extractLocalAttachmentText(blob, name, mimeType)
+        if (!cancelledLocal.has(id)) {
+          setTask(id, { status: 'done', localText })
+        }
+        resolve()
+      } catch (error) {
+        const kind = error instanceof LocalAttachmentError ? error.kind : 'invalid'
+        const key = kind === 'unsupported'
+          ? 'uploadLocalUnsupported'
+          : kind === 'tooLong'
+            ? 'uploadLocalTooLong'
+            : kind === 'empty'
+              ? 'uploadLocalEmpty'
+              : 'uploadLocalFailed'
+        if (!cancelledLocal.has(id)) {
+          setTask(id, { status: 'error', error: { key }, retryable: false })
+        }
+        reject(error)
+      }
+    })
+    nextLocal()
+  }).finally(() => localPending.delete(id))
+  localPending.set(id, promise)
+  return promise
+}
+
+export const prepareAttachment = (
+  apiKey: string,
+  id: string,
+  blob: Blob,
+  name: string,
+  isImage: boolean,
+  mimeType: string,
+  connection: ApiConnection = getApiConnection(),
+  documentPurpose: FilePurpose = 'text_recognition'
+) => supportsDeepSeekExtras(connection)
+  ? uploadAttachment(apiKey, id, blob, name, isImage, connection, documentPurpose).then(() => undefined)
+  : prepareLocalAttachment(id, blob, name, isImage, mimeType)
 
 /** 开始（或复用进行中的）上传，返回服务端 file_id；失败时任务记为 error 并抛出原错误 */
 export const uploadAttachment = (
@@ -220,6 +301,7 @@ export const uploadAttachment = (
 
 export const cancelUpload = (id: string) => {
   pending.get(id)?.controller.abort()
+  cancelledLocal.add(id)
   setTask(id, null)
 }
 

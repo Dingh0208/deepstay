@@ -47,8 +47,8 @@ export type ServerToolUseBlock = {
   type: 'server_tool_use'
   /** srvtoolu_{s|ds|rl|is|dis}_{序号}_{32 位 hex} */
   id: string
-  /** 文字搜索与图搜均为 deepseek_web_search；read_link 为 deepseek_read_url */
-  name: 'deepseek_web_search' | 'deepseek_read_url'
+  /** V4 Pro uses web_search; other DeepSeek models use the DeepSeek server tool names. */
+  name: 'deepseek_web_search' | 'deepseek_read_url' | 'web_search'
   input: ServerToolInput
   caller: { type: 'direct' }
   kind: ServerToolKind
@@ -130,8 +130,15 @@ export type TextBlockParam = { type: 'text'; text: string }
  * 文件请求需带 anthropic-beta: files-api-2025-04-14；document 支持 file 来源。
  */
 export type FileBlockParam = {
-  type: 'image' | 'document'
+  type: 'document'
   source: { type: 'file'; file_id: string }
+} | {
+  type: 'image'
+  source: { type: 'file'; file_id: string } | {
+    type: 'base64'
+    media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+    data: string
+  }
 }
 
 /** 接口接受的调用块；历史只回传 kind 为 read_link 的调用 */
@@ -172,6 +179,11 @@ export type DeepseekReadUrlTool = {
   name: 'deepseek_read_url'
 }
 
+export type AnthropicWebSearchTool = {
+  type: 'web_search_20250305'
+  name: 'web_search'
+}
+
 export type CreateMessageRequest = {
   model: ChatModel
   max_tokens?: number
@@ -183,7 +195,7 @@ export type CreateMessageRequest = {
   system: string
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
-  tools: (DeepseekWebSearchTool | DeepseekReadUrlTool)[]
+  tools: (DeepseekWebSearchTool | DeepseekReadUrlTool | AnthropicWebSearchTool)[]
   safety_check: { level: 'high' }
   title?: { enabled: boolean }
 }

@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { hasOwn } from '../../utils/object.js'
-import { ApiError, streamMessage } from '../api/client.js'
+import { adaptRequestForConnection, ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest } from '../api/types.js'
 import { DEFAULT_CONTEXT_WINDOW, generationParameters } from '../api/generation.js'
-import { supportsDeepSeekServerTools } from '../api/modelCapabilities.js'
+import { supportsDeepSeekTitles, usesAnthropicWebSearch } from '../api/modelCapabilities.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
 import {
   extractFileIds,
+  classifyApiError,
   getContextLengthError,
   getFileErrorCode,
   getImageSizeError,
@@ -15,6 +16,7 @@ import {
   isRetryableApiError,
 } from '../api/errors.js'
 import { cancelUpload, describeUploadError, getUploadPurpose, uploadAttachment, useUploads } from '../attachments.js'
+import { encodeLocalImage, extractLocalAttachmentText, LocalAttachmentError, type LocalAttachmentContent } from '../localAttachments.js'
 import { clearFavoriteMessages, clearPinnedSessions, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
 import { appendBranch, getRoundMessageIds, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
 import * as db from './db.js'
@@ -29,11 +31,11 @@ import { createLatestReminder } from './latestReminder.js'
 import { characterGreetings, characterSnapshot, characterSystemPrompt, type CharacterPreset } from '../characters.js'
 import { useHistoryTarget } from './historySearch.js'
 import {
-  CONTEXT_INPUT_BUDGET,
   estimateContextTokens,
   estimateRequestParts,
   estimateRequestTokens,
   prepareContextMemory,
+  type CompactionFailure,
 } from './contextMemory.js'
 import { fitRequestHistory, getRetryInputBudget } from './contextLimit.js'
 import { memoryText } from './memoryRecords.js'
@@ -74,7 +76,7 @@ let learnedContextLimit: { route: string; key: string; budget: number } | undefi
 export const getEffectiveContextInputBudget = (): number => {
   const { apiKey, model, thinking, search, generation } = useSettings.getState()
   const connection = getApiConnection()
-  const serverSearch = supportsDeepSeekExtras(connection) && supportsDeepSeekServerTools(model) && search
+  const serverSearch = supportsDeepSeekExtras(connection) && search
   const route = JSON.stringify([connection.baseUrl, connection.protocol, model, thinking, serverSearch])
   const window = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
   return learnedContextLimit?.route === route && learnedContextLimit.key === apiKey
@@ -101,7 +103,10 @@ const yieldPastPaint = () =>
   })
 
 /** 支持扩展的模型默认声明阅读链接，智能搜索开关控制搜索工具（含边想边搜）。 */
-export const serverTools = (search: boolean): CreateMessageRequest['tools'] => {
+export const serverTools = (search: boolean, model = useSettings.getState().model): CreateMessageRequest['tools'] => {
+  if (usesAnthropicWebSearch(model)) {
+    return search ? [{ type: 'web_search_20250305', name: 'web_search' }] : []
+  }
   const tools: CreateMessageRequest['tools'] = [
     { type: 'deepseek_read_url', name: 'deepseek_read_url' },
   ]
@@ -327,7 +332,7 @@ const createReply = (): AssistantMessage => {
     createdAt: Date.now(),
     model,
     thinking,
-    search: supportsDeepSeekExtras() && supportsDeepSeekServerTools(model) && search,
+    search: supportsDeepSeekExtras() && search,
     prefix: apiProtocol === 'deepseek',
     status: 'pending',
     blocks: [],
@@ -812,7 +817,7 @@ const deleteMessageData = async (id: string, messageIds: readonly string[]): Pro
 /** Local command: compact the selected branch without creating a chat turn. */
 export const compactSession = async (
   sessionId: string | null
-): Promise<'saved' | 'failed' | 'notNeeded' | 'cancelled'> => {
+): Promise<'saved' | 'failed' | 'failedConnection' | 'failedContextLimit' | 'failedProvider' | 'failedTimeout' | 'failedResponse' | 'failedStorage' | 'notNeeded' | 'cancelled'> => {
   if (sessionId === null) {return 'notNeeded'}
   const session = getSession(sessionId)
   const settings = useSettings.getState()
@@ -847,26 +852,82 @@ export const compactSession = async (
       connection,
       model: settings.model,
       signal,
-      inputBudget: settings.generation.contextTokens,
+      inputBudget: getEffectiveContextInputBudget(),
+      outputReserve: settings.generation.maxTokens,
       requestOverhead: estimateContextTokens(
         characterSystemPrompt(settings.generation.system ?? SYSTEM_PROMPT, session.character) +
           createLatestReminder(settings) +
-          JSON.stringify(supportsDeepSeekExtras(connection) && supportsDeepSeekServerTools(settings.model)
-            ? serverTools(settings.search) : [])
+          JSON.stringify(supportsDeepSeekExtras(connection)
+            ? serverTools(settings.search, settings.model) : [])
       ) + 256,
       onCommit: (update) => db.commitMemoryUpdate(snapshot.state, update, valid),
+      onInputLimit: (limit) => {
+        const budget = Math.floor(limit * 0.85)
+        const route = JSON.stringify([connection.baseUrl, connection.protocol, settings.model,
+          settings.thinking, supportsDeepSeekExtras(connection) && settings.search])
+        learnedContextLimit = { route, key: settings.apiKey ?? '', budget }
+      },
       onProgress: (progress) => set((state) => ({
         contextProgress: { ...state.contextProgress, [sessionId]: { ...progress, manual: true } },
       })),
     })
-    return context.compaction ?? 'notNeeded'
-  } catch {
-    return signal.aborted ? 'cancelled' : 'failed'
+    if (context.compactionFailure) {
+      return manualCompactionFailure(context.compactionFailure)
+    }
+    return context.compaction === 'failed' ? 'failedResponse' : context.compaction ?? 'notNeeded'
+  } catch (error) {
+    if (signal.aborted) {
+      return 'cancelled'
+    }
+    if (error instanceof ApiError) {
+      if (getContextLengthError(error)) {
+        return 'failedContextLimit'
+      }
+      if (classifyApiError(error) === 'network') {
+        return 'failedConnection'
+      }
+      if (error.kind === 'protocol' && error.localMessage?.key === 'contextMemoryFailed') {
+        return 'failedStorage'
+      }
+      if (classifyApiError(error) !== 'other') {
+        return 'failedProvider'
+      }
+    }
+    return 'failedResponse'
   } finally {
     set((state) => ({
       streaming: Object.fromEntries(Object.entries(state.streaming).filter(([id]) => id !== sessionId)),
       contextProgress: Object.fromEntries(Object.entries(state.contextProgress).filter(([id]) => id !== sessionId)),
     }))
+  }
+}
+
+const manualCompactionFailure = (failure: CompactionFailure | 'storage') => {
+  switch (failure) {
+    case 'connection': return 'failedConnection'
+    case 'contextLimit': return 'failedContextLimit'
+    case 'insufficientBudget': return 'failedContextLimit'
+    case 'provider': return 'failedProvider'
+    case 'timeout': return 'failedTimeout'
+    case 'storage': return 'failedStorage'
+    case 'truncated':
+    case 'invalidResponse':
+    case 'cooldown': return 'failedResponse'
+  }
+}
+
+const automaticCompactionFailureMessage = (failure: CompactionFailure | 'storage' | undefined) => {
+  switch (failure) {
+    case 'connection': return 'contextMemoryManualConnectionFailed'
+    case 'contextLimit': return 'contextMemoryManualContextLimit'
+    case 'provider': return 'contextMemoryManualProviderFailed'
+    case 'timeout': return 'contextMemoryManualTimeout'
+    case 'storage': return 'contextMemoryManualStorageFailed'
+    case 'cooldown': return 'contextMemoryAutoCooldown'
+    case 'insufficientBudget': return 'contextMemoryAutoInsufficientBudget'
+    case 'truncated':
+    case 'invalidResponse':
+    case undefined: return 'contextMemoryManualResponseFailed'
   }
 }
 
@@ -883,9 +944,6 @@ export const sendMessage = (targetSessionId: string | null) => {
     return false
   }
   const { text, files } = prepared
-  if (files.length > 0 && !supportsDeepSeekExtras()) {
-    return false
-  }
   const now = Date.now()
   let sessionId = targetSessionId
   if (
@@ -937,15 +995,21 @@ export const sendMessage = (targetSessionId: string | null) => {
     ...appendBranch(session, history[history.length - 1]?.id ?? null, [question, reply]),
     updatedAt: now,
   }))
+  const localFiles = new Map<string, LocalAttachmentContent>()
   if (files.length > 0) {
     pendingFiles.set(sessionId, [
       ...(pendingFiles.get(sessionId) ?? []),
-      ...files.map(({ id, blob }) => ({ id, blob })),
+      ...files.map(({ id, blob, localText }) => ({ id, blob, ...(localText ? { extractedText: localText } : {}) })),
     ])
+    for (const file of files) {
+      if (!file.isImage && file.localText) {
+        localFiles.set(file.id, { type: 'text', text: file.localText })
+      }
+    }
   }
   persist(sessionId)
   clearSentDraft(targetSessionId)
-  void streamReply(sessionId, reply, { history, question })
+  void streamReply(sessionId, reply, { history, question, localFiles })
   return true
 }
 
@@ -1088,7 +1152,12 @@ export const retryUpload = (sessionId: string, messageId: string) => {
   void streamReply(sessionId, reply, { history: path.slice(0, index - 1), question })
 }
 
-type Request = { history: Message[]; question: UserMessage; prefix?: AssistantMessage }
+type Request = {
+  history: Message[]
+  question: UserMessage
+  prefix?: AssistantMessage
+  localFiles?: Map<string, LocalAttachmentContent>
+}
 
 /** 把补传得到的 serverId 写回会话里所有引用同一附件的消息（编辑、重新生成会共用附件） */
 const saveServerIds = (sessionId: string, serverIds: Map<string, string>) => {
@@ -1132,7 +1201,7 @@ const ensureServerId = async (apiKey: string, file: FileAttachment, connection: 
     return file.serverId
   }
   const task = useUploads.getState().tasks[file.id]
-  if (task?.status === 'done') {
+  if (task?.status === 'done' && task.serverId) {
     return task.serverId
   }
   const blob = await db.loadFile(file.id)
@@ -1174,6 +1243,60 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   ) {
     return request
   }
+  request = refreshRequest(sessionId, request)
+  if (!supportsDeepSeekExtras(connection)) {
+    await pendingSaves.get(sessionId)
+    const localFiles = new Map(request.localFiles ?? [])
+    const currentIds = new Set(request.question.files.map((file) => file.id))
+    const users = [...getContextRounds(request.history).map(([user]) => user), request.question]
+    const seen = new Set<string>()
+    for (const user of users) {
+      for (const file of user.files) {
+        if (seen.has(file.id) || (file.contextExcluded && !file.isImage)) {
+          continue
+        }
+        seen.add(file.id)
+        if (localFiles.has(file.id)) {
+          continue
+        }
+        if (signal.aborted) {
+          throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+        }
+        const stored = await db.loadStoredFile(file.id)
+        if (!stored?.blob) {
+          if (currentIds.has(file.id)) {
+            throw new ApiError('protocol', { key: 'replyFileMissingLocal' })
+          }
+          continue
+        }
+        if (file.isImage) {
+          localFiles.set(file.id, await encodeLocalImage(stored.blob))
+          continue
+        }
+        try {
+          const text = stored.extractedText ?? await extractLocalAttachmentText(stored.blob, file.name, file.mimeType)
+          if (stored.extractedText === undefined) {
+            await db.saveFiles([{ ...stored, extractedText: text }])
+          }
+          localFiles.set(file.id, { type: 'text', text })
+        } catch (error) {
+          if (error instanceof LocalAttachmentError) {
+            const key = error.kind === 'unsupported'
+              ? 'uploadLocalUnsupported'
+              : error.kind === 'tooLong'
+                ? 'uploadLocalTooLong'
+                : error.kind === 'empty'
+                  ? 'uploadLocalEmpty'
+                  : 'uploadLocalFailed'
+            throw new ApiError('protocol', { key })
+          }
+          throw error
+        }
+      }
+    }
+    return { ...request, localFiles }
+  }
+  request = { ...request, localFiles: undefined }
   const epoch = historyEpoch
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
@@ -1342,12 +1465,12 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     : undefined
   const contextWindow = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
   const effectiveBudget = () => Math.min(inputBudget ?? contextWindow, contextWindow)
-  const memoryBudget = () => Math.min(effectiveBudget(), generation.contextTokens ?? CONTEXT_INPUT_BUDGET)
+  const memoryBudget = () => Math.min(effectiveBudget(), generation.contextTokens ?? contextWindow)
   let retriedContextLimit = false
   let attachmentRetries = 0
   const repairedImageIds = new Set<string>()
   const extras = supportsDeepSeekExtras(connection)
-  const serverExtras = extras && supportsDeepSeekServerTools(model)
+  const serverExtras = extras
   const imageRoute = JSON.stringify([connection.baseUrl, connection.protocol, model])
   if (extras && (rejectedHistoryImages?.route !== imageRoute || rejectedHistoryImages.key !== apiKey)) {
     rejectedHistoryImages = { route: imageRoute, key: apiKey, ids: new Set() }
@@ -1490,12 +1613,17 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             model,
             signal: controller.signal,
             inputBudget: memoryBudget(),
+            outputReserve: generation.maxTokens,
             requestOverhead:
               estimateContextTokens(
                 baseSystem +
                   (latestReminder ?? '') +
-                  JSON.stringify(serverExtras ? serverTools(initial.search ?? false) : [])
+                  JSON.stringify(serverExtras ? serverTools(initial.search ?? false, model) : [])
               ) + 256,
+            onInputLimit: (limit) => {
+              inputBudget = Math.min(inputBudget ?? Infinity, Math.floor(limit * 0.85))
+              learnedContextLimit = { route: contextRoute, key: apiKey, budget: inputBudget }
+            },
             onCommit: async (update) => {
               if (!validSource()) {
                 return false
@@ -1515,6 +1643,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           })
           if (!validSource()) {
             throw new ApiError('protocol', { key: 'contextMemoryFailed' })
+          }
+          if (context.compaction === 'failed' || context.compactionFailure) {
+            throw new ApiError('protocol', {
+              key: automaticCompactionFailureMessage(context.compactionFailure),
+            })
           }
           if (
             !(await db.commitMemoryUpdate(expected, { records: [], segments: [] }, validSource))
@@ -1537,9 +1670,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         contextPreparations.delete(sessionId)
         contextPrepared = true
         preparing = true
-        const prepared = extras
-          ? await prepareFiles(sessionId, request, controller.signal, apiKey, connection)
-          : request
+        const prepared = await prepareFiles(sessionId, request, controller.signal, apiKey, connection)
         preparing = false
         if (controller.signal.aborted) {
           throw controller.signal.reason
@@ -1563,7 +1694,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           prepared.prefix,
           initial.thinking ?? false,
           latestReminder,
-          !extras
+          false,
+          prepared.localFiles
         )
         let body: CreateMessageRequest = {
           model,
@@ -1572,10 +1704,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           messages,
           thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
           safety_check: SAFETY_CHECK,
-          tools: serverExtras ? serverTools(initial.search ?? false) : [],
-          ...(serverExtras && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
+          tools: serverExtras ? serverTools(initial.search ?? false, model) : [],
+          ...(serverExtras && supportsDeepSeekTitles(model) && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
         body = fitRequestHistory(body, compactContext ? memoryBudget() : effectiveBudget(), requiredSystem)
+        body = adaptRequestForConnection(body, connection)
         submitted = body
         reply = { ...reply, metrics: estimateRequestParts(body) }
         const events = streamMessage(apiKey, body, controller.signal, connection)
@@ -1584,6 +1717,13 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         for await (const event of events) {
           if (controller.signal.aborted) {
             throw controller.signal.reason
+          }
+          if (
+            !initial.thinking &&
+            event.type === 'content_block_start' &&
+            event.content_block.type === 'thinking'
+          ) {
+            continue
           }
           receivedContent ||= event.type === 'content_block_start'
           if (
@@ -1640,9 +1780,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         }
         const lengthError = submitted ? getContextLengthError(error) : null
         const messages = submitted?.messages ?? []
-        const currentQuestionIndex = messages.length - (messages[messages.length - 1]?.role === 'assistant' ? 2 : 1)
-        const currentContent = messages[currentQuestionIndex]?.content
-        const currentDocument = Array.isArray(currentContent) && currentContent.some((block) => block.type === 'document')
+        const currentDocument = request.question.files.some((file) => !file.isImage && !file.contextExcluded)
         // 服务端展开文件后的实际长度未知；本轮文档超限时不自动再提交整份文件。
         if (lengthError && submitted && !currentDocument && !receivedContent && !retriedContextLimit) {
           const budget = getRetryInputBudget(estimateRequestTokens(submitted), lengthError, generation.contextTokens)
@@ -1659,9 +1797,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           const block = message?.role === 'user' && Array.isArray(message.content)
             ? message.content[oversizedImage.blockIndex]
             : undefined
-          if (block?.type === 'image') {
+          if (block?.type === 'image' && block.source.type === 'file') {
+            const fileId = block.source.file_id
             const local = [...request.history, request.question].flatMap((item) => item.role === 'user' ? item.files : [])
-              .find((file) => file.serverId === block.source.file_id)
+              .find((file) => file.serverId === fileId)
             // Only retry when the original is available; never drop the offending image from history.
             if (local && !repairedImageIds.has(local.id) && await db.loadFile(local.id) &&
               reuploadInvalidatedFiles(sessionId, request, error, new Set([block.source.file_id])) === true) {
@@ -1683,7 +1822,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
               continue
             }
             for (const block of message.content) {
-              if (block.type === 'image') {
+              if (block.type === 'image' && block.source.type === 'file') {
                 if (index === currentQuestionIndex) {
                   currentImage = true
                 } else {
@@ -1699,7 +1838,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             const block = message && message.role === 'user' && Array.isArray(message.content)
               ? message.content[location.blockIndex]
               : undefined
-            const rejectedHistoricalImage = location && location.messageIndex < currentQuestionIndex && block?.type === 'image'
+            const rejectedHistoricalImage = location && location.messageIndex < currentQuestionIndex &&
+              block?.type === 'image' && block.source.type === 'file'
               ? block.source.file_id
               : undefined
             if (rejectedHistoricalImage && attachmentRetries < FILE_RETRY_LIMIT) {
@@ -1747,8 +1887,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             localMessage: reupload === 'confirmationRequired'
               ? { key: 'replyDocumentExpired' }
               : lengthError
-              ? { key: messages.some((message) => Array.isArray(message.content) && message.content.some((block) => block.type === 'document'))
-                  ? 'replyDocumentContextLimit' : 'replyContextLimit' }
+              ? { key: currentDocument ? 'replyDocumentContextLimit' : 'replyContextLimit' }
               : oversizedImage
                 ? { key: 'replyImageTooLarge' }
                 : unsupportedImage

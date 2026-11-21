@@ -9,7 +9,6 @@ import {
 } from '../base/icons.js'
 import { setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
-import { supportsDeepSeekServerTools } from '../../services/api/modelCapabilities.js'
 import type { FilePurpose } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { compactSession, getEffectiveContextInputBudget, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
@@ -93,14 +92,14 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const inputBudget = apiKey ? getEffectiveContextInputBudget() : contextTokens ?? DEFAULT_CONTEXT_WINDOW
   const locale = useSettings((state) => state.locale)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
-  const searchAvailable = extras && supportsDeepSeekServerTools(model)
+  const searchAvailable = extras
   const connection = useMemo(() => ({ baseUrl: apiBaseUrl, protocol: apiProtocol }), [apiBaseUrl, apiProtocol])
-  const tools = useMemo(() => searchAvailable ? serverTools(search) : [], [searchAvailable, search])
+  const tools = useMemo(() => searchAvailable ? serverTools(search, model) : [], [searchAvailable, search, model])
   const today = new Date().toDateString()
   const latestReminder = useMemo(() => createLatestReminder({ locale }, new Date(today)), [locale, today])
   const uploadTasks = useUploads((state) => state.tasks)
   const files = useMemo(() => attachments.map(({ id, file, isImage, uploadPurpose }) => ({
-      id, serverId: uploadTasks[id]?.status === 'done' ? uploadTasks[id].serverId : null,
+      id, serverId: uploadTasks[id]?.status === 'done' ? uploadTasks[id].serverId ?? null : null,
       name: file.name, size: file.size,
       isImage, mimeType: resolveMimeType(file), uploadPurpose,
     })), [attachments, uploadTasks])
@@ -109,7 +108,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
     system: characterSystemPrompt(system ?? SYSTEM_PROMPT, session?.character),
     tools, model, thinking, connection,
     inputBudget,
-    memoryBudget: contextTokens,
+    memoryBudget: inputBudget,
     latestReminder,
   }, streaming || importingHistory || (sessionId !== null && !session))
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -136,10 +135,6 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   }, [t])
 
   const acceptFiles = (files: File[]) => {
-    if (!extras && files.length > 0) {
-      showToast({ key: 'apiTextOnly' })
-      return
-    }
     if (files.length === 0 || documentUpload || useChatStore.getState().importingHistory || !ensureApiKey()) {
       return
     }
@@ -148,7 +143,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       showToast(validation)
       return
     }
-    if (files.some((file) => {
+    if (extras && files.some((file) => {
       const purpose = getUploadPurpose(file.name, isImage(resolveMimeType(file)))
       return purpose === 'text_recognition' || purpose === 'rich_layout_recognition'
     })) {
@@ -163,15 +158,11 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   }
   const retryFile = useCallback(
     (id: string) => {
-      if (!extras) {
-        showToast({ key: 'apiTextOnly' })
-        return
-      }
       if (!useChatStore.getState().importingHistory && ensureApiKey()) {
         retryDraftAttachment(sessionId, id, useSettings.getState().apiKey ?? '')
       }
     },
-    [sessionId, extras]
+    [sessionId]
   )
   const removeFile = useCallback(
     (id: string) => {
@@ -245,6 +236,24 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       }
       if (result === 'failed') {
         showToast({ key: 'contextMemoryManualFailed', type: 'error' })
+      }
+      if (result === 'failedConnection') {
+        showToast({ key: 'contextMemoryManualConnectionFailed', type: 'error' })
+      }
+      if (result === 'failedContextLimit') {
+        showToast({ key: 'contextMemoryManualContextLimit', type: 'error' })
+      }
+      if (result === 'failedProvider') {
+        showToast({ key: 'contextMemoryManualProviderFailed', type: 'error' })
+      }
+      if (result === 'failedTimeout') {
+        showToast({ key: 'contextMemoryManualTimeout', type: 'error' })
+      }
+      if (result === 'failedResponse') {
+        showToast({ key: 'contextMemoryManualResponseFailed', type: 'error' })
+      }
+      if (result === 'failedStorage') {
+        showToast({ key: 'contextMemoryManualStorageFailed', type: 'error' })
       }
     })
   }
@@ -384,14 +393,14 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
               }
             }}
           /> : null}
-          {extras ? <IconButton
+          <IconButton
             size="m"
             tone="primary"
             icon={<IconPaperclipOutline16 />}
             tooltip={t('uploadFile')}
             disabled={importingHistory}
             onClick={() => ensureApiKey() && fileInputRef.current?.click()}
-          /> : null}
+          />
           <input
             ref={fileInputRef}
             type="file"

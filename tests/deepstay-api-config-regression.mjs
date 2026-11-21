@@ -52,8 +52,8 @@ const disabled = await import(new URL('services/settings.ts?token-usage-disabled
 assert.equal(disabled.useSettings.getState().showReplyTokenUsage, false)
 checks.push('Fresh settings preserve the existing DeepSeek defaults and expanded thinking; custom URL, key, protocol, model list and collapse preference survive a cold reload')
 
-const { normalizeApiBaseUrl, apiEndpoint, getApiConnection } = await import(new URL('services/api/connection.ts', sourceRoot))
-const { ApiError, fetchModels, verifyApiKey, streamMessage } = await import(new URL('services/api/client.ts', sourceRoot))
+const { normalizeApiBaseUrl, apiEndpoint, getApiConnection, supportsDeepSeekExtras } = await import(new URL('services/api/connection.ts', sourceRoot))
+const { ApiError, fetchModels, verifyApiKey, streamMessage, uploadFile } = await import(new URL('services/api/client.ts', sourceRoot))
 const { toProviderApiError } = await import(new URL('services/api/http.ts', sourceRoot))
 assert.equal(normalizeApiBaseUrl(' https://gateway.example.test/proxy/v1/// '), 'https://gateway.example.test/proxy/v1')
 assert.equal(normalizeApiBaseUrl('http://127.0.0.1:8000/v1/'), 'http://127.0.0.1:8000/v1')
@@ -460,6 +460,54 @@ for (const unsupported of [
 assert.equal(networkCalls, callsBeforeUnsupported)
 checks.push('Unsupported DeepSeek tools and provider-specific file references are rejected before a custom OpenAI request instead of silently losing data or sending provider file IDs elsewhere')
 
+const { toRequestMessages } = await import(new URL('services/chat/reply.ts', sourceRoot))
+const localAttachments = [
+  { id: 'local-image', serverId: 'deepseek-image-file-id', name: 'meal.png', size: 4, isImage: true, mimeType: 'image/png' },
+  { id: 'local-document', serverId: 'deepseek-document-file-id', name: 'notes.pdf', size: 5, isImage: false, mimeType: 'application/pdf' },
+]
+const localFiles = new Map([
+  ['local-image', { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=' }],
+  ['local-document', { type: 'text', text: '本地提取出的文字' }],
+])
+const attachmentMessages = toRequestMessages([], {
+  id: 'local-attachments', role: 'user', content: '请看附件', files: localAttachments, createdAt: 1,
+}, undefined, false, undefined, false, localFiles)
+assert.equal(JSON.stringify(attachmentMessages).includes('deepseek-'), false)
+let localRequest
+responder = (url, init) => {
+  localRequest = { url, payload: JSON.parse(init.body) }
+  return streamedResponse([{ id: 'local-attachments-openai', choices: [{ delta: { content: '已收到附件' }, finish_reason: 'stop' }] }])
+}
+await collect(streamMessage(configured.apiKey, { ...body, messages: attachmentMessages }, new AbortController().signal, {
+  baseUrl: configured.apiBaseUrl, protocol: 'openai',
+}))
+assert.equal(localRequest.url, 'https://gateway.example.test/proxy/v1/chat/completions')
+assert.equal(JSON.stringify(localRequest.payload).includes('deepseek-'), false)
+assert.ok(Array.isArray(localRequest.payload.messages), JSON.stringify(localRequest.payload))
+const openAiUserMessage = localRequest.payload.messages[localRequest.payload.messages.length - 1]
+assert.equal(openAiUserMessage.content[0].type, 'image_url')
+assert.equal(openAiUserMessage.content[0].image_url.url, 'data:image/png;base64,aGVsbG8=')
+assert.ok(openAiUserMessage.content.some(block => block.type === 'text' && block.text.includes('本地提取出的文字')))
+responder = (url, init) => {
+  localRequest = { url, payload: JSON.parse(init.body), headers: new Headers(init.headers) }
+  return streamedResponse([
+    { type: 'message_start', message: { id: 'local-attachments-anthropic' } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' },
+  ])
+}
+await collect(streamMessage(configured.apiKey, { ...body, messages: attachmentMessages }, new AbortController().signal, {
+  baseUrl: configured.apiBaseUrl, protocol: 'deepseek',
+}))
+assert.equal(localRequest.url, 'https://gateway.example.test/proxy/anthropic/v1/messages')
+const anthropicUserMessage = localRequest.payload.messages[localRequest.payload.messages.length - 1]
+assert.equal(anthropicUserMessage.content[0].source.type, 'base64')
+assert.equal(anthropicUserMessage.content[0].source.data, 'aGVsbG8=')
+assert.ok(anthropicUserMessage.content.some(block => block.type === 'text' && block.text.includes('本地提取出的文字')))
+assert.equal(JSON.stringify(localRequest.payload).includes('deepseek-'), false)
+assert.equal(localRequest.headers.has('anthropic-beta'), false)
+checks.push('Third-party OpenAI and Anthropic-compatible requests serialize local image/document content and never send DeepSeek file IDs or call the DeepSeek Files API')
+
 responder = (url, init) => {
   assert.equal(url, 'https://api.deepseek.com/anthropic/v1/messages')
   assert.equal(new Headers(init.headers).get('x-api-key'), 'deepseek-fixture-key')
@@ -480,6 +528,39 @@ assert.equal(original.stopReason, 'end_turn')
 assert.equal(getUsageTotal(original.usage), 32)
 assert.equal(getUsageTotal(renderEvents(originalEvents.filter(event => event.type !== 'message_delta')).usage), undefined)
 checks.push('Existing DeepSeek Anthropic endpoint, x-api-key authentication, selected model and event-driven answer rendering continue to work')
+
+const { supportsDeepSeekTitles } = await import(new URL('services/api/modelCapabilities.ts', sourceRoot))
+assert.equal(supportsDeepSeekTitles('deepseek-v4-pro'), false)
+const proSearchBody = {
+  ...body,
+  model: 'deepseek-v4-pro',
+  tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+}
+responder = (url, init) => {
+  assert.equal(url, 'https://api.deepseek.com/anthropic/v1/messages')
+  const requestBody = JSON.parse(init.body)
+  assert.deepEqual(requestBody.tools, [{ type: 'web_search_20250305', name: 'web_search' }])
+  assert.equal('title' in requestBody, false)
+  assert.equal(requestBody.messages.some(message => message.role === 'latest_reminder'), false)
+  return streamedResponse([
+    { type: 'message_start', message: { id: 'pro-search' } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 'srvtoolu_pro_search', name: 'web_search', input: { query: 'DeepSeek V4' } } },
+    { type: 'content_block_start', index: 1, content_block: { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_pro_search', content: [{ type: 'web_search_result', title: 'DeepSeek', url: 'https://www.deepseek.com' }] } },
+    { type: 'content_block_start', index: 2, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 2, delta: { type: 'text_delta', text: '已搜索。' } },
+    { type: 'content_block_stop', index: 2 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null } },
+    { type: 'message_stop' },
+  ])
+}
+const proSearchEvents = await collect(streamMessage('deepseek-fixture-key', proSearchBody, new AbortController().signal, { baseUrl: 'https://api.deepseek.com', protocol: 'deepseek' }))
+const proSearchUse = proSearchEvents.find(event => event.type === 'content_block_start' && event.content_block.type === 'server_tool_use')
+const proSearchResult = proSearchEvents.find(event => event.type === 'content_block_start' && event.content_block.type === 'web_search_tool_result')
+assert.deepEqual(proSearchUse.content_block.input, { action: 'search', query: 'DeepSeek V4', queries: ['DeepSeek V4'] })
+assert.equal(proSearchUse.content_block.kind, 'search')
+assert.equal(proSearchResult.content_block.kind, 'search')
+assert.equal(getReplyText(renderEvents(proSearchEvents)), '已搜索。')
+checks.push('V4 Pro uses standard web_search_20250305; standard server_tool_use and result blocks are normalized into the existing search view, and unsupported latest_reminder/title fields are omitted')
 checks.push('Reply token visibility defaults off and survives reload; both protocols count cached input once, omit partial or malformed usage, and clear previous usage on continuation')
 
 const deepseek = { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }
@@ -574,6 +655,7 @@ const lengthCases = [
   [getApiConnection(), () => new Response(asSse([{ error: { code: lengthCode, message: 'Input rejected.' } }]),
     { headers: { 'Content-Type': 'text/event-stream' } }), {}],
   [deepseek, () => Response.json({ error: { message: 'prompt is too long: 70668 tokens > 32768 maximum' } }, { status: 400 }), { inputTokens: 70668, maxInputTokens: 32768 }],
+  [getApiConnection(), () => Response.json({ error: { message: 'Your prompt contains 9,216 tokens but this model allows a maximum of 8,192 tokens.' } }, { status: 400 }), {}],
   [deepseek, () => Response.json({ error: { message: 'Unsupported image' } }, { status: 400 }), null],
   [deepseek, () => Response.json({ error: { message: imageOverflow } }), null],
   [getApiConnection(), () => Response.json({ error: { message: 'Request body is too large' } }, { status: 413 }), null],
@@ -612,15 +694,33 @@ for (const error of [
 ]) assert.equal(getImageSizeError(error), null)
 checks.push('Image pixel-limit errors retain the exact rejected attachment location across HTTP 400/422, SSE and HTTP 200 JSON without being confused with context, document or transport failures')
 
-const { supportsDeepSeekExtras } = await import(new URL('services/api/connection.ts', sourceRoot))
 assert.equal(supportsDeepSeekExtras({ baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }), true)
+for (const baseUrl of [
+  'https://api.deepseek.com/anthropic',
+  'https://api.deepseek.com/anthropic/v1',
+  'https://api.deepseek.com/anthropic/v1/messages',
+]) assert.equal(supportsDeepSeekExtras({ baseUrl, protocol: 'deepseek' }), true, baseUrl)
+assert.equal(supportsDeepSeekExtras({ baseUrl: 'https://gateway.example.test/anthropic/v1', protocol: 'deepseek' }), false)
 assert.equal(supportsDeepSeekExtras({ baseUrl: configured.apiBaseUrl, protocol: 'openai' }), false)
 const { transcribe, synthesize } = await import(new URL('services/api/speech.ts', sourceRoot))
 const extraCalls = networkCalls
 await assert.rejects(transcribe(configured.apiKey, new Blob(['audio'], { type: 'audio/wav' })))
 await assert.rejects(synthesize(configured.apiKey, '私人文本', 'stella', new AbortController().signal))
 assert.equal(networkCalls, extraCalls, 'Custom provider keys must never be sent to the built-in DeepSeek speech service')
-checks.push('All API and SSE cases pass with four modern built-ins absent; custom provider speech is rejected before exposing its key to the built-in DeepSeek host')
+settings.setApiConnection({ ...configured, apiBaseUrl: 'https://api.deepseek.com/anthropic/v1/messages', apiProtocol: 'deepseek' })
+responder = url => {
+  assert.equal(url, 'https://api.deepseek.com/anthropic/v1/files')
+  return Response.json({ id: 'file_fixture' })
+}
+const uploadStart = networkCalls
+await uploadFile('deepseek-fixture-key', new File(['fixture'], 'fixture.txt', { type: 'text/plain' }), 'user_data', undefined, getApiConnection())
+assert.equal(networkCalls, uploadStart + 1)
+responder = url => {
+  assert.equal(url, 'https://api.deepseek.com/v1/tools/asr')
+  return Response.json({ text: '语音转写结果' })
+}
+assert.equal(await transcribe('deepseek-fixture-key', new Blob(['audio'], { type: 'audio/wav' })), '语音转写结果')
+checks.push('The full official Anthropic Messages URL preserves the native DeepSeek file upload and ASR endpoints; third-party and OpenAI connections remain blocked from using the DeepSeek key on those endpoints')
 
 const evidence = { passed: true, runtime: process.version, checks, fetchCalls: networkCalls,
   scope: 'Actual TypeScript settings, connection, API client, SSE decoder, speech guards and reply reducer with deterministic in-memory localStorage/fetch. Four modern built-ins are disabled for the network cases. No real credentials, model charges, browser or device data used. Stream transport tests pass the selected model explicitly; store-level selection is verified separately.' }

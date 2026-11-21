@@ -19,8 +19,9 @@ export const getApiConnection = (): ApiConnection => {
   return { baseUrl: apiBaseUrl, protocol: apiProtocol }
 }
 
+const extensionBaseUrl = (baseUrl: string) =>
+  normalizeApiBaseUrl(baseUrl).replace(/\/(?:anthropic(?:\/v1)?|v1)$/, '')
+
 /** 扩展文件与语音接口只对当前内置 DeepSeek 服务开放。 */
 export const supportsDeepSeekExtras = (connection: ApiConnection = getApiConnection()): boolean =>
-  connection.protocol === 'deepseek' &&
-  normalizeApiBaseUrl(connection.baseUrl).replace(/\/v1$/, '') ===
-    normalizeApiBaseUrl(__API_ORIGIN__).replace(/\/v1$/, '')
+  connection.protocol === 'deepseek' && extensionBaseUrl(connection.baseUrl) === extensionBaseUrl(__API_ORIGIN__)

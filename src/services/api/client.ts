@@ -17,6 +17,12 @@ export const API_ORIGIN = __API_ORIGIN__
 /** 引用 Files API 上传的图片、调用 Anthropic 兼容 Files API 时必须携带 */
 const FILES_BETA = 'files-api-2025-04-14'
 
+export const adaptRequestForConnection = (
+  body: CreateMessageRequest,
+  connection: ApiConnection
+): CreateMessageRequest =>
+  connection.protocol === 'deepseek' ? adaptDeepSeekRequest(body) : body
+
 const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string> => ({
   // DeepSeek 兼容接口的鉴权方式，也可使用 Authorization: Bearer。
   'x-api-key': apiKey,
@@ -160,7 +166,9 @@ const hasFile = (body: CreateMessageRequest) =>
   body.messages.some(
     (message) =>
       typeof message.content !== 'string' &&
-      message.content.some((block) => block.type === 'image' || block.type === 'document')
+      message.content.some((block) =>
+        block.type === 'document' || (block.type === 'image' && block.source.type === 'file')
+      )
   )
 
 /**
@@ -201,7 +209,7 @@ async function* streamProviderMessage(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...adaptDeepSeekRequest(body), stream: true }),
+    body: JSON.stringify({ ...adaptRequestForConnection(body, connection), stream: true }),
     credentials: 'omit',
     signal,
   }, false)

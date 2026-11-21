@@ -32,6 +32,14 @@ const requests = []
 const checks = []
 const stream = (text, finish = 'stop') => new Response('data: ' + JSON.stringify({ id: 'memory-qa', choices: [{ index: 0, delta: { content: text }, finish_reason: finish }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
 const extraction = (summary = '本段记录日常聊天，未确认额外事实。', records = []) => stream(JSON.stringify({ summary, records }))
+const anthropicExtraction = text => new Response([
+  { type: 'message_start', message: { id: 'memory-qa', model: 'qa-model', role: 'assistant', content: [] } },
+  { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+  { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
+  { type: 'content_block_stop', index: 0 },
+  { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+  { type: 'message_stop' },
+].map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } })
 let respond = () => extraction()
 globalThis.fetch = async (url, init) => {
   const request = { url: String(url), init, body: JSON.parse(init.body) }
@@ -134,7 +142,7 @@ try {
   assert.deepEqual(reusedProgress, [])
   const priorSources = new Set(snapshot.segments.flatMap(segment => segment.sources.map(source => `${source.messageId}:${source.start}:${source.end}`)))
   const beforeAppend = requests.length
-  const moreRounds = (first) => Array.from({ length: 6 }, (_, index) => round(first + index)).flat()
+  const moreRounds = (first) => Array.from({ length: 64 }, (_, index) => round(first + index)).flat()
   agingHistory.push(...moreRounds(810))
   await prepareContextMemory(optionsFor({ snapshot, history: agingHistory }))
   assert.ok(requests.length > beforeAppend)
@@ -253,14 +261,155 @@ try {
   const eightyMiB = 80 * 1024 * 1024
   const largeText = 'x'.repeat(eightyMiB / 2) + hugeMiddle + 'x'.repeat(eightyMiB / 2 - hugeMiddle.length)
   const largeHistory = [...round(500, largeText, '我记下这个约定。'), ...round(501, '今天好吗', '很好'), ...round(502, '继续', '我在')]
-  const beforeEightyMiB = requests.length
-  const large = await prepareContextMemory(optionsFor({ history: largeHistory, question: { ...question, content: '星灯桥约定的见面日期是哪天？' } }))
   assert.equal(largeHistory[0].content.length, eightyMiB)
-  assert.equal(requests.length - beforeEightyMiB, 1)
-  assert.ok(large.systemMemory.includes(hugeMiddle))
-  assert.ok(requests.slice(beforeEightyMiB).every(request => estimateContextTokens(request.body.messages[1].content) < 8000))
-  assertWithinBudget({ system: large.systemMemory, messages: toRequestMessages(large.history, question), tools: [] })
-  checks.push('An already-loaded 80 MiB single-message session resumes with one bounded extraction and recovers a middle-file date; this does not validate mobile heap capacity or implement paged session storage')
+  const largeRoutes = [
+    { protocol: 'openai', baseUrl: 'https://openai-large.example.test/v1', endpoint: '/v1/chat/completions' },
+    { protocol: 'anthropic', baseUrl: 'https://anthropic-large.example.test', endpoint: '/anthropic/v1/messages' },
+    { protocol: 'deepseek', baseUrl: 'https://api.deepseek.com', endpoint: '/anthropic/v1/messages' },
+  ]
+  for (const route of largeRoutes) {
+    const model = `large-fixture-${route.protocol}`
+    const apiKey = `large-fixture-key-${route.protocol}`
+    respond = () => route.protocol === 'openai'
+      ? extraction('超长记录中段的见面约定。')
+      : anthropicExtraction(JSON.stringify({ summary: '超长记录中段的见面约定。', records: [] }))
+    const beforeEightyMiB = requests.length
+    const large = await prepareContextMemory(optionsFor({
+      sessionId: `eighty-mib-${route.protocol}`,
+      history: largeHistory,
+      question: { ...question, content: '星灯桥约定的见面日期是哪天？' },
+      apiKey,
+      model,
+      connection: { protocol: route.protocol, baseUrl: route.baseUrl },
+    }))
+    assert.equal(requests.length - beforeEightyMiB, 1)
+    assert.ok(large.systemMemory.includes(hugeMiddle))
+    const request = requests[beforeEightyMiB]
+    const userPrompt = route.protocol === 'openai' ? request.body.messages[1].content : request.body.messages[0].content
+    const systemPrompt = route.protocol === 'openai' ? request.body.messages[0].content : request.body.system
+    assert.ok(!userPrompt.includes(largeText), `${route.protocol} extraction must never serialize the complete 80 MiB source`)
+    assert.ok(estimateContextTokens(userPrompt) < 8_000, `${route.protocol} extraction sample stays bounded`)
+    assert.ok(estimateContextTokens(systemPrompt) + estimateContextTokens(userPrompt) + request.body.max_tokens + 700 <= 24_000)
+    assert.equal(request.body.model, model)
+    assert.ok(request.url.endsWith(route.endpoint))
+    assert.equal(new Headers(request.init.headers).get(route.protocol === 'openai' ? 'Authorization' : 'x-api-key'),
+      route.protocol === 'openai' ? `Bearer ${apiKey}` : apiKey)
+    if (route.protocol === 'anthropic') assert.equal('safety_check' in request.body, false)
+    if (route.protocol === 'deepseek') assert.deepEqual(request.body.safety_check, { level: 'high' })
+    assertWithinBudget({ system: large.systemMemory, messages: toRequestMessages(large.history, question), tools: [] })
+  }
+  checks.push('The same already-loaded 80 MiB session resumes through OpenAI-compatible, Anthropic-compatible and official DeepSeek routes; every extraction uses the selected endpoint, key and model, preserves middle-history evidence, and sends only a bounded sample')
+  respond = () => extraction()
+
+  const oneMegHistory = [...round(700, 'x'.repeat(2_100_000), '收到。')]
+  const beforeOneMegUnder = requests.length
+  const belowDshThreshold = await prepareContextMemory(optionsFor({
+    sessionId: 'one-meg-under-threshold', history: oneMegHistory, inputBudget: 1_000_000, outputReserve: 8_192,
+  }))
+  assert.equal(requests.length, beforeOneMegUnder, 'A large history below the DSH-style 80% trigger remains uncompressed')
+  assert.deepEqual(belowDshThreshold.history, oneMegHistory)
+  const overWindowHistory = [...round(701, 'x'.repeat(2_550_000), '收到。'), ...round(702, '继续。', '我在。')]
+  const beforeOneMegOver = requests.length
+  const aboveDshThreshold = await prepareContextMemory(optionsFor({
+    sessionId: 'one-meg-over-threshold', history: overWindowHistory, inputBudget: 1_000_000, outputReserve: 8_192,
+  }))
+  assert.equal(requests.length - beforeOneMegOver, 1)
+  assert.ok(aboveDshThreshold.systemMemory.includes('部分历史尚未整理'))
+  assert.ok(aboveDshThreshold.history.length < overWindowHistory.length)
+  assert.ok(estimateRequestTokens({
+    system: aboveDshThreshold.systemMemory,
+    messages: toRequestMessages(aboveDshThreshold.history, question),
+    tools: [],
+  }) < 250_000, 'A 1M-window request keeps the configured recent-tail fraction and never resends the 850k-token source sample')
+  assert.ok(estimateContextTokens(requests[beforeOneMegOver].body.messages[1].content) < 8_000,
+    'The memory request contains only the bounded sample, not the full imported history')
+  checks.push('A configured 1M window uses the DSH-style 80% compaction trigger and roughly 16% retained tail while summary input remains bounded')
+
+  const beforeInsufficientBudget = requests.length
+  const insufficientBudget = await prepareContextMemory(optionsFor({
+    mode: 'manual', sessionId: 'insufficient-extraction-budget', history: hugeHistory,
+    inputBudget: 1_536, outputReserve: 128,
+  }))
+  assert.equal(requests.length, beforeInsufficientBudget, 'Do not call a model when even the smallest safe sample cannot fit')
+  assert.equal(insufficientBudget.compaction, 'failed')
+  assert.equal(insufficientBudget.compactionFailure, 'insufficientBudget')
+  checks.push('A route with too little context for a safe extraction fails explicitly without sending a sample or claiming the history was compressed')
+
+  const compressionRoutes = [
+    { protocol: 'openai', baseUrl: 'https://openai-relay.example.test/v1', endpoint: '/v1/chat/completions' },
+    { protocol: 'anthropic', baseUrl: 'https://anthropic-relay.example.test', endpoint: '/anthropic/v1/messages' },
+    { protocol: 'deepseek', baseUrl: 'https://api.deepseek.com', endpoint: '/anthropic/v1/messages' },
+  ]
+  const routeSession = 'small-window-route-fixture'
+  const routeSource = hugeHistory[0]
+  const routeFingerprint = await memoryFingerprint(routeSource)
+  for (const route of compressionRoutes) {
+    const sessionId = `${routeSession}-${route.protocol}`
+    const routeSnapshot = emptySnapshot()
+    const routeSourceRef = { messageId: routeSource.id, fingerprint: routeFingerprint, start: 0, end: 100 }
+    routeSnapshot.segments.push({
+      id: `known-segment-${route.protocol}`, sessionId, sources: [routeSourceRef], summary: '较早的已整理片段。',
+      provider: 'openai:https://qa-memory.example.test/v1', model: 'qa-model', createdAt: 1, extractorVersion: MEMORY_VERSION,
+    })
+    routeSnapshot.records.push(...Array.from({ length: 24 }, (_, index) => ({
+      id: `known-record-${route.protocol}-${index}`, sessionId, kind: 'setting', actor: 'user', realm: 'self_report',
+      key: `资料主题${index}`, text: '仍然喜欢保持温柔的称呼。', sources: [routeSourceRef],
+      supersedes: [], extractedAt: 1, extractorVersion: MEMORY_VERSION,
+    })))
+    respond = request => request.url.endsWith('/chat/completions')
+      ? extraction()
+      : anthropicExtraction(JSON.stringify({ summary: '低窗口下的路由压缩完成。', records: [] }))
+    const beforeRoute = requests.length
+    const compacted = await prepareContextMemory(optionsFor({
+      mode: 'manual', sessionId, history: hugeHistory, snapshot: routeSnapshot,
+      inputBudget: 4_096, outputReserve: 512,
+      connection: { protocol: route.protocol, baseUrl: route.baseUrl },
+    }))
+    assert.equal(compacted.compaction, 'saved', `${route.protocol} route should complete within its configured context`)
+    assert.equal(requests.length, beforeRoute + 1)
+    const sentRequest = requests.at(-1)
+    const userPrompt = route.protocol === 'openai' ? sentRequest.body.messages[1].content : sentRequest.body.messages[0].content
+    const systemPrompt = route.protocol === 'openai' ? sentRequest.body.messages[0].content : sentRequest.body.system
+    assert.ok(userPrompt.includes('[本段原文]'))
+    assert.ok(userPrompt.includes('已有记录'), 'Previously verified records are retained within the prompt budget')
+    assert.ok(!userPrompt.includes(hugeHistory[0].content), 'A complete imported message must never be sent as the extraction sample')
+    assert.ok(userPrompt.length < 15_000)
+    assert.ok(estimateContextTokens(systemPrompt) + estimateContextTokens(userPrompt) + sentRequest.body.max_tokens + 700 <= 4_096,
+      `${route.protocol} extraction prompt, output reserve, and safety margin fit the route context`)
+    assert.ok(sentRequest.url.endsWith(route.endpoint))
+    assert.equal(new Headers(sentRequest.init.headers).get(route.protocol === 'openai' ? 'Authorization' : 'x-api-key'),
+      route.protocol === 'openai' ? 'Bearer memory-fixture-key' : 'memory-fixture-key')
+    if (route.protocol === 'anthropic') assert.equal('safety_check' in sentRequest.body, false)
+    if (route.protocol === 'deepseek') assert.deepEqual(sentRequest.body.safety_check, { level: 'high' })
+
+    let adaptiveAttempts = 0
+    respond = request => {
+      if (adaptiveAttempts++ === 0) {
+        return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 })
+      }
+      return route.protocol === 'openai'
+        ? extraction()
+        : anthropicExtraction(JSON.stringify({ summary: '自适应缩小后的整理完成。', records: [] }))
+    }
+    const beforeAdaptive = requests.length
+    const adaptive = await prepareContextMemory(optionsFor({
+      mode: 'manual', sessionId: `${sessionId}-unknown-window`, history: hugeHistory,
+      inputBudget: 1_000_000, outputReserve: 8_192,
+      connection: { protocol: route.protocol, baseUrl: route.baseUrl },
+    }))
+    assert.equal(adaptive.compaction, 'saved', `${route.protocol} route should retry an unreported provider context limit`)
+    assert.equal(requests.length, beforeAdaptive + 2)
+    const firstAttempt = requests[beforeAdaptive].body
+    const smallerAttempt = requests[beforeAdaptive + 1].body
+    const attemptPromptTokens = body => route.protocol === 'openai'
+      ? estimateContextTokens(body.messages[0].content) + estimateContextTokens(body.messages[1].content)
+      : estimateContextTokens(body.system) + estimateContextTokens(body.messages[0].content)
+    assert.ok(attemptPromptTokens(smallerAttempt) < attemptPromptTokens(firstAttempt),
+      `${route.protocol} retry must reduce the prompt budget even when the provider omits its window size`)
+    assert.ok(smallerAttempt.max_tokens < firstAttempt.max_tokens,
+      `${route.protocol} retry must also reduce the output reserve`)
+  }
+  checks.push('OpenAI-compatible, Anthropic-compatible, and official DeepSeek compression use the selected route and key, fit 4k budgets, omit full histories, and adapt prompt/output limits when context errors omit the provider window')
 
   // Derived data from another session or from an unselected branch must never enter a prompt.
   const isolatedSnapshot = structuredClone(snapshot)
@@ -277,10 +426,12 @@ try {
   const errorResponse = (status, message) => Response.json({ error: { message } }, { status })
   for (const status of [401, 402, 429]) {
     respond = () => errorResponse(status, 'fixture failure')
-    await assert.rejects(prepareContextMemory(optionsFor({ sessionId: `credential-${status}` })), error => error instanceof ApiError && error.status === status)
+    const fallback = await prepareContextMemory(optionsFor({ sessionId: `credential-${status}`, history: hugeHistory }))
+    assert.equal(fallback.compactionFailure, 'provider')
   }
   respond = () => { throw new Error('fixture network error') }
-  await assert.rejects(prepareContextMemory(optionsFor({ sessionId: 'network-failure' })), error => error instanceof ApiError && error.kind === 'network')
+  const networkFallback = await prepareContextMemory(optionsFor({ sessionId: 'network-failure', history: hugeHistory }))
+  assert.equal(networkFallback.compactionFailure, 'connection')
   for (const [id, response] of [
     ['truncated', () => stream('{"summary":"unfinished","records":[]}', 'length')],
     ['invalid-json', () => stream('not JSON')],
@@ -298,10 +449,38 @@ try {
     assert.deepEqual(fallback.history, hugeHistory.slice(-4))
     assert.equal(failOptions.snapshot.segments.length, 0)
     assert.equal(failOptions.snapshot.records.length, 0)
-    assert.equal(requests.length, beforeFailure + 1)
+    const retryable = ['truncated', 'invalid-json', 'unsupported-evidence', 'length-rejected'].includes(id)
+    const expectedAttempts = id === 'length-rejected' ? 3 : retryable ? 2 : 1
+    assert.equal(requests.length, beforeFailure + expectedAttempts)
+    assert.equal(fallback.compactionFailure, id === 'length-rejected' ? 'contextLimit' :
+      id === 'server-failure' ? 'provider' : id === 'truncated' ? 'truncated' :
+        retryable ? 'invalidResponse' : 'truncated')
+    if (id === 'length-rejected') {
+      assert.ok(requests[beforeFailure + 1].body.messages[1].content.length < requests[beforeFailure].body.messages[1].content.length,
+        'A context-limit rejection retries with a smaller source sample')
+      assert.ok(requests[beforeFailure + 2].body.messages[1].content.length < requests[beforeFailure + 1].body.messages[1].content.length,
+        'A repeated context-limit rejection progressively shrinks the source sample again')
+    }
     await prepareContextMemory(failOptions)
-    assert.equal(requests.length, beforeFailure + 1, 'Another send during cooldown must reuse the local fallback')
+    assert.equal(requests.length, beforeFailure + expectedAttempts, 'Another send during cooldown must reuse the local fallback')
   }
+  let providerWindowAttempts = 0
+  respond = () => providerWindowAttempts++ === 0
+    ? errorResponse(400, 'user input too long, 70668 tokens exceeds max 4096 tokens')
+    : extraction()
+  const beforeProviderWindow = requests.length
+  const learnedProviderWindow = await prepareContextMemory(optionsFor({
+    mode: 'manual', sessionId: 'provider-reports-smaller-window', history: hugeHistory,
+    inputBudget: 1_000_000, outputReserve: 8_192,
+  }))
+  assert.equal(learnedProviderWindow.compaction, 'saved')
+  assert.equal(requests.length, beforeProviderWindow + 2)
+  const retriedProviderRequest = requests.at(-1)
+  const retriedPromptTokens = estimateContextTokens(retriedProviderRequest.body.messages[0].content) +
+    estimateContextTokens(retriedProviderRequest.body.messages[1].content)
+  assert.ok(retriedPromptTokens + retriedProviderRequest.body.max_tokens + 700 <= 4_096,
+    'An explicit smaller provider window recalculates both input and output reserves for the retry')
+  assert.ok(retriedProviderRequest.body.messages[1].content.length < requests.at(-2).body.messages[1].content.length)
   const incomplete = optionsFor({ sessionId: 'partially-extracted', history: hugeHistory })
   const partialBefore = requests.length
   const verifiedEvent = '用户在会话开场提到首段。'
@@ -327,10 +506,11 @@ try {
     Date.now = clockNow
   }
   assert.ok(requests.length > beforeRetry, 'An expired cooldown must allow extraction again')
-  await assert.rejects(prepareContextMemory(optionsFor({ sessionId: 'stale-write', onCommit: async () => false })), fail)
+  const staleWrite = await prepareContextMemory(optionsFor({ sessionId: 'stale-write', onCommit: async () => false }))
+  assert.equal(staleWrite.compactionFailure, 'storage')
   assert.equal(JSON.stringify(history), original)
   assert.equal(JSON.stringify(hugeHistory), hugeOriginal)
-  checks.push('Recoverable extraction errors preserve verified segments, use bounded recent turns and source recall, and skip repeat extraction during cooldown. Authentication, quota, network and stale commit failures remain explicit.')
+  checks.push('Recoverable extraction errors preserve verified segments, mark bounded local fallback as incomplete, and skip repeat extraction during cooldown; the send path refuses to use it as complete history')
 
   const cancel = new AbortController()
   const committedBeforeStop = emptySnapshot()
@@ -432,8 +612,22 @@ try {
   const fixedA = '角色A：阿青的旅行搭子。约定周五去看海。'
   const fixedB = '角色B：队长的星际领航员。约定周日观星。'
   const originalLog = history.map(message => message.role === 'user' ? message.content : message.blocks[0].text)
+  const routeLimitCases = [
+    { protocol: 'openai', baseUrl: 'https://openai-budget.example.test/v1', endpoint: '/v1/chat/completions' },
+    { protocol: 'anthropic', baseUrl: 'https://anthropic-budget.example.test', endpoint: '/anthropic/v1/messages' },
+    { protocol: 'deepseek', baseUrl: 'https://api.deepseek.com', endpoint: '/anthropic/v1/messages' },
+  ]
+  const routeLimitHistory = [
+    ...round(960, '我们约定用熟悉的称呼，慢慢分享今天的心情。'.repeat(50_000), '我记下了，会一直认真听你说。'),
+    ...round(961, '今天好吗？', '我在。'),
+    ...round(962, '我们继续吧。', '好，我陪着你。'),
+  ]
   for (const [id, fixed] of [['chat-a', fixedA], ['chat-b', fixedB], ['chat-failure', '失败测试角色']]) {
     await db.saveSession({ id, title: id, createdAt: 1, updatedAt: 1, messages: structuredClone(history), contextMemory: { fixed } })
+  }
+  for (const route of routeLimitCases) {
+    const id = `route-input-limit-${route.protocol}`
+    await db.saveSession({ id, title: id, createdAt: 1, updatedAt: 1, messages: structuredClone(routeLimitHistory) })
   }
   const continuationPrefix = { ...round(999, '接着讲我们的旅途。', '尚未讲完的正文。')[1], model: 'deepseek-v4-pro', prefix: true, thinking: true, status: 'done', stopReason: 'max_tokens', latestReminder: '原回复的提醒快照', blocks: [{ type: 'thinking', thinking: '原思考', signature: 'continue-signature' }, { type: 'text', text: '尚未讲完的正文。' }] }
   await db.saveSession({ id: 'chat-continue', title: '续写测试', createdAt: 1, updatedAt: 1, messages: [...structuredClone(history), round(999, '接着讲我们的旅途。')[0], continuationPrefix], contextMemory: { fixed: '保持此会话旅途设定。' } })
@@ -484,19 +678,107 @@ try {
   assert.deepEqual(await db.loadSession(manualId), sourceBeforeCommand, 'Manual compaction must not create or mutate a chat turn')
   assert.equal((await db.loadMemorySnapshot(manualId)).segments.length, 1)
   const compressedMessages = await sendManualFixture('嗯。')
-  assert.ok(compressedMessages.length < fullMessages.length)
+  assert.ok(!compressedMessages.some(message => message.role === 'user' && message.content === history[0].content),
+    'The saved checkpoint omits its older source turn from the next request')
   assert.ok(compressedMessages.some(message => message.role === 'system' && message.content.includes('手动整理的历史')))
   assert.ok(compressedMessages.some(message => message.role === 'assistant' && message.content === '我在听，慢慢说。'))
   assert.equal(settings.useSettings.getState().contextMemoryEnabled, false)
   settings.setContextMemoryEnabled(true)
   checks.push('With auto off the real store sends full history, a manual compaction makes one request and preserves every stored message, then chat reuses its checkpoint without another model call')
 
+  assert.ok(estimateRequestTokens({
+    system: '', messages: toRequestMessages(routeLimitHistory, question), tools: [],
+  }) > 800_000, 'The store fixture exceeds the 1M route\'s 80% compaction threshold')
+  const uploads = await import(new URL('services/attachments.ts', root))
+  settings.setContextMemoryEnabled(false)
+  for (const [index, route] of routeLimitCases.entries()) {
+    const routeId = `route-input-limit-${route.protocol}`
+    const apiKey = `route-input-limit-key-${route.protocol}`
+    const model = `route-input-limit-model-${route.protocol}`
+    settings.setApiConnection({ apiKey, apiBaseUrl: route.baseUrl, apiProtocol: route.protocol, model, models: [model] })
+    settings.setGeneration({ ...settings.useSettings.getState().generation, contextTokens: 1_000_000 })
+    assert.equal(store.getEffectiveContextInputBudget(), 1_000_000, `${route.protocol} starts with its configured 1M window`)
+    store.selectSession(routeId)
+    await wait(() => store.useChatStore.getState().sessionCache[routeId])
+
+    let extractionCount = 0
+    const chatRequests = []
+    respond = request => {
+      if (isExtraction(request)) {
+        extractionCount += 1
+        if (extractionCount === 1) {
+          return errorResponse(400, 'user input too long, 70668 tokens exceeds max 4096 tokens')
+        }
+        return route.protocol === 'openai'
+          ? extraction('长会话已按当前路由整理。')
+          : anthropicExtraction(JSON.stringify({ summary: '长会话已按当前路由整理。', records: [] }))
+      }
+      chatRequests.push(request)
+      if (route.protocol === 'openai' && index === 0) {
+        return errorResponse(400, 'user input too long, 70668 tokens exceeds max 4096 tokens')
+      }
+      return route.protocol === 'openai'
+        ? stream('续聊成功。')
+        : anthropicExtraction('续聊成功。')
+    }
+    assert.equal(await store.compactSession(routeId), 'saved', `${route.protocol} learns the reported window during manual compaction`)
+    assert.equal(extractionCount, 2)
+    assert.equal(store.getEffectiveContextInputBudget(), Math.floor(4_096 * 0.85))
+    const switchedKey = { ...settings.useSettings.getState(), apiKey: `${apiKey}-other` }
+    settings.setApiConnection({ ...switchedKey, models: [model] })
+    assert.equal(store.getEffectiveContextInputBudget(), 1_000_000, 'A different key on the same route does not inherit the learned limit')
+    settings.setApiConnection({ apiKey, apiBaseUrl: route.baseUrl, apiProtocol: route.protocol, model, models: [model] })
+    assert.equal(store.getEffectiveContextInputBudget(), Math.floor(4_096 * 0.85))
+
+    let expectedAttachmentText
+    if (route.protocol === 'openai') {
+      const attachmentId = `${routeId}-note`
+      const attachmentText = '附件补充：周五晚上一起看海，沿途慢慢聊。'
+      expectedAttachmentText = attachmentText
+      const blob = Object.assign(new Blob([attachmentText], { type: 'text/plain' }), { name: 'route-note.txt' })
+      const draftMap = new Map(drafts.useDrafts.getState().drafts)
+      draftMap.set(routeId, {
+        text: '结合附件继续我们的聊天。',
+        attachments: [{ id: attachmentId, file: blob, isImage: false, previewUrl: null, uploadPurpose: 'text_recognition' }],
+      })
+      drafts.useDrafts.setState({ drafts: draftMap })
+      uploads.useUploads.setState(state => ({ tasks: {
+        ...state.tasks,
+        [attachmentId]: { status: 'done', localText: attachmentText },
+      } }))
+    } else {
+      drafts.setDraftText(routeId, '结合刚才的内容继续聊。')
+    }
+    const beforeChat = requests.length
+    assert.equal(store.sendMessage(routeId), true)
+    await wait(() => !store.useChatStore.getState().streaming[routeId])
+    assert.equal(chatRequests.length, 1, `${route.protocol} sends exactly one normal request and never retries a context rejection`)
+    assert.equal(requests.length, beforeChat + 1)
+    const chatRequest = chatRequests[0]
+    assert.ok(chatRequest.url.endsWith(route.endpoint))
+    assert.equal(chatRequest.body.model, model)
+    const normalized = route.protocol === 'openai'
+      ? { system: chatRequest.body.messages[0].content, messages: chatRequest.body.messages.slice(1), tools: [] }
+      : { system: chatRequest.body.system, messages: chatRequest.body.messages, tools: [] }
+    assert.ok(estimateRequestTokens(normalized) <= 4_096 * 0.85,
+      `${route.protocol} normal chat reuses the provider-confirmed input budget`)
+    if (route.protocol === 'openai') {
+      assert.ok(JSON.stringify(chatRequest.body.messages).includes(expectedAttachmentText), 'The one submitted request still includes the local text attachment')
+    }
+    assert.equal(new Headers(chatRequest.init.headers).get(route.protocol === 'openai' ? 'Authorization' : 'x-api-key'),
+      route.protocol === 'openai' ? `Bearer ${apiKey}` : apiKey)
+  }
+  checks.push('The real store learns a 4k provider window during manual compaction for a >800k-token, 1M-window history; OpenAI-compatible, Anthropic-compatible and official DeepSeek chats reuse the 3481-token budget, route/key limits stay isolated, and a document-bearing request is not retried')
+
+  settings.setApiConnection({ apiKey: 'memory-fixture-key', apiBaseUrl: connection.baseUrl, apiProtocol: 'openai', model: 'qa-model', models: ['qa-model'] })
+  settings.setContextMemoryEnabled(true)
   const sent = []
   respond = request => {
     if (isExtraction(request)) return extraction('本段日常分享。')
     sent.push(request.body)
     return stream('我们约好周五去看海。')
   }
+  settings.setGeneration({ ...settings.useSettings.getState().generation, contextTokens: 24_000 })
   store.selectSession('chat-a')
   await wait(() => store.useChatStore.getState().sessionCache['chat-a'])
   drafts.setDraftText('chat-a', '我们的约定是什么？')
@@ -519,22 +801,23 @@ try {
   store.selectSession('chat-failure')
   await wait(() => store.useChatStore.getState().sessionCache['chat-failure'])
   const beforeFallback = requests.length
-  for (const message of ['继续我们的聊天', '1']) {
+  for (const [index, message] of ['继续我们的聊天', '1'].entries()) {
     drafts.setDraftText('chat-failure', message)
     assert.equal(store.sendMessage('chat-failure'), true)
     await wait(() => !store.useChatStore.getState().streaming['chat-failure'])
     const reply = store.useChatStore.getState().sessionCache['chat-failure'].messages.at(-1)
-    assert.equal(reply.status, 'done')
-    assert.equal(reply.blocks[0].text, '原文续聊成功')
-    assert.equal(sent.at(-1).messages.at(-1).content, message)
+    assert.equal(reply.status, 'error')
+    assert.equal(reply.error?.localMessage?.key, index === 0 ? 'contextMemoryManualResponseFailed' : 'contextMemoryAutoCooldown', JSON.stringify(reply.error))
   }
-  assert.equal(sent.length, 3)
-  assert.equal(requests.slice(beforeFallback).filter(isExtraction).length, 1)
+  assert.equal(sent.length, 1, 'The chat model is never sent a lossy recent-only history after failed compaction')
+  const failedExtractions = requests.slice(beforeFallback).filter(isExtraction)
+  assert.equal(failedExtractions.length, 2, 'An invalid extraction gets one bounded shrink retry, then cooldown suppresses another send')
+  assert.ok(failedExtractions[1].body.messages[1].content.length < failedExtractions[0].body.messages[1].content.length)
   const fallbackSnapshot = await db.loadMemorySnapshot('chat-failure')
   assert.equal(fallbackSnapshot.segments.length, 0)
   assert.equal(fallbackSnapshot.records.length, 0)
   assert.deepEqual(fallbackSnapshot.session.messages.slice(0, history.length).map(({id})=>id), history.map(({id})=>id))
-  checks.push('An unusable summary is not saved, the real store continues with bounded local history, and the next short send does not call the failed summary again')
+  checks.push('An unusable summary is not saved or used to omit older turns from a chat request; the retry cooldown is explicit and source history remains intact')
 
   const deepseekStream = text => new Response([
     { type: 'message_start', message: { id: 'continue-fixture', model: 'deepseek-v4-pro' } },
@@ -557,7 +840,7 @@ try {
   await wait(() => !store.useChatStore.getState().streaming['chat-continue'])
   assert.equal(continuations.length, 1)
   assert.equal(continuations[0].model, 'deepseek-v4-pro')
-  assert.ok(continuations[0].messages.some(message => message.role === 'latest_reminder' && message.content === continuationPrefix.latestReminder))
+  assert.equal(continuations[0].messages.some(message => message.role === 'latest_reminder'), false)
   const sentPrefix = continuations[0].messages.at(-1)
   assert.equal(sentPrefix.role, 'assistant')
   assert.ok(sentPrefix.content.some(block => block.type === 'text' && block.text === '尚未讲完的正文。'))
@@ -566,7 +849,7 @@ try {
   assert.equal(completedContinuation.status, 'done')
   assert.equal(completedContinuation.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), '尚未讲完的正文。续写完成。')
   assert.equal((await db.loadMemorySnapshot('chat-continue')).session.contextMemory.fixed, '保持此会话旅途设定。')
-  checks.push('The real DeepSeek continuation path accepts its saved pending snapshot, compresses long prior history and preserves original text/thinking/signature/reminder/model while appending the new answer')
+  checks.push('The real V4 Pro continuation path accepts its saved pending snapshot, compresses long prior history, preserves original text/thinking/signature/model, omits unsupported latest_reminder, and appends the new answer')
 
   await writeFile(new URL('deepstay-context-memory-evidence.json', import.meta.url), JSON.stringify({ passed: true, runtime: process.version, checks, extractionRequests: requests.filter(isExtraction).length, scope: 'Real context memory pipeline, IndexedDB, OpenAI adapter and SSE parser with deterministic fixture responses. No paid upstream calls; model semantic quality requires separate evaluation.' }, null, 2))
   console.log(JSON.stringify({ passed: true, checks, extractionRequests: requests.filter(isExtraction).length }, null, 2))

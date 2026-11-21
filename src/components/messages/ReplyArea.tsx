@@ -71,12 +71,11 @@ export const ReplyArea = memo(function ReplyArea({
   useEffect(() => setOpen(!collapsed), [collapsed])
   const titleActive = streaming && !hasResponse
   useTicker(titleActive, 1000)
-  if (view.steps.length === 0 && !(message.thinking && streaming)) {
+  const steps = message.thinking ? view.steps : view.steps.filter((step) => step.type !== 'thinking')
+  if (steps.length === 0 && !(message.thinking && streaming)) {
     return null
   }
-  // 推理模型可能在未请求深度思考时返回思考内容，也需提供折叠标题。
-  const thinking = message.thinking || view.steps.some((step) => step.type === 'thinking')
-  const title = thinking ? getAreaTitle(view, streaming, Date.now(), hasResponse) : null
+  const title = message.thinking ? getAreaTitle({ ...view, steps }, streaming, Date.now(), hasResponse) : null
   const stopped = !streaming && !hasResponse
   return (
     <div className={styles.area}>
@@ -91,7 +90,7 @@ export const ReplyArea = memo(function ReplyArea({
       ) : null}
       {open || !title ? (
         <div className={styles.steps}>
-          {view.steps.map((step, index) => (
+          {steps.map((step, index) => (
             <StepItem
               key={stepKey(step, index)}
               step={step}

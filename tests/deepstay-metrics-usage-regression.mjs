@@ -56,6 +56,8 @@ try {
   assert.equal(getReplyMetrics(reply).context.occupied, 113, 'Only the finalized reply publishes the provider total')
   assert.equal(getReplyMetrics(reply).context.reported, true)
   assert.equal(getReplyMetrics(reply).cacheHitPercentage, 0.8)
+  assert.equal(readMessageEvent({ type: 'message_delta', delta: { stop_reason: 'stop_sequence' } })?.delta.stop_reason, 'end_turn',
+    'A configured stop sequence is a normal completed model response')
   assert.equal(getReplyMetrics({ ...seed, status: 'pending', usage: { input_tokens: 100, cache_read_input_tokens: 0 } }).cacheHitPercentage, undefined)
   assert.equal(getReplyMetrics({ ...seed, usage: { input_tokens: 10, cache_read_input_tokens: 80, cache_creation_input_tokens: 10, output_tokens: 900 } }).cacheHitPercentage, 0.8,
     'The denominator includes cache creation input and excludes output tokens, matching DSH')

@@ -7,7 +7,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 const toMessages = (body: CreateMessageRequest) => {
-  const messages = [{ role: 'system', content: body.system }]
+  type ContentItem = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+  const messages: { role: string; content: string | ContentItem[] }[] = [{ role: 'system', content: body.system }]
   for (const message of body.messages) {
     if (typeof message.content === 'string') {
       messages.push({
@@ -16,14 +17,31 @@ const toMessages = (body: CreateMessageRequest) => {
       })
       continue
     }
-    if (message.content.some((block) => block.type !== 'text' && block.type !== 'thinking')) {
-      throw new ApiError('protocol', 'This OpenAI connection supports text conversations only')
+    if (message.content.some((block) =>
+      block.type === 'document' || (block.type === 'image' && block.source.type !== 'base64')
+    )) {
+      throw new ApiError('protocol', 'This OpenAI connection received an unsupported attachment block')
     }
-    const content = message.content
-      .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-      .join('\n\n')
-    if (content) {
+    const content: ContentItem[] = []
+    for (const block of message.content) {
+      if (block.type === 'text') {
+        content.push({ type: 'text', text: block.text })
+        continue
+      }
+      if (block.type === 'image' && block.source.type === 'base64') {
+        content.push({
+          type: 'image_url',
+          image_url: { url: `data:${block.source.media_type};base64,${block.source.data}` },
+        })
+      }
+    }
+    if (content.some((block) => block.type === 'image_url')) {
       messages.push({ role: message.role, content })
+    } else {
+      const text = content.map((block) => block.type === 'text' ? block.text : '').filter(Boolean).join('\n\n')
+      if (text) {
+        messages.push({ role: message.role, content: text })
+      }
     }
   }
   return messages

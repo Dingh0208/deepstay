@@ -43,13 +43,13 @@ const imageSize = (data: ArrayBuffer): { width: number; height: number } | undef
 }
 
 /** Resize only the outbound copy. The original file remains in local history and exports. */
-export const prepareImageUpload = async (blob: Blob): Promise<Blob> => {
+export const prepareImageUpload = async (blob: Blob, forcePng = false): Promise<Blob> => {
   // Invalid tiny uploads cannot contain an oversized raster; let the existing upload error handle them.
   if (blob.size < 24) {
     return blob
   }
   const size = imageSize(await blob.slice(0, 128 * 1024).arrayBuffer())
-  if (size && size.width > 0 && size.height > 0 && Math.max(size.width, size.height) <= MAX_IMAGE_SIDE) {
+  if (!forcePng && size && size.width > 0 && size.height > 0 && Math.max(size.width, size.height) <= MAX_IMAGE_SIDE) {
     return blob
   }
   const encode = async (image: CanvasImageSource, width: number, height: number) => {

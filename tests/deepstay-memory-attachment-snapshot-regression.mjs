@@ -56,6 +56,7 @@ const checks = []
 
 try {
   settings.setApiConnection(oldConfig)
+  settings.setGeneration({ contextTokens: 24_000 })
   settings.setContextMemoryEnabled(true)
   const image = { id: 'snapshot-local-image', serverId: null, name: '记忆图片.png', size: 8, isImage: true, mimeType: 'image/png' }
   const history = Array.from({ length: 14 }, (_, index) => [

@@ -1,19 +1,25 @@
 import type { CreateMessageRequest, MessageParam } from './types.js'
 
-/** DeepSeek documents Pro (including its Opus aliases) as lacking server tools and titles. */
-export const supportsDeepSeekServerTools = (model: string): boolean =>
-  !/^(?:deepseek-v4-pro(?:$|-)|claude-opus)/i.test(model)
+const isDeepSeekV4Pro = (model: string) => /^(?:deepseek-v4-pro(?:$|-)|claude-opus)/i.test(model)
+
+/** V4 Pro uses Anthropic's standard web search tool. */
+export const usesAnthropicWebSearch = (model: string): boolean => isDeepSeekV4Pro(model)
+
+export const supportsDeepSeekTitles = (model: string): boolean => !isDeepSeekV4Pro(model)
 
 export const adaptDeepSeekRequest = (body: CreateMessageRequest): CreateMessageRequest => {
-  if (supportsDeepSeekServerTools(body.model)) {
+  if (supportsDeepSeekTitles(body.model)) {
     return body
   }
   const request = { ...body }
   delete request.title
   return {
     ...request,
-    tools: [],
+    tools: body.tools.filter((tool) => tool.type === 'web_search_20250305'),
     messages: body.messages.flatMap<MessageParam>((message) => {
+      if (message.role === 'latest_reminder') {
+        return []
+      }
       if (message.role !== 'assistant') {
         return [message]
       }

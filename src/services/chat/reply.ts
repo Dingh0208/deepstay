@@ -14,6 +14,7 @@ import type {
   ReplyStatus,
   UserMessage,
 } from './types.js'
+import type { LocalAttachmentContent } from '../localAttachments.js'
 
 /**
  * 文件按 Files API 的 file_id（附件的 serverId）引用：图片用 image 块，其余用 document 块。
@@ -211,12 +212,42 @@ const isUsableReply = (message: Message): message is AssistantMessage =>
   hasReplyBody(message)
 
 /** 有文件时用内容块数组：先文件后文本，文件按 Files API 的 file_id 引用 */
-const toUserParam = ({ id, content, files }: UserMessage, documentOwners: Map<string, string>): MessageParam => {
-  const blocks = toFileBlocks(files.filter((file) => file.isImage || documentOwners.get(file.serverId ?? '') === id))
+const toLocalBlocks = (
+  files: FileAttachment[],
+  localFiles: ReadonlyMap<string, LocalAttachmentContent>,
+  documentOwners: Map<string, string>,
+  ownerId: string
+): (FileBlockParam | TextBlockParam)[] => {
+  const blocks: (FileBlockParam | TextBlockParam)[] = []
+  for (const file of files) {
+    if (file.contextExcluded && !file.isImage) {
+      continue
+    }
+    const local = localFiles.get(file.id)
+    if (!local) {
+      continue
+    }
+    if (local.type === 'image') {
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: local.mediaType, data: local.data } })
+    } else if (documentOwners.get(file.id) === ownerId) {
+      blocks.push({ type: 'text', text: `[附件：${file.name}]\n${local.text}` })
+    }
+  }
+  return blocks
+}
+
+const toUserParam = (
+  { id, content, files }: UserMessage,
+  documentOwners: Map<string, string>,
+  localFiles?: ReadonlyMap<string, LocalAttachmentContent>
+): MessageParam => {
+  const blocks = localFiles
+    ? toLocalBlocks(files, localFiles, documentOwners, id)
+    : toFileBlocks(files.filter((file) => file.isImage || documentOwners.get(file.serverId ?? '') === id))
   return blocks.length === 0
     ? { role: 'user', content: content || (files.some((file) => !file.isImage && file.contextExcluded)
         ? '此处文件已暂停引用。'
-        : files.some((file) => file.serverId) ? '文件已在后续消息中提供。' : '') }
+        : localFiles ? '此处附件原件在本机不可用。' : files.some((file) => file.serverId) ? '文件已在后续消息中提供。' : '') }
     : {
         role: 'user',
         content: [...blocks, ...(content ? [{ type: 'text' as const, text: content }] : [])],
@@ -317,7 +348,8 @@ export const toRequestMessages = (
   prefix?: AssistantMessage,
   thinking = prefix?.thinking ?? false,
   latestReminder?: string,
-  textOnly = false
+  textOnly = false,
+  localFiles?: ReadonlyMap<string, LocalAttachmentContent>
 ): MessageParam[] => {
   const messages: MessageParam[] = []
   const rounds = getContextRounds(history)
@@ -325,8 +357,11 @@ export const toRequestMessages = (
   const documentOwners = new Map<string, string>()
   for (const user of [...rounds.map(([user]) => user), question]) {
     for (const file of user.files) {
-      if (!file.isImage && !file.contextExcluded && file.serverId) {
-        documentOwners.set(file.serverId, user.id)
+      if (!file.isImage && !file.contextExcluded) {
+        const documentId = localFiles ? (localFiles.has(file.id) ? file.id : undefined) : file.serverId
+        if (documentId) {
+          documentOwners.set(documentId, user.id)
+        }
       }
     }
   }
@@ -340,17 +375,18 @@ export const toRequestMessages = (
   }
   for (const [user, reply] of rounds) {
     // 历史提问没有文字、附件也都没有 serverId 时，提问为空，连同回答一起省略。
-    if (!user.content && (textOnly || (toFileBlocks(user.files).length === 0 && !user.files.some((file) => !file.isImage && file.contextExcluded)))) {
+    const userBlocks = localFiles ? toLocalBlocks(user.files, localFiles, documentOwners, user.id) : toFileBlocks(user.files)
+    if (!user.content && (textOnly || (userBlocks.length === 0 && !user.files.some((file) => !file.isImage && file.contextExcluded)))) {
       continue
     }
     appendReminder(reply.latestReminder)
     messages.push(
-      textOnly ? { role: 'user', content: user.content } : toUserParam(user, documentOwners),
+      textOnly ? { role: 'user', content: user.content } : toUserParam(user, documentOwners, localFiles),
       textOnly ? { role: 'assistant', content: [{ type: 'text', text: getReplyText(reply) }] } : toAssistantParam(reply)
     )
   }
   appendReminder(latestReminder)
-  messages.push(textOnly ? { role: 'user', content: question.content } : toUserParam(question, documentOwners))
+  messages.push(textOnly ? { role: 'user', content: question.content } : toUserParam(question, documentOwners, localFiles))
   if (prefix?.prefix) {
     const assistant = toAssistantParam(prefix, true, thinking)
     // 没有非空白正文或有效思考时直接重发原问题，避免服务端拒绝空 Prefill。

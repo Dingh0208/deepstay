@@ -63,6 +63,7 @@ const isExtraction = request => request.body.messages[0].content.includes('‰Ω†Âè
 const checks = []
 try {
   settings.setApiConnection({ apiKey: 'memory-lifecycle-fixture', apiBaseUrl: 'https://memory-lifecycle.example.test/v1', apiProtocol: 'openai', model: 'fixture', models: ['fixture'] })
+  settings.setGeneration({ contextTokens: 24_000 })
   settings.setContextMemoryEnabled(true)
   for (const id of ['foreign-edit', 'foreign-disable', 'foreign-stop', 'foreign-delete-disable', 'foreign-delete-stop', 'background-during-extraction', 'disable-during-commit', 'stop-during-commit', 'initial-save-failure', 'delete-during-extraction', 'clear-during-extraction']) await db.saveSession(session(id))
   await store.initChat()

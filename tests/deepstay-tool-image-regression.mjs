@@ -101,7 +101,6 @@ try {
   assert.equal(attachments.resolveMimeType(new File(['text'], 'notes.txt', { type: 'text/plain' })), 'text/plain')
 
   const { streamMessage } = await import(new URL('services/api/client.ts', root))
-  const { supportsDeepSeekServerTools } = await import(new URL('services/api/modelCapabilities.ts', root))
   const settings = await import(new URL('services/settings.ts', root))
   const store = await import(new URL('services/chat/store.ts', root))
   const drafts = await import(new URL('services/chat/drafts.ts', root))
@@ -138,7 +137,6 @@ try {
   assert.deepEqual(calls[2].tools, [tool])
   assert.equal(calls[2].title.enabled, true)
   assert.equal(body.messages[1].content.length, 2, 'Adapting an outbound request does not mutate stored tool history')
-  assert.equal(supportsDeepSeekServerTools('deepseek-flash'), true)
 
   await store.initChat()
   settings.setApiConnection({ apiKey: 'fixture-key', apiBaseUrl: connection.baseUrl, apiProtocol: connection.protocol, model: 'deepseek-v4-pro', models: ['deepseek-v4-pro'] })

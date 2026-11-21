@@ -92,12 +92,13 @@ const unsubscribeReasoning = store.useChatStore.subscribe((state) => {
 // This change occurs before prepareFiles' awaited work settles. The first turn
 // must remain a coherent URL/key/model snapshot; the next turn uses the new one.
 settings.setApiConnection(changedB)
+const longSystemPrompt = '\n  \t' + '设'.repeat(50_000) + '\r\n  '
 settings.setGeneration({
-  system: '保持角色设定',
+  system: longSystemPrompt,
   temperature: 0.7,
   topP: 0.9,
   maxTokens: 640,
-  contextTokens: 2048,
+  contextTokens: 1_000_000,
   frequencyPenalty: 0,
   presencePenalty: -0.3,
   stop: ['结束标记', '结束标记'],
@@ -107,7 +108,7 @@ unsubscribeReasoning()
 if (requests.length === 0) console.log(store.useChatStore.getState().sessionCache[firstId].messages[1])
 assert.equal(requests.length, 1)
 assert.equal(requests[0].body.max_tokens, undefined)
-assert.notEqual(requests[0].body.messages[0].content, '保持角色设定')
+assert.notEqual(requests[0].body.messages[0].content, longSystemPrompt)
 const first = store.useChatStore.getState().sessionCache[firstId]
 assert.equal(first.messages[1].model, originalA.model)
 assert.equal(first.messages[1].status, 'done')
@@ -123,7 +124,7 @@ assert.equal(requests.length, 2)
 assert.equal(requests[1].body.messages.some(message => message.content === '第一条问题'), true)
 assert.equal(requests[1].body.messages.some(message => message.content === '第一个供应商完整回答'), true)
 assert.equal(requests[1].body.messages[requests[1].body.messages.length - 1].content, '继续对话')
-assert.deepEqual(requests[1].body.messages[0], { role: 'system', content: '保持角色设定' })
+assert.deepEqual(requests[1].body.messages[0], { role: 'system', content: longSystemPrompt })
 const { temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop, stream } = requests[1].body
 assert.deepEqual(
   { temperature, top_p, max_tokens, frequency_penalty, presence_penalty, stop, stream },
@@ -131,11 +132,12 @@ assert.deepEqual(
 )
 assert.equal(requests[1].body.contextTokens, undefined)
 const { useSettings: reloadedSettings } = await import(new URL('services/settings.ts?generation-reload', sourceRoot))
-assert.equal(reloadedSettings.getState().generation.contextTokens, 2048)
-assert.equal(reloadedSettings.getState().generation.system, '保持角色设定')
+assert.equal(reloadedSettings.getState().generation.contextTokens, 1_000_000)
+assert.equal(reloadedSettings.getState().generation.system, longSystemPrompt)
 settings.setGeneration({})
 assert.equal(saved.has('deepstay:generation'), false)
-checks.push('Generation settings persist locally and are snapshotted per send; OpenAI receives only the configured request fields and streaming stays enabled')
+checks.push('A 50,000-character Chinese global prompt with surrounding whitespace persists without truncation and is sent intact on the next request')
+checks.push('Generation settings are snapshotted per send; OpenAI receives only the configured request fields and streaming stays enabled')
 const second = store.useChatStore.getState().sessionCache[firstId]
 assert.equal(second.messages[3].model, changedB.model)
 assert.equal(second.messages[3].status, 'done')
@@ -450,7 +452,7 @@ await waitIdle()
 assert.equal(windowRequests.length, 4)
 assert.ok(!windowRequests[3].messages.some(({content}) => content === recent), 'Returning to a model restores its custom request budget')
 settings.setGeneration({})
-checks.push('The one-million-token default retains eligible history beyond 24k; default and custom windows crop only the outbound copy')
+checks.push('The default 1M displayed window retains eligible history beyond 24k while request fitting only crops the outbound copy')
 checks.push('Switching models changes the real outbound context budget immediately and restores each model\'s saved capacity without altering local history')
 
 // A real request can be rejected even when the local tokenizer estimate differs from the provider.

@@ -15,6 +15,8 @@ declare const styles: {
   readonly "functionRow": string;
   readonly "modelRow": string;
   readonly "modelSelect": string;
+  readonly "presetSelect": string;
+  readonly "modelSelectWithPreset": string;
   readonly "toggles": string;
   readonly "collapsedToggles": string;
   readonly "toggleLabel": string;

@@ -33,7 +33,7 @@ export const normalizeGeneration = (value: unknown): GenerationSettings => {
     }
   }
   if (typeof raw.system === 'string' && raw.system.trim()) {
-    result.system = raw.system.trim().slice(0, 10_000)
+    result.system = raw.system
   }
   if (Array.isArray(raw.stop)) {
     const parts = [...new Set(raw.stop.filter((s): s is string => typeof s === 'string' && s.length > 0 && s.length <= 128))].slice(0, 4)

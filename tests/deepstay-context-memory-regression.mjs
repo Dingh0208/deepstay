@@ -851,6 +851,39 @@ try {
   assert.equal((await db.loadMemorySnapshot('chat-continue')).session.contextMemory.fixed, '保持此会话旅途设定。')
   checks.push('The real V4 Pro continuation path accepts its saved pending snapshot, compresses long prior history, preserves original text/thinking/signature/model, omits unsupported latest_reminder, and appends the new answer')
 
+  settings.setContextMemoryEnabled(false)
+  settings.setApiConnection({ apiKey: 'default-budget-key', apiBaseUrl: 'https://default-budget.example.test/v1', apiProtocol: 'openai', model: 'default-budget-model', models: ['default-budget-model'] })
+  const defaultSystem = '设'.repeat(50_000)
+  settings.setGeneration({ system: defaultSystem })
+  assert.equal(store.getEffectiveContextInputBudget(), 128_000)
+  const defaultBudgetId = 'default-budget-chat'
+  await db.saveSession({ id: defaultBudgetId, title: '默认请求预算', createdAt: 1, updatedAt: 1, messages: structuredClone(routeLimitHistory) })
+  store.useChatStore.setState(state => ({ sessions: [...state.sessions, { id: defaultBudgetId, title: '默认请求预算', createdAt: 1, updatedAt: 1 }] }))
+  store.selectSession(defaultBudgetId)
+  await wait(() => store.useChatStore.getState().sessionCache[defaultBudgetId])
+  respond = () => stream('默认预算请求完成。')
+  drafts.setDraftText(defaultBudgetId, '请继续。')
+  const beforeDefaultBudget = requests.length
+  assert.equal(store.sendMessage(defaultBudgetId), true)
+  await wait(() => !store.useChatStore.getState().streaming[defaultBudgetId])
+  assert.equal(requests.length, beforeDefaultBudget + 1)
+  const defaultBudgetRequest = requests.at(-1).body
+  assert.equal(defaultBudgetRequest.messages[0].content, defaultSystem,
+    'A 50,000-character global prompt remains intact under the default request budget')
+  assert.ok(estimateRequestTokens({
+    system: defaultBudgetRequest.messages[0].content,
+    messages: defaultBudgetRequest.messages.slice(1).map(({ role, content }) => ({
+      role, content: role === 'assistant' ? [{ type: 'text', text: content }] : content,
+    })),
+    tools: defaultBudgetRequest.tools ?? [],
+  }) <= 128_000, 'The default store request fits the bounded input budget')
+  assert.equal(defaultBudgetRequest.messages.at(-1).content, '请继续。')
+  const persistedDefaultBudget = await db.loadSession(defaultBudgetId)
+  assert.equal(persistedDefaultBudget.messages.length, routeLimitHistory.length + 2)
+  assert.equal(persistedDefaultBudget.messages[0].content, routeLimitHistory[0].content,
+    'Request fitting never deletes or rewrites the oversized local history')
+  checks.push('With no per-route context setting, a very long store request uses the 128k default budget, keeps the newest question, and preserves the complete local history')
+
   await writeFile(new URL('deepstay-context-memory-evidence.json', import.meta.url), JSON.stringify({ passed: true, runtime: process.version, checks, extractionRequests: requests.filter(isExtraction).length, scope: 'Real context memory pipeline, IndexedDB, OpenAI adapter and SSE parser with deterministic fixture responses. No paid upstream calls; model semantic quality requires separate evaluation.' }, null, 2))
   console.log(JSON.stringify({ passed: true, checks, extractionRequests: requests.filter(isExtraction).length }, null, 2))
 } finally { hooks.deregister() }

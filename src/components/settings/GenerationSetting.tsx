@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useRef, useState, type FormEvent } from 'react'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -55,13 +55,20 @@ const GenerationForm = () => {
     system: current.system ?? '',
     stop: current.stop?.join('\n') ?? '',
   }))
-  const [status, setStatus] = useState<'generationInvalidStops' | 'generationSaved' | null>(null)
+  const [status, setStatus] = useState<
+    'generationInvalidStops' | 'generationSaved' | 'generationImported' | 'generationImportFailed' | null
+  >(null)
+  const [importing, setImporting] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
   const edit = (key: string, value: string) => {
     setDraft((previous) => ({ ...previous, [key]: value }))
     setStatus(null)
   }
   const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (importing) {
+      return
+    }
     const stop = draft.stop.split(/\r?\n/).filter(Boolean)
     if (stop.length > 4 || stop.some((text) => text.length > 128)) {
       setStatus('generationInvalidStops')
@@ -76,14 +83,41 @@ const GenerationForm = () => {
     setGeneration(next)
     setStatus('generationSaved')
   }
+  const importText = async (file: File) => {
+    setImporting(true)
+    setStatus(null)
+    try {
+      const system = await file.text()
+      setDraft((previous) => ({ ...previous, system }))
+      setStatus('generationImported')
+    } catch {
+      setStatus('generationImportFailed')
+    } finally {
+      setImporting(false)
+    }
+  }
   return (
     <details className={styles.cell}>
       <summary className={styles.generationSummary}>{t('generationSettings')}</summary>
       <form className={styles.generationForm} onSubmit={save}>
         <label>
           {t('generationSystem')}
-          <textarea rows={3} maxLength={10_000} value={draft.system} onChange={(event) => edit('system', event.target.value)} />
+          <textarea rows={3} value={draft.system} onChange={(event) => edit('system', event.target.value)} />
         </label>
+        <div className={styles.generationImportRow}>
+          <input ref={fileInput} type="file" accept=".txt,text/plain" hidden
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              event.target.value = ''
+              if (file) {
+                void importText(file)
+              }
+            }} />
+          <Button type="button" variant="outlined" size="m" disabled={importing}
+            onClick={() => fileInput.current?.click()}>
+            {t(importing ? 'generationImporting' : 'generationImportText')}
+          </Button>
+        </div>
         <div className={styles.generationNumbers}>
           {fields.map(([key, label]) => (
             <label key={key}>
@@ -101,10 +135,12 @@ const GenerationForm = () => {
           <textarea rows={2} value={draft.stop} onChange={(event) => edit('stop', event.target.value)} />
         </label>
         <div className={appearance.row}>
-          <span role="status" className={status === 'generationInvalidStops' ? styles.error : styles.description}>
+          <span role="status" className={
+            status === 'generationInvalidStops' || status === 'generationImportFailed' ? styles.error : styles.description
+          }>
             {status ? t(status) : ''}
           </span>
-          <Button type="submit" variant="outlined" size="m">{t('save')}</Button>
+          <Button type="submit" variant="outlined" size="m" disabled={importing}>{t('save')}</Button>
         </div>
       </form>
     </details>

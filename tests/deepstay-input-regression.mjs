@@ -12,7 +12,7 @@ const mocks = new Map([
   ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value}); export const useState=value=>[globalThis.__inputState??value,update=>{globalThis.__inputState=typeof update==="function"?update(globalThis.__inputState):update}];'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
   ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconPaperclipOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
-  ['../../services/settings.js', 'export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
+  ['../../services/settings.js', 'export const applyModelPreset=id=>{globalThis.__appliedModelPreset=id}; export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek"&&connection.baseUrl.replace(/\\/(?:anthropic(?:\\/v1)?|v1)(?:\\/messages)?$/,"")==="https://api.deepseek.com";'],
   ['../../services/api/generation.js', 'export const DEFAULT_CONTEXT_WINDOW=1000000;'],
   ['../../services/chat/latestReminder.js', 'export const createLatestReminder=()=>"fixture reminder";'],
@@ -68,7 +68,7 @@ const find = (node, predicate) => {
 }
 try {
   const { Input } = await import(source)
-  globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], generation: {} }
+  globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], modelPresets: [], generation: {} }
   globalThis.__chat = { streaming: {}, importingHistory: false, contextProgress: {}, sessionCache: {} }
   globalThis.__draft = { text: 'hello', attachments: [] }
   globalThis.__sent = 0
@@ -181,6 +181,15 @@ try {
   delete globalThis.__chat.streaming['current-chat']
   globalThis.__settings.model = 'deepseek-flash'
   checks.push('Quick model switching uses configured models without changing the service or active request, and file picking forwards the complete batch')
+  globalThis.__settings.modelPresets = [{ id: 'quick-profile', name: '中转站', apiKey: 'fixture', apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', model: 'deepseek-flash', models: ['deepseek-flash'] }]
+  tree = Input({ sessionId: 'current-chat' })
+  const presetPicker = find(tree, node => node.type?.name === 'Select' && node.props.ariaLabel === 'modelPresetSelect')
+  assert.equal(presetPicker.props.value, 'quick-profile')
+  assert.deepEqual(presetPicker.props.options, [{ value: 'quick-profile', label: '中转站' }])
+  presetPicker.props.onChange('quick-profile')
+  assert.equal(globalThis.__appliedModelPreset, 'quick-profile')
+  globalThis.__settings.modelPresets = []
+  checks.push('A saved named connection preset appears in the composer and selecting it applies that profile immediately')
   globalThis.__draft.text = ' /compact '
   tree = Input({ sessionId: 'current-chat' })
   find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()

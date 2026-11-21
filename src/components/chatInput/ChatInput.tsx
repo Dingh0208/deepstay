@@ -7,12 +7,11 @@ import {
   IconStopFill16,
   IconThinkOutline14,
 } from '../base/icons.js'
-import { setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { applyModelPreset, setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import type { FilePurpose } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { compactSession, getEffectiveContextInputBudget, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
-import { DEFAULT_CONTEXT_WINDOW } from '../../services/api/generation.js'
 import { createLatestReminder } from '../../services/chat/latestReminder.js'
 import { characterSystemPrompt } from '../../services/characters.js'
 import type { AssistantMessage } from '../../services/chat/types.js'
@@ -80,16 +79,19 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const importingHistory = useChatStore((state) => state.importingHistory)
   const isMobile = useIsMobile()
   const search = useSettings((state) => state.search)
+  const apiKey = useSettings((state) => state.apiKey)
   const apiBaseUrl = useSettings((state) => state.apiBaseUrl)
   const apiProtocol = useSettings((state) => state.apiProtocol)
   const model = useSettings((state) => state.model)
   const models = useSettings((state) => state.models)
+  const modelPresets = useSettings((state) => state.modelPresets)
+  const activeModelPreset = modelPresets.find((preset) => preset.apiKey === apiKey &&
+    preset.apiBaseUrl === apiBaseUrl && preset.apiProtocol === apiProtocol && preset.model === model)
+  const modelPresetOptions = useMemo(() => modelPresets.map((preset) => ({ value: preset.id, label: preset.name })), [modelPresets])
   const modelOptions = useMemo(() => [...new Set([...models, model])]
     .filter(Boolean).map((value) => ({ value, label: value })), [model, models])
   const system = useSettings((state) => state.generation.system)
-  const contextTokens = useSettings((state) => state.generation.contextTokens)
-  const apiKey = useSettings((state) => state.apiKey)
-  const inputBudget = apiKey ? getEffectiveContextInputBudget() : contextTokens ?? DEFAULT_CONTEXT_WINDOW
+  const inputBudget = getEffectiveContextInputBudget()
   const locale = useSettings((state) => state.locale)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
   const searchAvailable = extras
@@ -342,8 +344,17 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
         </div>
       </div>
       <div className={styles.modelRow}>
+        {modelPresets.length > 0 ? <Select
+          className={`${styles.modelSelect} ${styles.presetSelect}`}
+          value={activeModelPreset?.id ?? ''}
+          options={modelPresetOptions}
+          placeholder={t('modelPresetSelect')}
+          ariaLabel={t('modelPresetSelect')}
+          disabled={importingHistory || streaming}
+          onChange={applyModelPreset}
+        /> : null}
         <Select
-          className={styles.modelSelect}
+          className={clsx(styles.modelSelect, modelPresets.length > 0 && styles.modelSelectWithPreset)}
           value={model}
           options={modelOptions}
           ariaLabel={t('apiModel')}

@@ -87,6 +87,34 @@ for (const input of ['https://gateway.example.test/proxy/chat/completions', 'htt
   assert.equal(apiEndpoint(normalizeApiBaseUrl(input), 'v1/models'), apiEndpoint(input, 'v1/models'), 'Saving an explicit endpoint retains its parent route')
 }
 assert.deepEqual(getApiConnection(), { baseUrl: configured.apiBaseUrl, protocol: 'openai' })
+settings.setGeneration({ system: '全局设定保持不变', temperature: 0.7, contextTokens: 32_768 })
+const presetA = settings.saveModelPreset({ name: '中转站', ...configured })
+settings.setApiConnection({
+  apiKey: 'preset-private-key', apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek',
+  model: 'deepseek-reasoner', models: ['deepseek-reasoner'],
+})
+settings.setGeneration({ ...settings.useSettings.getState().generation, contextTokens: 65_536 })
+const presetB = settings.saveModelPreset({
+  name: 'DeepSeek', apiKey: 'preset-private-key', apiBaseUrl: 'https://api.deepseek.com',
+  apiProtocol: 'deepseek', model: 'deepseek-reasoner', models: ['deepseek-reasoner'],
+})
+assert.notEqual(presetA, presetB)
+assert.equal(settings.applyModelPreset(presetB), true)
+assert.equal(settings.useSettings.getState().apiKey, 'preset-private-key')
+assert.equal(settings.useSettings.getState().generation.contextTokens, 65_536)
+assert.equal(settings.applyModelPreset(presetA), true)
+assert.equal(settings.useSettings.getState().apiKey, configured.apiKey)
+assert.equal(settings.useSettings.getState().apiBaseUrl, configured.apiBaseUrl)
+assert.equal(settings.useSettings.getState().model, configured.model)
+assert.equal(settings.useSettings.getState().generation.contextTokens, 32_768)
+assert.equal(settings.useSettings.getState().generation.system, '全局设定保持不变')
+assert.ok(saved.get('deepstay:model-presets').includes('preset-private-key'))
+const presetReload = await import(new URL('services/settings.ts?presets-reload', sourceRoot))
+assert.equal(presetReload.useSettings.getState().modelPresets.length, 2)
+assert.equal(presetReload.useSettings.getState().modelPresets.find(preset => preset.id === presetB).apiKey, 'preset-private-key')
+settings.deleteModelPreset(presetB)
+assert.equal(settings.useSettings.getState().modelPresets.length, 1)
+checks.push('Named provider presets persist locally, switch API credentials/routes immediately, preserve global generation settings, isolate context windows by model route, and can be deleted')
 checks.push('Root and /v1 endpoints join once, copied request URLs are accepted, reverse-proxy prefixes remain intact and credential-bearing base URLs are rejected')
 
 // The implementation promises old Android WebView support; run all network and
@@ -121,6 +149,7 @@ for (const response of [new Response('<html>wrong route</html>'), Response.json(
     error instanceof ApiError && error.kind === 'protocol' && error.localMessage?.key === 'apiModelsInvalid')
 }
 const { useDiagnosticLog, diagnosticText } = await import(new URL('services/diagnostics/log.ts', sourceRoot))
+assert.equal(diagnosticText().includes('preset-private-key'), false)
 responder = () => { throw new TypeError('raw failure containing https://gateway.example.test/proxy and fixture-private-key') }
 await assert.rejects(fetchModels(configured.apiKey, configured.apiBaseUrl), error =>
   error instanceof ApiError && error.kind === 'network' && error.localMessage?.key === 'apiNetworkUnavailable')

@@ -2,6 +2,8 @@ import clsx from 'clsx'
 import { useState } from 'react'
 import { useChatStore } from '../../services/chat/store.js'
 import { useTranslate } from '../../i18n/index.js'
+import { deleteModelPreset, saveModelPreset, useSettings } from '../../services/settings.js'
+import { normalizeApiBaseUrl } from '../../services/api/connection.js'
 import { Button } from '../base/Button.js'
 import { Select } from '../base/Select.js'
 import { ApiBalanceQueryButton } from './ApiBalanceSetting.js'
@@ -14,12 +16,95 @@ export const useApiKeyEditor = useApiKeyForm
 export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEditor> }) => {
   const t = useTranslate()
   const [customModel, setCustomModel] = useState(false)
+  const presets = useSettings((state) => state.modelPresets)
+  const currentPreset = presets.find((preset) => preset.apiKey === editor.value &&
+    preset.apiBaseUrl === editor.baseUrl && preset.apiProtocol === editor.protocol && preset.model === editor.model)
+  const [presetId, setPresetId] = useState(currentPreset?.id ?? '')
+  const [presetName, setPresetName] = useState(currentPreset?.name ?? '')
+  const [presetNotice, setPresetNotice] = useState<'modelPresetSaved' | 'modelPresetNameRequired' | 'modelPresetInvalid' | null>(null)
   const streaming = useChatStore((state) => Object.keys(state.streaming).length > 0)
   const choices = [...new Set([editor.model, ...editor.models].filter(Boolean))]
   const disabled = editor.busy !== null
+  const selectPreset = (id: string) => {
+    if (id === '__new__') {
+      setPresetId('')
+      setPresetName('')
+      setPresetNotice(null)
+      setCustomModel(false)
+      return
+    }
+    const preset = presets.find((entry) => entry.id === id)
+    if (preset) {
+      setPresetId(id)
+      setPresetName(preset.name)
+      setPresetNotice(null)
+      setCustomModel(false)
+      editor.loadPreset(preset)
+    }
+  }
+  const savePreset = () => {
+    if (!presetName.trim()) {
+      setPresetNotice('modelPresetNameRequired')
+      return
+    }
+    if (!editor.value.trim() || !editor.model.trim()) {
+      setPresetNotice('modelPresetInvalid')
+      return
+    }
+    try {
+      const id = saveModelPreset({
+        name: presetName,
+        apiKey: editor.value,
+        apiBaseUrl: normalizeApiBaseUrl(editor.baseUrl),
+        apiProtocol: editor.protocol,
+        model: editor.model,
+        models: editor.models,
+      }, presetId || undefined)
+      setPresetId(id)
+      setPresetName(presetName.trim())
+      setPresetNotice('modelPresetSaved')
+    } catch {
+      setPresetNotice('modelPresetInvalid')
+    }
+  }
+  const removePreset = () => {
+    if (presetId) {
+      deleteModelPreset(presetId)
+      setPresetId('')
+      setPresetName('')
+      setPresetNotice(null)
+    }
+  }
   return (
     <div className={styles.cell}>
       <div className={apiStyles.fields}>
+        <div className={apiStyles.fieldRow}>
+          <span className={styles.label}>{t('modelPresetsLabel')}</span>
+          <Select value={presetId || '__new__'} ariaLabel={t('modelPresetsLabel')}
+            options={[{ value: '__new__', label: t('modelPresetNew') }, ...presets.map((preset) => ({ value: preset.id, label: preset.name }))]}
+            onChange={selectPreset} />
+        </div>
+        <label className={apiStyles.fieldRow}>
+          <span className={styles.label}>{t('modelPresetName')}</span>
+          <div className={styles.apiKeyInput}>
+            <input value={presetName} maxLength={64} autoComplete="off" onChange={(event) => {
+              setPresetName(event.target.value)
+              setPresetNotice(null)
+            }} />
+          </div>
+        </label>
+        <div className={apiStyles.actionsRow}>
+          <span aria-hidden="true" />
+          <div className={apiStyles.actions}>
+            <Button variant="outlined" size="s" disabled={disabled || streaming} onClick={savePreset}>
+              {t(presetId ? 'modelPresetUpdate' : 'modelPresetSave')}
+            </Button>
+            {presetId ? <Button variant="dangerOutlined" size="s" disabled={disabled || streaming} onClick={removePreset}>
+              {t('modelPresetDelete')}
+            </Button> : null}
+          </div>
+        </div>
+        {presetNotice ? <div className={apiStyles.messageRow}><span aria-hidden="true" /><div role="status" className={presetNotice === 'modelPresetInvalid' || presetNotice === 'modelPresetNameRequired' ? styles.error : styles.description}>{t(presetNotice)}</div></div> : null}
         <label className={apiStyles.fieldRow}>
           <span className={styles.label}>{t('apiBaseUrl')}</span>
           <div className={clsx(styles.apiKeyInput, editor.protocol === 'deepseek' && apiStyles.readOnly)}>

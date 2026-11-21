@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
 import { normalizeGeneration, type GenerationSettings } from './api/generation.js'
-import { apiEndpoint } from './api/endpoints.js'
+import { apiEndpoint, normalizeApiBaseUrl } from './api/endpoints.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
@@ -61,6 +61,7 @@ type Settings = {
   apiProtocol: ApiProtocol
   model: string
   models: string[]
+  modelPresets: ModelPreset[]
   locale: Locale
   themePreference: ThemePreference
   chatFont: ChatFont
@@ -78,6 +79,16 @@ type Settings = {
   favoriteMessages: FavoriteMessage[]
 }
 
+export type ModelPreset = {
+  id: string
+  name: string
+  apiKey: string
+  apiBaseUrl: string
+  apiProtocol: ApiProtocol
+  model: string
+  models: string[]
+}
+
 export type FavoriteMessage = { sessionId: string; messageId: string }
 export const favoriteMessageKey = ({ sessionId, messageId }: FavoriteMessage) => JSON.stringify([sessionId, messageId])
 
@@ -87,6 +98,7 @@ const KEYS = {
   apiProtocol: 'deepstay:api-protocol',
   model: 'deepstay:model',
   models: 'deepstay:models',
+  modelPresets: 'deepstay:model-presets',
   locale: 'chat-demo:locale',
   themePreference: 'chat-demo:theme-preference',
   chatFont: 'deepstay:chat-font',
@@ -169,6 +181,45 @@ const readStringList = (key: string): string[] => {
   } catch {
     return []
   }
+}
+
+const readModelPresets = (): ModelPreset[] => {
+  try {
+    const value: unknown = JSON.parse(read(KEYS.modelPresets) ?? '[]')
+    if (!Array.isArray(value)) {
+      return []
+    }
+    return value.flatMap((entry): ModelPreset[] => {
+      if (!entry || typeof entry !== 'object') {
+        return []
+      }
+      const preset = entry as Record<string, unknown>
+      const name = typeof preset.name === 'string' ? preset.name.trim().slice(0, 64) : ''
+      const apiKey = typeof preset.apiKey === 'string' ? preset.apiKey.trim() : ''
+      const baseUrl = typeof preset.apiBaseUrl === 'string' ? preset.apiBaseUrl : ''
+      const apiProtocol = preset.apiProtocol
+      const model = typeof preset.model === 'string' ? preset.model.trim() : ''
+      const models = Array.isArray(preset.models)
+        ? [...new Set(preset.models.filter((item): item is string => typeof item === 'string' && !!item.trim()))]
+        : []
+      if (typeof preset.id !== 'string' || !preset.id || !name || !apiKey || !baseUrl ||
+          (apiProtocol !== 'deepseek' && apiProtocol !== 'openai') || !model) {
+        return []
+      }
+      try {
+        return [{ id: preset.id, name, apiKey, apiBaseUrl: normalizeApiBaseUrl(baseUrl), apiProtocol, model, models }]
+      } catch {
+        return []
+      }
+    })
+  } catch {
+    return []
+  }
+}
+
+const saveModelPresets = (modelPresets: ModelPreset[]) => {
+  write(KEYS.modelPresets, modelPresets.length ? JSON.stringify(modelPresets) : null)
+  useSettings.setState({ modelPresets })
 }
 
 const initialGeneration = () => {
@@ -254,6 +305,7 @@ export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   ...initialRoute,
   models: readStringList(KEYS.models),
+  modelPresets: readModelPresets(),
   locale: initialLocale(),
   themePreference: initialThemePreference(),
   chatFont: initialChatFont(),
@@ -308,6 +360,48 @@ export const setApiConnection = (connection: Pick<Settings, 'apiKey' | 'apiBaseU
   write(KEYS.model, connection.model)
   write(KEYS.models, JSON.stringify(connection.models))
   useSettings.setState({ ...connection, generation: generationForRoute(useSettings.getState().generation, connection) })
+}
+
+export const saveModelPreset = (value: Omit<ModelPreset, 'id'>, id?: string) => {
+  const existing = useSettings.getState().modelPresets
+  const presetId = id && existing.some((preset) => preset.id === id)
+    ? id
+    : typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  const preset: ModelPreset = {
+    ...value,
+    id: presetId,
+    name: value.name.trim().slice(0, 64),
+    apiKey: value.apiKey.trim(),
+    apiBaseUrl: normalizeApiBaseUrl(value.apiBaseUrl),
+    model: value.model.trim(),
+    models: [...new Set(value.models.filter(Boolean))],
+  }
+  saveModelPresets([preset, ...existing.filter((entry) => entry.id !== presetId)])
+  return presetId
+}
+
+export const deleteModelPreset = (id: string) => {
+  const presets = useSettings.getState().modelPresets
+  if (presets.some((preset) => preset.id === id)) {
+    saveModelPresets(presets.filter((preset) => preset.id !== id))
+  }
+}
+
+export const applyModelPreset = (id: string) => {
+  const preset = useSettings.getState().modelPresets.find((entry) => entry.id === id)
+  if (!preset) {
+    return false
+  }
+  setApiConnection({
+    apiKey: preset.apiKey,
+    apiBaseUrl: preset.apiBaseUrl,
+    apiProtocol: preset.apiProtocol,
+    model: preset.model,
+    models: preset.models,
+  })
+  return true
 }
 
 export const setModel = (model: string) => {

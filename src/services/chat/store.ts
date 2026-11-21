@@ -61,6 +61,8 @@ import {
 
 /** 所有生成请求统一携带的助手身份说明 */
 export const SYSTEM_PROMPT = '你是 deepstay 的 AI 助手。认真理解用户的语境，以自然、温和的方式回应。'
+/** 默认发送预算与界面窗口分离，避免单次请求过大。 */
+export const DEFAULT_REQUEST_INPUT_BUDGET = 128_000
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
 /** 安全审核固定开启，所有请求都走扩展模式 */
@@ -79,9 +81,10 @@ export const getEffectiveContextInputBudget = (): number => {
   const serverSearch = supportsDeepSeekExtras(connection) && search
   const route = JSON.stringify([connection.baseUrl, connection.protocol, model, thinking, serverSearch])
   const window = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
+  const budget = generation.contextTokens ?? DEFAULT_REQUEST_INPUT_BUDGET
   return learnedContextLimit?.route === route && learnedContextLimit.key === apiKey
-    ? Math.min(window, learnedContextLimit.budget)
-    : window
+    ? Math.min(budget, learnedContextLimit.budget)
+    : Math.min(window, budget)
 }
 
 let rejectedHistoryImages: { route: string; key: string; ids: Set<string> } | undefined
@@ -1464,7 +1467,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
     ? learnedContextLimit.budget
     : undefined
   const contextWindow = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
-  const effectiveBudget = () => Math.min(inputBudget ?? contextWindow, contextWindow)
+  const defaultInputBudget = generation.contextTokens ?? DEFAULT_REQUEST_INPUT_BUDGET
+  const effectiveBudget = () => Math.min(inputBudget ?? defaultInputBudget, contextWindow)
   const memoryBudget = () => Math.min(effectiveBudget(), generation.contextTokens ?? contextWindow)
   let retriedContextLimit = false
   let attachmentRetries = 0

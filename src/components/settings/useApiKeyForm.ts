@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError, fetchModels } from '../../services/api/client.js'
 import { DEEPSEEK_OFFICIAL_API_URL, normalizeApiBaseUrl } from '../../services/api/connection.js'
 import { classifyApiError } from '../../services/api/errors.js'
-import { setApiConnection, useSettings, type ApiProtocol } from '../../services/settings.js'
+import { setApiConnection, useSettings, type ApiProtocol, type ModelPreset } from '../../services/settings.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 
@@ -89,6 +89,14 @@ export const useApiKeyForm = () => {
     setStatus({ key: 'apiConnectionSaved' })
   }
 
+  const loadPreset = (preset: ModelPreset) => changeConnection(() => {
+    setValue(preset.apiKey)
+    setBaseUrl(preset.apiBaseUrl)
+    setProtocol(preset.apiProtocol)
+    setModel(preset.model)
+    setModels(preset.models)
+  })
+
   const error = failure === null ? null
     : classifyApiError(failure) === 'unauthorized' ? t('apiKeyInvalid')
       : failure instanceof ApiError && failure.localMessage
@@ -106,6 +114,6 @@ export const useApiKeyForm = () => {
       }
     }),
     model, setModel: (next: string) => { setModel(next); setStatus(null) },
-    models, busy, error, status, run, submit,
+    models, busy, error, status, run, submit, loadPreset,
   }
 }

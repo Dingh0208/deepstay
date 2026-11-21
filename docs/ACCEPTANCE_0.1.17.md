@@ -20,4 +20,6 @@
 
 ## Android 与发布
 
-本机未发现 Android SDK、Build Tools 或 `adb`，未执行 Android 模拟器及本地 APK 验收。正式签名和 APK 身份、SHA-256、GitHub Release 与国内更新清单待 GitHub Release 工作流完成后补记。
+本机未发现 Android SDK、Build Tools 或 `adb`，未执行本地 Android 模拟器验收。GitHub Actions 已使用固定签名构建并核对 APK：包名 `xyz.infralyx.deepstay`、`0.1.17 / versionCode 18`、minSdk 23 / targetSdk 35；签名证书 SHA-256 为 `64dba31f8f30a392fc850dd81ead8bedccb374568a7e4821be0b64fdb2ec2f1f`。
+
+[v0.1.17 Release](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.17) 已发布，Android Release workflow [44902652729](https://github.com/Dingh0208/deepstay/actions/runs/44902652729) 的 build 和 publish 均成功，源码提交为 `15755464d4fdea3e09aff893612ee3a64610fa36`。APK `deepstay-0.1.17.apk` 为 20,303,113 字节，GitHub 附件 SHA-256 和国内源完整 GET 均为 `301b22a181c0835d97a46be636bc817c19c496d5b1036cb776ae4883d7f2e663`。GitHub Release 与 `https://ds.herohao.top/updates/latest.json` 的版本、versionCode、APK URL 和 SHA-256 一致；清单文件 SHA-256 为 `f42054a4af712e1a8acf17bb234951f2008d50e3e7c21c80f7de92f82e5daa38`。

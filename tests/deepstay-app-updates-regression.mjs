@@ -4,7 +4,7 @@ import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const root = new URL('../src/', import.meta.url)
-const capacitorStub = `export const Capacitor = { getPlatform: () => 'android' }; export const registerPlugin = () => ({ getPendingApk: async () => ({ ready: true, version: '0.1.17', versionCode: 18, sha256: '${'a1'.repeat(32)}' }), getInstallStatus: async () => ({ updated: false }) })`
+const capacitorStub = `export const Capacitor = { getPlatform: () => 'android' }; export const registerPlugin = () => ({ getPendingApk: async () => ({ ready: true, version: '0.1.18', versionCode: 19, sha256: '${'a1'.repeat(32)}' }), getInstallStatus: async () => ({ updated: false }) })`
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@capacitor/core' && context.parentURL?.startsWith(root.href)) {
@@ -26,13 +26,13 @@ registerHooks({
 globalThis.localStorage = {
   get length() { return 1 },
   key: index => index === 0 ? 'deepstay:last-seen-version' : null,
-  getItem: key => key === 'deepstay:last-seen-version' ? '0.1.17' : null,
+  getItem: key => key === 'deepstay:last-seen-version' ? '0.1.18' : null,
   setItem() {},
   removeItem() {},
 }
 globalThis.document = {
   visibilityState: 'visible',
-  querySelector: () => ({ content: '0.1.17' }),
+  querySelector: () => ({ content: '0.1.18' }),
   addEventListener() {},
   removeEventListener() {},
 }
@@ -48,22 +48,22 @@ const stableRelease = version => ({
     digest: `sha256:${'b2'.repeat(32)}`,
   }],
 })
-let release = stableRelease('0.1.17')
+let release = stableRelease('0.1.18')
 globalThis.fetch = async () => Response.json(release)
 
 const currentUpdate = await import(new URL('services/appUpdates.ts?same-version', root))
 await currentUpdate.checkForUpdates(true)
 assert.deepEqual(currentUpdate.useUpdateState.getState().value, { status: 'current', release: currentUpdate.useUpdateState.getState().value.release })
 assert.equal(currentUpdate.useUpdateState.getState().hasUpdate, false)
-assert.equal(currentUpdate.useUpdateState.getState().value.release.version, '0.1.17')
+assert.equal(currentUpdate.useUpdateState.getState().value.release.version, '0.1.18')
 assert.equal(currentUpdate.useUpdateState.getState().value.status, 'current')
 
-release = stableRelease('0.1.18')
+release = stableRelease('0.1.19')
 const newerUpdate = await import(new URL('services/appUpdates.ts?new-version', root))
 await newerUpdate.checkForUpdates(true)
 assert.equal(newerUpdate.useUpdateState.getState().hasUpdate, true)
 assert.equal(newerUpdate.useUpdateState.getState().value.status, 'available')
-assert.equal(newerUpdate.useUpdateState.getState().value.release.version, '0.1.18')
+assert.equal(newerUpdate.useUpdateState.getState().value.release.version, '0.1.19')
 
 console.log(JSON.stringify({
   passed: true,

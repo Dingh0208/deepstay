@@ -57,6 +57,9 @@ jobs:
           DEEPSTAY_KEY_PASSWORD: ${{ secrets.DEEPSTAY_KEY_PASSWORD }}
           DEEPSTAY_KEY_ALIAS: ${{ secrets.DEEPSTAY_KEY_ALIAS }}
         run: pnpm android:release
+      - name: Test Android release units
+        working-directory: android
+        run: ./gradlew :app:testReleaseUnitTest
       - name: Verify APK
         run: |
           APK="release/deepstay-$(node -p 'require("./package.json").version').apk"

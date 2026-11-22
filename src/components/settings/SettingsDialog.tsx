@@ -27,6 +27,9 @@ import {
   setLocale,
   setThemePreference,
   setTtsVoice,
+  setVoiceCallBargeIn,
+  setVoiceCallPause,
+  setVoiceCallSpeakerPreference,
   useSettings,
   bundledChatFonts,
   type ChatFont,
@@ -39,6 +42,7 @@ import { Select, type SelectOption } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { ChatBackgroundSetting, ThinkingCollapseSetting } from './AppearanceSetting.js'
+import appearanceStyles from './AppearanceSetting.module.css'
 import { ContextMemorySetting } from './ContextMemorySetting.js'
 import { DiagnosticsSetting } from './DiagnosticsSetting.js'
 import { GenerationSetting, ReplyPreferenceSettings } from './GenerationSetting.js'
@@ -148,6 +152,7 @@ const SettingsContent = () => {
               <GenerationSetting />
               <ReplyPreferenceSettings />
               <TtsVoiceSetting />
+              <VoiceCallSettings />
             </>
           )}
           {section === 'api' && <ApiKeyField editor={apiKeyEditor} />}
@@ -342,6 +347,30 @@ const TtsVoiceSetting = () => {
       }
     />
   )
+}
+
+const VoiceCallSettings = () => {
+  const t = useTranslate()
+  const bargeIn = useSettings((state) => state.voiceCallBargeIn)
+  const pause = useSettings((state) => state.voiceCallPause)
+  const speaker = useSettings((state) => state.voiceCallSpeaker)
+  return <>
+    <SettingCell label={t('voiceCallBargeInSetting')} status={null} action={
+      <input type="checkbox" role="switch" className={appearanceStyles.switch} checked={bargeIn}
+        aria-label={t('voiceCallBargeInSetting')} onChange={(event) => setVoiceCallBargeIn(event.target.checked)} />
+    } />
+    <SettingCell label={t('voiceCallPauseSetting')} status={null} action={
+      <Select ariaLabel={t('voiceCallPauseSetting')} value={pause} options={[
+        { value: 'short', label: t('voiceCallPauseShort') },
+        { value: 'normal', label: t('voiceCallPauseNormal') },
+        { value: 'patient', label: t('voiceCallPausePatient') },
+      ]} onChange={setVoiceCallPause} />
+    } />
+    <SettingCell label={t('voiceCallDefaultSpeaker')} status={null} action={
+      <input type="checkbox" role="switch" className={appearanceStyles.switch} checked={speaker}
+        aria-label={t('voiceCallDefaultSpeaker')} onChange={(event) => setVoiceCallSpeakerPreference(event.target.checked)} />
+    } />
+  </>
 }
 
 /** Preview the archive before any local history is written. */

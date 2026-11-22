@@ -7,10 +7,11 @@ import {
   type ServerSentEvent,
 } from './sse.js'
 import type { ApiErrorBody } from './types.js'
-import { isLoopbackApiUrl } from './connection.js'
+import { isLoopbackApiUrl, isPrivateNetworkApiAddress, isPrivateNetworkApiUrl } from './connection.js'
 import {
   normalizeAndroidProviderError,
   requestAndroidProvider,
+  isAndroidApiPlatform,
   requiresAndroidHttps,
   supportsAndroidProviderTransport,
 } from './androidTransport.js'
@@ -144,6 +145,15 @@ const readErrorResponse = async (response: Response): Promise<ApiError> => {
 }
 
 export const request = async (url: string, init: RequestInit, logFailure = true): Promise<Response> => {
+  let cleartext = false
+  try {
+    cleartext = new URL(url).protocol === 'http:'
+  } catch {
+    // Let the platform request path classify malformed URLs consistently.
+  }
+  if (cleartext && !isPrivateNetworkApiUrl(url)) {
+    throw new ApiError('protocol', { key: 'apiHttpPrivateOnly' })
+  }
   if (requiresAndroidHttps(url)) {
     throw new ApiError('protocol', {
       key: isLoopbackApiUrl(url) ? 'apiAndroidLocalHttpsRequired' : 'apiAndroidHttpsRequired',
@@ -159,7 +169,7 @@ export const request = async (url: string, init: RequestInit, logFailure = true)
       throw error
     }
     const providerFailure = toProviderApiError(error)
-    const localFailure = isLoopbackApiUrl(url) &&
+    const localFailure = isAndroidApiPlatform() && (isLoopbackApiUrl(url) || isPrivateNetworkApiAddress(url)) &&
       (!providerFailure || providerFailure.localMessage?.key === 'apiProviderConnect' ||
         providerFailure.localMessage?.key === 'apiProviderNetwork')
     const failure = globalThis.navigator?.onLine === false

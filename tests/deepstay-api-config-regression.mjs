@@ -52,11 +52,24 @@ const disabled = await import(new URL('services/settings.ts?token-usage-disabled
 assert.equal(disabled.useSettings.getState().showReplyTokenUsage, false)
 checks.push('Fresh settings preserve the existing DeepSeek defaults and expanded thinking; custom URL, key, protocol, model list and collapse preference survive a cold reload')
 
-const { normalizeApiBaseUrl, apiEndpoint, getApiConnection, supportsDeepSeekExtras } = await import(new URL('services/api/connection.ts', sourceRoot))
+const { normalizeApiBaseUrl, apiEndpoint, getApiConnection, supportsDeepSeekExtras,
+  isPrivateNetworkHostname, isPrivateNetworkApiUrl, InsecurePublicApiUrlError } = await import(new URL('services/api/connection.ts', sourceRoot))
 const { ApiError, fetchModels, verifyApiKey, streamMessage, uploadFile } = await import(new URL('services/api/client.ts', sourceRoot))
+const { transcribeForConnection } = await import(new URL('services/api/speech.ts', sourceRoot))
 const { toProviderApiError } = await import(new URL('services/api/http.ts', sourceRoot))
 assert.equal(normalizeApiBaseUrl(' https://gateway.example.test/proxy/v1/// '), 'https://gateway.example.test/proxy/v1')
 assert.equal(normalizeApiBaseUrl('http://127.0.0.1:8000/v1/'), 'http://127.0.0.1:8000/v1')
+for (const address of ['10.0.0.9', '172.16.0.20', '172.31.255.1', '192.168.1.30', '169.254.10.1', '127.0.0.1', 'localhost', '[::1]', '[fd00::1]', '[fe80::1]']) {
+  assert.equal(isPrivateNetworkHostname(address), true, `${address} is local/private`)
+}
+for (const address of ['172.15.0.1', '172.32.0.1', '192.169.1.1', '8.8.8.8', 'gateway.example.test']) {
+  assert.equal(isPrivateNetworkHostname(address), false, `${address} is not local/private`)
+}
+assert.equal(isPrivateNetworkApiUrl('http://192.168.1.30:11434/v1'), true)
+assert.equal(isPrivateNetworkApiUrl('https://192.168.1.30:11434/v1'), false)
+assert.throws(() => normalizeApiBaseUrl('http://gateway.example.test/v1'), InsecurePublicApiUrlError)
+assert.throws(() => normalizeApiBaseUrl('http://8.8.8.8/v1'), InsecurePublicApiUrlError)
+assert.equal(normalizeApiBaseUrl('http://192.168.1.30:11434/v1'), 'http://192.168.1.30:11434/v1')
 for (const invalid of ['', '/v1', 'not a URL', 'ftp://gateway.example.test', 'https://name:pass@gateway.example.test/v1', 'https://gateway.example.test/v1?key=secret', 'https://gateway.example.test/v1#part',
   'https://gateway.example.test/proxy%2fprivate/v1', 'https://gateway.example.test/proxy%5cprivate/v1',
   'https://gateway.example.test/proxy/%2e%2e/v1', 'https://gateway.example.test/proxy/%252e%252e/v1',
@@ -203,23 +216,49 @@ assert.equal(diagnosticText().includes(configured.apiKey), false)
 assert.equal(toProviderApiError({ code: 'UNRECOGNIZED', message: 'private detail' }), null)
 checks.push('Android native DNS, TLS, timeout, busy, closed, URL and network failures become localized errors with sanitized diagnostics')
 
+nativeFailureCode = undefined
 const androidHttpConnection = { baseUrl: 'http://gateway.example.test/proxy/v1', protocol: 'openai' }
+const { supportsAndroidProviderTransport } = await import(new URL('services/api/androidTransport.ts', sourceRoot))
 const networkCallsBeforeHttp = networkCalls
 const nativeCallsBeforeHttp = nativeRequestUrls.length
-const androidHttpError = error => error instanceof ApiError && error.localMessage?.key === 'apiAndroidHttpsRequired'
+const androidHttpError = error => error instanceof ApiError && error.localMessage?.key === 'apiHttpPrivateOnly'
 await assert.rejects(fetchModels(configured.apiKey, androidHttpConnection.baseUrl), androidHttpError)
 const androidChatBody = { model: configured.model, system: '', messages: [{ role: 'user', content: '你好' }], tools: [] }
 await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, androidHttpConnection).next(), androidHttpError)
 assert.equal(networkCalls, networkCallsBeforeHttp)
 assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp)
-const localConnection = { baseUrl: 'http://127.0.0.1:8080/v1', protocol: 'openai' }
-const localHttpsError = error => error instanceof ApiError && error.localMessage?.key === 'apiAndroidLocalHttpsRequired'
-await assert.rejects(fetchModels(configured.apiKey, localConnection.baseUrl), localHttpsError)
-await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, localConnection).next(), localHttpsError)
+const localConnection = { baseUrl: 'http://192.168.1.30:11434/v1', protocol: 'openai' }
+const privateModelUrl = 'http://192.168.1.30:11434/v1/models'
+const privateChatUrl = 'http://192.168.1.30:11434/v1/chat/completions'
+assert.equal(supportsAndroidProviderTransport(privateModelUrl), true)
+nativeResponseChunks = [JSON.stringify({ data: [{ id: configured.model }] })]
+assert.deepEqual(await fetchModels(configured.apiKey, localConnection.baseUrl), [configured.model])
+assert.equal(nativeRequests[nativeRequests.length - 1].url, privateModelUrl)
+nativeResponseChunks = [`data: ${JSON.stringify({ id: 'lan-chat', choices: [{ delta: { content: '局域网模型已连接' }, finish_reason: 'stop' }] })}\n\n`, 'data: [DONE]\n\n']
+const privateEvents = []
+for await (const event of streamMessage(configured.apiKey, androidChatBody, new AbortController().signal, localConnection)) privateEvents.push(event)
+assert.equal(nativeRequests[nativeRequests.length - 1].url, privateChatUrl)
+assert.ok(privateEvents.some(event => event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text === '局域网模型已连接'))
 assert.equal(networkCalls, networkCallsBeforeHttp)
-assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp)
+assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp + 2)
+checks.push('Android routes private HTTP IP model discovery and streaming chat through native OkHttp; public HTTP remains blocked before any network request')
+const audioFixture = new Blob([Uint8Array.from([82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69])], { type: 'audio/wav' })
+const expectedAudioBase64 = Buffer.from(await audioFixture.arrayBuffer()).toString('base64')
+nativeResponseChunks = [JSON.stringify({ text: '手机语音识别成功' })]
+const asrResult = await transcribeForConnection(configured.apiKey, audioFixture, localConnection)
+assert.equal(asrResult, '手机语音识别成功')
+const asrRequest = nativeRequests[nativeRequests.length - 1]
+assert.equal(asrRequest.url, 'http://192.168.1.30:11434/v1/audio/transcriptions')
+assert.equal(asrRequest.method, 'POST')
+assert.equal(asrRequest.body, null)
+assert.equal(asrRequest.audioModel, 'whisper-1')
+assert.equal(asrRequest.audioFileName, 'recording.wav')
+assert.equal(asrRequest.audioContentType, 'audio/wav')
+assert.equal(asrRequest.audioBase64, expectedAudioBase64)
+assert.equal(diagnosticText().includes(expectedAudioBase64), false)
+checks.push('Android private HTTP ASR sends only the bounded whisper-1 WAV multipart envelope through native ProviderHttp and returns transcription text without logging audio')
 nativeFailureCode = 'PROVIDER_CONNECT'
-await assert.rejects(fetchModels(configured.apiKey, 'https://127.0.0.1:8080/v1'), error =>
+await assert.rejects(fetchModels(configured.apiKey, localConnection.baseUrl), error =>
   error instanceof ApiError && error.localMessage?.key === 'apiLocalServiceUnavailable')
 nativeFailureCode = 'PROVIDER_TLS'
 await assert.rejects(fetchModels(configured.apiKey, 'https://localhost:8080/v1'), error =>
@@ -233,7 +272,6 @@ await assert.rejects(streamMessage(configured.apiKey, androidChatBody, new Abort
 assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].operation, 'chat')
 assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'timeout')
 nativeFailureCode = undefined
-const { supportsAndroidProviderTransport } = await import(new URL('services/api/androidTransport.ts', sourceRoot))
 for (const [baseUrl, expected] of [
   ['https://gateway.example.test/api/v3', 'https://gateway.example.test/api/v3/models'],
   ['https://gateway.example.test/v1beta/openai', 'https://gateway.example.test/v1beta/openai/models'],
@@ -283,6 +321,13 @@ assert.ok(androidChatEvents.some(event => event.type === 'content_block_delta' &
 assert.ok(androidChatEvents.some(event => event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text === '第三方接口已正常回复'))
 globalThis.__DEEPSTAY_CAPACITOR__ = undefined
 checks.push('Android rejects insecure API URLs before model discovery or chat; native HTTPS model loading and a full third-party reasoning/text stream both work, with timeout errors mapped consistently')
+const nativeCallsBeforeWebHttp = nativeRequestUrls.length
+responder = () => { throw new TypeError('Failed to fetch') }
+await assert.rejects(fetchModels(configured.apiKey, localConnection.baseUrl), error =>
+  error instanceof ApiError && error.kind === 'network' && error.localMessage?.key === 'apiNetworkUnavailable')
+assert.equal(nativeRequestUrls.length, nativeCallsBeforeWebHttp,
+  'A browser keeps private HTTP requests on fetch and cannot bypass mixed-content or CORS policy')
+checks.push('HTTPS WebView does not bypass browser mixed-content/CORS for private HTTP endpoints and reports that platform boundary')
 const realSetTimeout = globalThis.setTimeout, realClearTimeout = globalThis.clearTimeout
 const timers = new Map()
 globalThis.setTimeout = (callback, delay) => { const token = {}; timers.set(token, { callback, delay }); return token }
@@ -749,6 +794,29 @@ responder = url => {
   return Response.json({ text: '语音转写结果' })
 }
 assert.equal(await transcribe('deepseek-fixture-key', new Blob(['audio'], { type: 'audio/wav' })), '语音转写结果')
+settings.setApiConnection(configured)
+const browserAudio = new Blob([Uint8Array.from([82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69])], { type: 'audio/wav' })
+let browserAsrBody
+responder = (url, init) => {
+  assert.equal(url, 'https://gateway.example.test/proxy/v1/audio/transcriptions')
+  assert.equal(init.method, 'POST')
+  assert.equal(init.credentials, 'omit')
+  assert.equal(new Headers(init.headers).get('Authorization'), `Bearer ${configured.apiKey}`)
+  assert.equal(new Headers(init.headers).has('Content-Type'), false, 'Fetch supplies the multipart boundary')
+  browserAsrBody = init.body
+  return Response.json({ text: '浏览器语音识别成功' })
+}
+assert.equal(await transcribeForConnection(configured.apiKey, browserAudio), '浏览器语音识别成功')
+assert.ok(browserAsrBody instanceof FormData)
+assert.equal(browserAsrBody.get('model'), 'whisper-1')
+assert.equal(browserAsrBody.get('file').name, 'recording.wav')
+assert.equal(browserAsrBody.get('file').type, 'audio/wav')
+const beforeOversizeAudio = networkCalls
+await assert.rejects(transcribeForConnection(configured.apiKey,
+  new Blob([new Uint8Array(8 * 1024 * 1024 + 1)], { type: 'audio/wav' })),
+error => error instanceof ApiError && error.localMessage?.key === 'voiceInputFileUnsupported')
+assert.equal(networkCalls, beforeOversizeAudio)
+checks.push('OpenAI-compatible ASR sends model=whisper-1 plus WAV FormData, uses fetch-generated multipart boundaries, and rejects audio larger than 8 MiB before network')
 checks.push('The full official Anthropic Messages URL preserves the native DeepSeek file upload and ASR endpoints; third-party and OpenAI connections remain blocked from using the DeepSeek key on those endpoints')
 
 const evidence = { passed: true, runtime: process.version, checks, fetchCalls: networkCalls,

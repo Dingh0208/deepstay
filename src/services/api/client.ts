@@ -2,6 +2,7 @@ import { readMessageEvent } from './parseEvent.js'
 import {
   apiEndpoint,
   getApiConnection,
+  InsecurePublicApiUrlError,
   supportsDeepSeekExtras,
   type ApiConnection,
 } from './connection.js'
@@ -16,6 +17,8 @@ import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent 
 export const API_ORIGIN = __API_ORIGIN__
 /** 引用 Files API 上传的图片、调用 Anthropic 兼容 Files API 时必须携带 */
 const FILES_BETA = 'files-api-2025-04-14'
+const localizeEndpointError = (error: unknown) =>
+  error instanceof InsecurePublicApiUrlError ? new ApiError('protocol', { key: 'apiHttpPrivateOnly' }) : error
 
 export const adaptRequestForConnection = (
   body: CreateMessageRequest,
@@ -94,7 +97,7 @@ export const fetchModels = async (
     if (signal?.aborted) {
       throw error
     }
-    let failure = error
+    let failure = localizeEndpointError(error)
     if (timedOut) {
       failure = new ApiError('network', { key: 'apiModelsTimeout' })
     } else if (error instanceof ApiError && (error.status === 404 || error.status === 405)) {
@@ -185,10 +188,11 @@ export async function* streamMessage(
     yield* streamProviderMessage(apiKey, body, signal, connection)
     recordDiagnostic({ area: 'api', operation: 'chat', outcome: 'ok' })
   } catch (error) {
+    const failure = localizeEndpointError(error)
     if (!signal.aborted) {
-      recordApiFailure('chat', error)
+      recordApiFailure('chat', failure)
     }
-    throw error
+    throw failure
   }
 }
 

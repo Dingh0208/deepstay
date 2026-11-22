@@ -8,6 +8,9 @@ import { MessageList } from '../messages/MessageList.js'
 import { ConversationTitle } from './ConversationTitle.js'
 import { MobileHeader } from './MobileHeader.js'
 import { Welcome } from './Welcome.js'
+import { IconMicOutline16 } from '../base/icons.js'
+import { IconButton } from '../base/IconButton.js'
+import { startVoiceCall } from '../../services/speech/voiceCall.js'
 import styles from './SessionView.module.css'
 
 /** 会话页：标题栏（移动端为顶栏）+ 消息列表，输入框吸底 */
@@ -31,7 +34,7 @@ export const SessionView = ({
   return (
     <div className={styles.view}>
       {isMobile ? (
-        <MobileHeader title={title} onJumpToFirst={jumpToFirst} />
+        <MobileHeader title={title} onJumpToFirst={jumpToFirst} sessionId={session.id} />
       ) : (
         <div className={styles.header}>
           <ConversationTitle
@@ -40,6 +43,8 @@ export const SessionView = ({
             className={clsx(styles.title, siderCollapsed && styles.withCollapsedSider)}
             onJump={jumpToFirst}
           />
+          <IconButton size="xl" tone="primary" icon={<IconMicOutline16 />}
+            tooltip={t('voiceCallTitle')} onClick={() => void startVoiceCall(session.id)} />
         </div>
       )}
       <MessageList
@@ -49,7 +54,7 @@ export const SessionView = ({
         footer={(latestReply) => (
           <div className={styles.inputContainer}>
             <ChatInput sessionId={session.id} latestReply={latestReply} />
-            <div className={styles.caveat}>{t('contentCaveat')}</div>
+            <div className={styles.caveat} data-input-caveat="">{t('contentCaveat')}</div>
           </div>
         )}
       />

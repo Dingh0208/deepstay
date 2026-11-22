@@ -44,6 +44,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(LocalFilesPlugin.class);
         registerPlugin(ApkUpdatePlugin.class);
         registerPlugin(ProviderHttpPlugin.class);
+        registerPlugin(CallAudioPlugin.class);
         super.onCreate(savedInstanceState);
         WebView webView = bridge.getWebView();
         WebSettings settings = webView.getSettings();

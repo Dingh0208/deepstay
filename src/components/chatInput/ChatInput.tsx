@@ -3,9 +3,11 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   IconGlobeLanguageOutline14,
   IconPaperclipOutline16,
+  IconMicOutline16,
   IconSendOutline16,
   IconStopFill16,
   IconThinkOutline14,
+  IconPlusOutline16,
 } from '../base/icons.js'
 import { applyModelPreset, setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
@@ -44,6 +46,8 @@ import { ComposerMetrics } from './ComposerMetrics.js'
 import { useContextPrediction } from './useContextPrediction.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
+import { Menu } from '../base/Menu.js'
+import { startVoiceCall } from '../../services/speech/voiceCall.js'
 
 /** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
 type InputProps = { sessionId: string | null; latestReply?: AssistantMessage }
@@ -94,6 +98,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const inputBudget = getEffectiveContextInputBudget()
   const locale = useSettings((state) => state.locale)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
+  const voiceRecognitionSupported = extras || apiProtocol === 'openai'
   const searchAvailable = extras
   const connection = useMemo(() => ({ baseUrl: apiBaseUrl, protocol: apiProtocol }), [apiBaseUrl, apiProtocol])
   const tools = useMemo(() => searchAvailable ? serverTools(search, model) : [], [searchAvailable, search, model])
@@ -391,7 +396,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
           </Tooltip> : null}
         </div>
         <div className={styles.right}>
-          {extras ? <VoiceButton
+          {voiceRecognitionSupported ? <VoiceButton
             status={voice.status}
             disabled={!voice.available}
             seconds={voice.seconds}
@@ -404,14 +409,20 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
               }
             }}
           /> : null}
-          <IconButton
-            size="m"
-            tone="primary"
-            icon={<IconPaperclipOutline16 />}
-            tooltip={t('uploadFile')}
-            disabled={importingHistory}
-            onClick={() => ensureApiKey() && fileInputRef.current?.click()}
-          />
+          <Menu options={[
+            { key: 'voice-call', label: t('voiceCallTitle'), icon: <IconMicOutline16 />, onSelect: () => void startVoiceCall(sessionId) },
+            { key: 'upload', label: t('uploadFile'), icon: <IconPaperclipOutline16 />, onSelect: () => ensureApiKey() && fileInputRef.current?.click() },
+          ]}>
+            {({ toggle }) => <IconButton
+              size="m"
+              tone="primary"
+              icon={<IconPlusOutline16 />}
+              tooltip={t('uploadFile')}
+              aria-label={t('uploadFile')}
+              disabled={importingHistory}
+              onClick={toggle}
+            />}
+          </Menu>
           <input
             ref={fileInputRef}
             type="file"
@@ -499,6 +510,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       <ComposerMetrics
         latestReply={latestReply}
         estimatedContext={estimatedContext}
+        requestBudget={inputBudget}
         estimating={contextEstimating}
         empty={empty}
         compactDisabled={empty || importingHistory || streaming || voice.status !== 'idle'}

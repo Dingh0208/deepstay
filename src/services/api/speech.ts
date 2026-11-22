@@ -1,5 +1,5 @@
 import { ApiError, request } from './client.js'
-import { apiEndpoint, getApiConnection, supportsDeepSeekExtras } from './connection.js'
+import { apiEndpoint, getApiConnection, supportsDeepSeekExtras, type ApiConnection } from './connection.js'
 
 /**
  * 语音接口：
@@ -16,6 +16,8 @@ const toolsUrl = (path: string) => {
 }
 
 export type TtsVoice = 'stella' | 'tide'
+
+export const MAX_ASR_AUDIO_BYTES = 8 * 1024 * 1024
 
 /** TTS 输出的裸 PCM 参数：24kHz、单声道、16-bit 小端 */
 export const TTS_SAMPLE_RATE = 24000
@@ -48,6 +50,46 @@ export const transcribe = async (
     !('text' in body) ||
     typeof body.text !== 'string'
   ) {
+    throw new ApiError('protocol', raw)
+  }
+  return body.text
+}
+
+/** Use the selected OpenAI-compatible connection for local WAVE uploads. */
+export const transcribeForConnection = async (
+  apiKey: string,
+  audio: Blob,
+  connection: ApiConnection = getApiConnection(),
+  signal?: AbortSignal
+): Promise<string> => {
+  if (supportsDeepSeekExtras(connection)) {
+    return transcribe(apiKey, audio, signal)
+  }
+  if (connection.protocol !== 'openai') {
+    throw new ApiError('protocol', { key: 'apiTextOnly' })
+  }
+  if (audio.size === 0 || audio.size > MAX_ASR_AUDIO_BYTES ||
+      !['audio/wav', 'audio/x-wav'].includes(audio.type.toLowerCase())) {
+    throw new ApiError('protocol', { key: 'voiceInputFileUnsupported' })
+  }
+  const form = new FormData()
+  form.append('model', 'whisper-1')
+  form.append('file', audio, 'recording.wav')
+  const response = await request(apiEndpoint(connection.baseUrl, 'v1/audio/transcriptions'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+    credentials: 'omit',
+    body: form,
+    signal,
+  })
+  const raw = await response.text()
+  let body: unknown
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    throw new ApiError('protocol', raw)
+  }
+  if (typeof body !== 'object' || body === null || !('text' in body) || typeof body.text !== 'string') {
     throw new ApiError('protocol', raw)
   }
   return body.text

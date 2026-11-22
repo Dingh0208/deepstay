@@ -1,5 +1,5 @@
 import { Capacitor, registerPlugin } from '@capacitor/core'
-import { isSafeApiPath } from './connection.js'
+import { isPrivateNetworkApiUrl, isSafeApiPath } from './connection.js'
 
 type ProviderHttp = {
   open(options: {
@@ -9,6 +9,10 @@ type ProviderHttp = {
     authorization: string | null
     accept: string | null
     body?: string | null
+    audioModel?: string | null
+    audioFileName?: string | null
+    audioContentType?: string | null
+    audioBase64?: string | null
   }): Promise<{ status: number; contentType?: string }>
   read(options: { id: string }): Promise<{ data?: string }>
   close(options: { id: string }): Promise<void>
@@ -56,33 +60,61 @@ export const normalizeAndroidProviderError = (error: unknown): AndroidProviderTr
 
 const providerHttp = registerPlugin<ProviderHttp>('ProviderHttp')
 
+export const isAndroidApiPlatform = () => Capacitor.getPlatform() === 'android'
+
 export const requiresAndroidHttps = (url: string): boolean => {
-  if (Capacitor.getPlatform() !== 'android') {
+  if (!isAndroidApiPlatform()) {
     return false
   }
   try {
-    return new URL(url).protocol !== 'https:'
+    const endpoint = new URL(url)
+    return endpoint.protocol !== 'https:' && !isPrivateNetworkApiUrl(url)
   } catch {
     return false
   }
 }
 
 export const supportsAndroidProviderTransport = (url: string): boolean => {
-  if (Capacitor.getPlatform() !== 'android' || !Capacitor.isPluginAvailable('ProviderHttp')) {
+  if (!isAndroidApiPlatform() || !Capacitor.isPluginAvailable('ProviderHttp')) {
     return false
   }
   try {
     const endpoint = new URL(url)
     const rawPath = /^[a-z][a-z\d+.-]*:\/\/[^/?#]*([^?#]*)/i.exec(url)?.[1] ?? ''
     return (
-      endpoint.protocol === 'https:' &&
+      (endpoint.protocol === 'https:' || isPrivateNetworkApiUrl(url)) &&
       endpoint.hostname.toLowerCase() !== 'api.deepseek.com' &&
       !endpoint.username && !endpoint.password && !endpoint.search && !endpoint.hash &&
       isSafeApiPath(rawPath) &&
-      /\/(?:models|chat\/completions)$/.test(endpoint.pathname)
+      /\/(?:models|chat\/completions|audio\/transcriptions)$/.test(endpoint.pathname)
     )
   } catch {
     return false
+  }
+}
+
+const encodeAudioForm = async (body: FormData) => {
+  const entries = [...body.entries()]
+  if (entries.length !== 2 || entries[0][0] !== 'model' || entries[0][1] !== 'whisper-1' ||
+      entries[1][0] !== 'file' || typeof entries[1][1] === 'string') {
+    throw new TypeError('Unsupported Android audio transcription form')
+  }
+  const file = entries[1][1]
+  if (file.name !== 'recording.wav' || !['audio/wav', 'audio/x-wav'].includes(file.type.toLowerCase()) ||
+      file.size === 0 || file.size > 8 * 1024 * 1024) {
+    throw new TypeError('Unsupported Android audio transcription file')
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return {
+    model: 'whisper-1',
+    fileName: file.name,
+    contentType: file.type.toLowerCase(),
+    data: btoa(binary),
   }
 }
 
@@ -91,8 +123,11 @@ export const requestAndroidProvider = async (
   url: string,
   { method = 'GET', headers: inputHeaders, body, signal }: RequestInit
 ): Promise<Response> => {
-  if (body !== undefined && body !== null && typeof body !== 'string') {
-    throw new TypeError('Android provider requests require a string body')
+  let encodedAudio: Awaited<ReturnType<typeof encodeAudioForm>> | undefined
+  if (body instanceof FormData) {
+    encodedAudio = await encodeAudioForm(body)
+  } else if (body !== undefined && body !== null && typeof body !== 'string') {
+    throw new TypeError('Android provider requests require a string or allowlisted audio form body')
   }
   const abortReason = () => signal?.reason ?? new DOMException('Aborted', 'AbortError')
   if (signal?.aborted) {
@@ -119,7 +154,14 @@ export const requestAndroidProvider = async (
     const { status, contentType } = await new Promise<Awaited<ReturnType<ProviderHttp['open']>>>((resolve, reject) => {
       fail = reject
       void providerHttp
-        .open({ id, url, method, authorization: input.get('Authorization'), accept: input.get('Accept'), body })
+        .open({
+          id, url, method, authorization: input.get('Authorization'), accept: input.get('Accept'),
+          body: typeof body === 'string' ? body : null,
+          audioModel: encodedAudio?.model ?? null,
+          audioFileName: encodedAudio?.fileName ?? null,
+          audioContentType: encodedAudio?.contentType ?? null,
+          audioBase64: encodedAudio?.data ?? null,
+        })
         .then(resolve, reject)
     })
     if (signal?.aborted) {

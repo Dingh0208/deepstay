@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { TranslationMessage } from '../../i18n/index.js'
-import { transcribe } from '../../services/api/speech.js'
+import { transcribeForConnection } from '../../services/api/speech.js'
 import { startRecording, type Recording } from '../../services/speech/recorder.js'
 import { useSettings } from '../../services/settings.js'
+import { getApiConnection } from '../../services/api/connection.js'
+import { ApiError } from '../../services/api/client.js'
 import { showToast } from '../base/toastState.js'
 
 export type VoiceInputStatus = 'idle' | 'recording' | 'transcribing'
@@ -75,7 +77,9 @@ export const useVoiceInput = (onText: (text: string) => void) => {
       controller = new AbortController()
       controllerRef.current = controller
       setStatus('transcribing')
-      const text = await transcribe(useSettings.getState().apiKey ?? '', audio, controller.signal)
+      const text = await transcribeForConnection(
+        useSettings.getState().apiKey ?? '', audio, getApiConnection(), controller.signal
+      )
       if (controller.signal.aborted || operationRef.current !== operation) {
         return
       }
@@ -84,9 +88,9 @@ export const useVoiceInput = (onText: (text: string) => void) => {
       } else {
         showToast({ key: 'voiceInputEmpty' })
       }
-    } catch {
+    } catch (error) {
       if (operationRef.current === operation && !controller?.signal.aborted) {
-        showToast({ key: 'voiceInputFailed' })
+        showToast(error instanceof ApiError && error.localMessage ? error.localMessage : { key: 'voiceInputFailed' })
       }
     } finally {
       if (operationRef.current === operation) {

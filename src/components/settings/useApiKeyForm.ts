@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, fetchModels } from '../../services/api/client.js'
-import { DEEPSEEK_OFFICIAL_API_URL, normalizeApiBaseUrl } from '../../services/api/connection.js'
+import { DEEPSEEK_OFFICIAL_API_URL, InsecurePublicApiUrlError, normalizeApiBaseUrl } from '../../services/api/connection.js'
 import { classifyApiError } from '../../services/api/errors.js'
 import { setApiConnection, useSettings, type ApiProtocol, type ModelPreset } from '../../services/settings.js'
 import { useChatStore } from '../../services/chat/store.js'
@@ -37,13 +37,16 @@ export const useApiKeyForm = () => {
     change()
   }
 
+  const invalidUrlMessage = (error: unknown): TranslationKey =>
+    error instanceof InsecurePublicApiUrlError ? 'apiHttpPrivateOnly' : 'apiUrlInvalid'
+
   const run = async (action: 'test' | 'models') => {
     if (task.current) {
       return
     }
     let url: string
-    try { url = normalizeApiBaseUrl(baseUrl) } catch {
-      setStatus({ key: 'apiUrlInvalid', error: true }); return
+    try { url = normalizeApiBaseUrl(baseUrl) } catch (error) {
+      setStatus({ key: invalidUrlMessage(error), error: true }); return
     }
     if (!value.trim()) { setStatus({ key: 'apiKeyRequired', error: true }); return }
     const controller = new AbortController()
@@ -77,8 +80,8 @@ export const useApiKeyForm = () => {
       return
     }
     let url: string
-    try { url = normalizeApiBaseUrl(baseUrl) } catch {
-      setStatus({ key: 'apiUrlInvalid', error: true }); return
+    try { url = normalizeApiBaseUrl(baseUrl) } catch (error) {
+      setStatus({ key: invalidUrlMessage(error), error: true }); return
     }
     if (!value.trim() || !model.trim()) {
       setStatus({ key: !value.trim() ? 'apiKeyRequired' : 'apiModelRequired', error: true }); return

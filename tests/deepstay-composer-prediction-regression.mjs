@@ -11,7 +11,7 @@ const mockUrl = value => 'data:text/javascript;base64,' + Buffer.from(value).toS
 const mocks = new Map([
   ['react', 'export const useState=()=>[true,()=>{}];'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key});export const jsxs=jsx;'],
-  ['../../services/settings.js', 'export const useSettings=select=>select({locale:"en",generation:{contextTokens:1000}});'],
+  ['../../services/settings.js', 'export const useSettings=select=>select({locale:"en",generation:{contextTokens:1000000}});'],
   ['../../i18n/index.js', 'export const useTranslate=()=>((key,params)=>key+(params?":"+JSON.stringify(params):""));'],
   ['../base/Button.js', 'export const Button=()=>null;'],
   ['../base/Modal.js', 'export const Modal=()=>null;'],
@@ -45,9 +45,14 @@ try {
   const { ComposerMetrics } = await import(source)
   const latestReply = { status: 'done', metrics: { system: 100, tools: 0, messages: 800, tokensPerSecond: 12 },
     usage: { input_tokens: 40, cache_read_input_tokens: 60, output_tokens: 20 } }
-  const props = { latestReply, estimatedContext: { system: 5, tools: 5, messages: 90 }, compactDisabled: false, empty: false, onCompact() {} }
+  const props = { latestReply, estimatedContext: { system: 1000, tools: 0, messages: 99000 }, requestBudget: 128000, compactDisabled: false, empty: false, onCompact() {} }
   let nodes = all(ComposerMetrics(props))
-  assert.ok(nodes.includes('composerContextPercent:' + JSON.stringify({ percentage: 'composerEstimate:' + JSON.stringify({ value: '10%' }) })), 'The next estimate wins over old actual/request metrics')
+  assert.ok(nodes.includes('composerContextPercent:' + JSON.stringify({ percentage: 'composerEstimate:' + JSON.stringify({ value: '10%' }) })), 'The percentage remains relative to the nominal 1M model window')
+  assert.ok(nodes.includes('composerRequestBudget:' + JSON.stringify({ value: '128,000' })), 'The effective send cap is shown as a separate value')
+  assert.equal(nodes.find(node => node.type === 'progress').props.max, 1_000_000)
+  assert.equal(nodes.find(node => node.type === 'progress').props.value, 100_000)
+  const atDefaultCap = all(ComposerMetrics({ ...props, estimatedContext: { system: 0, tools: 0, messages: 128000 } }))
+  assert.ok(atDefaultCap.includes('composerContextPercent:' + JSON.stringify({ percentage: 'composerEstimate:' + JSON.stringify({ value: '12.8%' }) })), 'A full 128k default request budget is 12.8% of the nominal 1M window')
   assert.ok(nodes.includes('composerCacheHit:{"percentage":"60"}'), 'Cache remains tied to the last finalized actual request')
   assert.ok(nodes.includes('composerSpeed:{"speed":"12"}'))
   assert.ok(nodes.includes('composerLastRequestAmount:{"used":"120"}'), 'Last actual usage is independent')

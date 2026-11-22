@@ -32,6 +32,7 @@ import { useChatTypography } from './useChatTypography.js'
 import { bindAppUpdates } from '../services/appUpdates.js'
 import { ReleaseNotesDialog } from '../components/settings/ReleaseNotesDialog.js'
 import { CharactersDialog } from '../components/characters/CharactersDialog.js'
+import { VoiceCallHost } from '../components/speech/VoiceCallHost.js'
 import styles from './App.module.css'
 
 export const App = () => {
@@ -155,6 +156,7 @@ export const App = () => {
       <FirstRunGuide />
       <ReleaseNotesDialog />
       <CharactersDialog />
+      <VoiceCallHost />
       <Toast />
     </>
   )

@@ -34,6 +34,14 @@ const text = (value: unknown, max: number): string =>
 const array = (value: unknown, max: number): unknown[] =>
   Array.isArray(value) && value.length <= max ? value : invalid()
 
+const parseExtractionObject = (input: string) => {
+  const normalized = input.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  return object(JSON.parse(normalized))
+}
+
+export const parseMemorySummary = (input: string): string =>
+  text(parseExtractionObject(input).summary, 4_000)
+
 const textBoundary = (value: string, index: number): boolean =>
   !(
     index > 0 &&
@@ -135,9 +143,9 @@ export const parseMemoryExtraction = (
   if (input.length > 24_000) {
     invalid()
   }
-  const body = object(JSON.parse(input))
+  const body = parseExtractionObject(input)
   const summary = text(body.summary, 4_000)
-  const rows = array(body.records, 24)
+  const rows = body.records === undefined ? [] : array(body.records, 24)
   const order =
     options.sourceOrder ?? new Map(options.sources.map((slice, index) => [slice.message.id, index]))
   const known = new Map(

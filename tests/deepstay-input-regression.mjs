@@ -11,7 +11,7 @@ const mockUrl = value => 'data:text/javascript;base64,' + Buffer.from(value).toS
 const mocks = new Map([
   ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value}); export const useState=value=>[globalThis.__inputState??value,update=>{globalThis.__inputState=typeof update==="function"?update(globalThis.__inputState):update}];'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
-  ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconPaperclipOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
+  ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconMicOutline16', 'IconPaperclipOutline16', 'IconPlusOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
   ['../../services/settings.js', 'export const applyModelPreset=id=>{globalThis.__appliedModelPreset=id}; export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek"&&connection.baseUrl.replace(/\\/(?:anthropic(?:\\/v1)?|v1)(?:\\/messages)?$/,"")==="https://api.deepseek.com";'],
   ['../../services/api/generation.js', 'export const DEFAULT_CONTEXT_WINDOW=1000000;'],
@@ -24,6 +24,7 @@ const mocks = new Map([
   ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:{get:()=>globalThis.__draft}}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
   ['../base/IconButton.js', 'export const IconButton=()=>null;'],
+  ['../base/Menu.js', 'export const Menu=props=>props.children?.({toggle:()=>{}})??null;'],
   ['../base/Button.js', 'export const Button=()=>null;'],
   ['../base/Modal.js', 'export const Modal=()=>null;'],
   ['../base/Select.js', 'export const Select=()=>null;'],
@@ -33,10 +34,11 @@ const mocks = new Map([
   ['../base/toastState.js', 'export const showToast=notice=>globalThis.__notices.push(notice);'],
   ['../../services/attachments.js', 'export const ACCEPT=""; export const useUploads=Object.assign(select=>select({tasks:{}}),{getState:()=>({tasks:{}})}); export const validateFiles=(files,count)=>{globalThis.__validated.push({files,count});return globalThis.__validationError}; export const resolveMimeType=file=>file.type; export const isImage=mime=>mime.startsWith("image/"); export const getUploadPurpose=(name,image)=>image?null:/\\.(pdf|doc|docx|ppt|pptx)$/i.test(name)?"text_recognition":"user_data";'],
   ['./DraftAttachments.js', 'export const DraftAttachments=()=>null;'],
-  ['./useVoiceInput.js', 'export const useVoiceInput=()=>({status:"idle",available:true,cancel:()=>{}});'],
+  ['./useVoiceInput.js', 'export const useVoiceInput=()=>({status:"idle",available:true,cancel:()=>{},toggle:()=>{globalThis.__voiceInputToggled++}});'],
   ['./VoiceButton.js', 'export const VoiceButton=()=>null;'],
   ['./Spectrum.js', 'export const Spectrum=()=>null;'],
   ['./ComposerMetrics.js', 'export const ComposerMetrics=()=>null;'],
+  ['../../services/speech/voiceCall.js', 'export const startVoiceCall=(...args)=>{globalThis.__voiceCall.push(args)};'],
   ['../../i18n/index.js', 'export const useTranslate=()=>key=>key;'],
   ['./ChatInput.module.css', 'export default {};'],
 ])
@@ -66,6 +68,7 @@ const find = (node, predicate) => {
   }
   return null
 }
+const hasMenuOption = (tree, key) => find(tree, node => node.type?.name === 'Menu')?.props.options.some(option => option.key === key) ?? false
 try {
   const { Input } = await import(source)
   globalThis.__settings = { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', apiKey: 'fixture', model: 'deepseek-flash', models: ['deepseek-flash', 'deepseek-v4-pro'], modelPresets: [], generation: {} }
@@ -78,6 +81,8 @@ try {
   globalThis.__estimated = []
   globalThis.__fileBatches = []
   globalThis.__inputState = null
+  globalThis.__voiceCall = []
+  globalThis.__voiceInputToggled = 0
   globalThis.__validated = []
   globalThis.__validationError = null
   const checks = []
@@ -242,20 +247,30 @@ try {
   tree = Input({ sessionId: 'imported-chat' })
   assert.ok(find(tree, node => node.type === 'button' && node.props['aria-label'] === 'search'))
   assert.ok(find(tree, node => node.type?.name === 'VoiceButton'), 'Unsupported server tools do not disable unrelated attachment and voice capabilities')
-  assert.ok(find(tree, node => node.type?.name === 'IconButton' && node.props.tooltip === 'uploadFile'))
+  assert.ok(hasMenuOption(tree, 'upload'), 'The attachment menu keeps its upload action')
+  assert.ok(hasMenuOption(tree, 'voice-call'), 'The attachment menu exposes voice calling')
+  find(tree, node => node.type?.name === 'Menu').props.options.find(option => option.key === 'voice-call').onSelect()
+  assert.deepEqual(globalThis.__voiceCall, [['imported-chat']], 'Voice call starts in the current chat')
   assert.deepEqual(globalThis.__estimated.at(-1).tools, [{ type: 'web_search_20250305', name: 'web_search' }])
   globalThis.__settings.model = 'deepseek-v4-flash'
   globalThis.__settings.apiBaseUrl = 'https://api.deepseek.com/anthropic/v1/messages'
   tree = Input({ sessionId: 'imported-chat' })
   assert.ok(find(tree, node => node.type === 'button' && node.props['aria-label'] === 'search'), 'The official full Messages URL keeps search available')
   assert.ok(find(tree, node => node.type?.name === 'VoiceButton'), 'The official full Messages URL keeps voice input available')
-  assert.ok(find(tree, node => node.type?.name === 'IconButton' && node.props.tooltip === 'uploadFile'), 'The official full Messages URL keeps file uploads available')
+  assert.ok(hasMenuOption(tree, 'upload'), 'The official full Messages URL keeps file uploads available')
   assert.deepEqual(globalThis.__estimated.at(-1).tools, ['read', 'search'])
   globalThis.__settings.apiProtocol = 'openai'
   globalThis.__settings.apiBaseUrl = 'https://relay.example.test/v1'
   tree = Input({ sessionId: 'imported-chat' })
-  assert.ok(find(tree, node => node.type?.name === 'IconButton' && node.props.tooltip === 'uploadFile'), 'Third-party routes expose the local attachment path')
-  assert.equal(find(tree, node => node.type?.name === 'VoiceButton'), null, 'A custom provider must not send speech to the DeepSeek-only ASR endpoint')
+  assert.ok(hasMenuOption(tree, 'upload'), 'Third-party routes expose the local attachment path')
+  const customVoiceButton = find(tree, node => node.type?.name === 'VoiceButton')
+  assert.ok(customVoiceButton, 'OpenAI-compatible routes expose their own ASR path')
+  customVoiceButton.props.onClick()
+  assert.equal(globalThis.__voiceInputToggled, 1, 'Custom-provider voice input stays connected to the selected route')
+  globalThis.__settings.apiKey = null
+  tree = Input({ sessionId: 'imported-chat' })
+  assert.ok(find(tree, node => node.type?.name === 'VoiceButton'), 'Voice input remains visible before an API key is configured')
+  globalThis.__settings.apiKey = 'fixture'
   const beforeLocalDocument = globalThis.__fileBatches.length
   const customInput = find(tree, node => node.type === 'input' && node.props.type === 'file')
   customInput.props.onChange({ target: { files: [new File(['fixture'], 'notes.pdf', { type: 'application/pdf' })], value: 'selected' } })

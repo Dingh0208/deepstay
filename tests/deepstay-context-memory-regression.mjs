@@ -116,6 +116,50 @@ try {
   assert.ok(first.systemMemory.includes(history[0].content), 'Keep the original opening words alongside memory')
   checks.push('Long chats use one bounded extraction with the selected URL/key/model, preserve the original opening and complete recent rounds, and fit the final request budget')
 
+  const summaryOnlySnapshot = emptySnapshot()
+  const beforeSummaryOnly = requests.length
+  respond = () => stream(`\`\`\`json\n${JSON.stringify({ summary: '第三方接口的关系与近期情绪脉络。' })}\n\`\`\``)
+  const summaryOnly = await prepareContextMemory(optionsFor({
+    mode: 'manual', sessionId: 'third-party-summary-only', snapshot: summaryOnlySnapshot,
+    connection, history,
+  }))
+  assert.equal(requests.length - beforeSummaryOnly, 1)
+  assert.equal(summaryOnlySnapshot.segments.length, 1, 'A complete summary can be reused without structured fact rows')
+  assert.equal(summaryOnlySnapshot.records.length, 0)
+  assert.ok(summaryOnly.systemMemory.includes('第三方接口的关系与近期情绪脉络。'))
+
+  const invalidRecordsSnapshot = emptySnapshot()
+  respond = () => extraction('双方关系经历重要转折，仍沿用彼此熟悉的称呼。', [{
+    kind: 'preference', actor: 'assistant', realm: 'self_report', key: '称呼', text: '未经原文支持的现实偏好。',
+    sources: [{ messageId: history[0].id, quote: '不存在的原文' }], supersedes: [],
+  }])
+  const narrativeFallback = await prepareContextMemory(optionsFor({
+    mode: 'manual', sessionId: 'third-party-invalid-records', snapshot: invalidRecordsSnapshot,
+    connection, history,
+  }))
+  assert.equal(invalidRecordsSnapshot.records.length, 0, 'Unverifiable structured facts are dropped')
+  assert.equal(invalidRecordsSnapshot.segments.length, 1, 'The companionship narrative summary remains available')
+  assert.ok(narrativeFallback.systemMemory.includes('双方关系经历重要转折'))
+  checks.push('A valid companionship narrative is retained when an invalid structured fact is discarded')
+
+  const retrySnapshot = emptySnapshot()
+  const beforeTruncatedRetry = requests.length
+  respond = ({ body }) => (body.system ?? body.messages[0].content).includes('必须精简输出以避免截断')
+    ? extraction('截断后精简重试成功，保留本段重要关系。')
+    : stream('{"summary":"尚未完整', 'length')
+  const retried = await prepareContextMemory(optionsFor({
+    mode: 'manual', sessionId: 'third-party-truncated-retry', snapshot: retrySnapshot,
+    connection, history,
+  }))
+  const retryRequests = requests.slice(beforeTruncatedRetry)
+  assert.equal(retryRequests.length, 2, 'A max_tokens finish retries once with a compact output prompt: ' + JSON.stringify({ failure: retried.compactionFailure, result: retried.compaction }))
+  assert.ok(estimateContextTokens(retryRequests[1].body.messages[1].content) <
+    estimateContextTokens(retryRequests[0].body.messages[1].content), 'The retry also shrinks the source sample')
+  assert.equal(retrySnapshot.segments.length, 1, JSON.stringify({ failure: retried.compactionFailure, compaction: retried.compaction, attempts: retryRequests.length }))
+  assert.ok(retried.systemMemory.includes('截断后精简重试成功'))
+  checks.push('OpenAI-compatible max_tokens truncation retries with a shorter source sample and concise output requirements')
+  respond = () => extraction()
+
   const burstSnapshot = structuredClone(snapshot)
   const burstHistory = [...history]
   const beforeBurst = requests.length
@@ -435,7 +479,6 @@ try {
   for (const [id, response] of [
     ['truncated', () => stream('{"summary":"unfinished","records":[]}', 'length')],
     ['invalid-json', () => stream('not JSON')],
-    ['unsupported-evidence', () => extraction('假引用', [{ kind: 'preference', actor: 'user', realm: 'self_report', key: '颜色', text: '喜欢蓝色', sources: [{ messageId: 'u-0', quote: '原文没有这句话' }], supersedes: [] }])],
     ['length-rejected', () => errorResponse(400, 'user input too long, 70668 tokens exceeds max 32768 tokens')],
     ['server-failure', () => errorResponse(503, 'fixture busy')],
   ]) {
@@ -449,7 +492,7 @@ try {
     assert.deepEqual(fallback.history, hugeHistory.slice(-4))
     assert.equal(failOptions.snapshot.segments.length, 0)
     assert.equal(failOptions.snapshot.records.length, 0)
-    const retryable = ['truncated', 'invalid-json', 'unsupported-evidence', 'length-rejected'].includes(id)
+    const retryable = ['truncated', 'invalid-json', 'length-rejected'].includes(id)
     const expectedAttempts = id === 'length-rejected' ? 3 : retryable ? 2 : 1
     assert.equal(requests.length, beforeFailure + expectedAttempts)
     assert.equal(fallback.compactionFailure, id === 'length-rejected' ? 'contextLimit' :

@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react'
 import { subscribeMediaQuery } from '../utils/mediaQuery.js'
 
+const KEYBOARD_OPEN_HEIGHT_DELTA = 120
+
 /** 窄于 768px 按移动端布局 */
 const query = window.matchMedia('not all and (min-width: 768px)')
 
@@ -54,23 +56,28 @@ export const useMobileViewport = (enabled: boolean) => {
     }
     const viewport = window.visualViewport
     const inputSelector = 'textarea, input:not([type="file"])'
+    let fullHeight = Math.max(viewport?.height ?? window.innerHeight, window.innerHeight)
     let animationFrame = 0
     const reset = () => {
+      frame.removeAttribute('data-keyboard-open')
       frame.style.removeProperty('--app-viewport-height')
       frame.style.removeProperty('--app-viewport-top')
     }
     const update = () => {
       // 失焦后直接恢复 CSS 的全高布局，不等 Safari 收键盘后的 resize。
       if (!document.activeElement?.matches(inputSelector)) {
+        fullHeight = Math.max(viewport?.height ?? window.innerHeight, window.innerHeight)
         reset()
         return
       }
       if (viewport && viewport.scale !== 1) {
         return
       }
+      const visibleHeight = viewport?.height ?? window.innerHeight
+      frame.toggleAttribute('data-keyboard-open', fullHeight - visibleHeight > KEYBOARD_OPEN_HEIGHT_DELTA)
       frame.style.setProperty(
         '--app-viewport-height',
-        `${viewport?.height ?? window.innerHeight}px`
+        `${visibleHeight}px`
       )
       frame.style.setProperty('--app-viewport-top', `${viewport?.offsetTop ?? 0}px`)
     }

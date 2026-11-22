@@ -8,6 +8,7 @@ export type Locale = 'zh-CN' | 'en-US'
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ApiProtocol = 'deepseek' | 'openai'
+export type VoiceCallPause = 'short' | 'normal' | 'patient'
 export const bundledChatFonts = [
   { value: 'noto-sans-sc', label: 'Noto Sans SC' },
   { value: 'noto-serif-sc', label: 'Noto Serif SC' },
@@ -72,6 +73,9 @@ type Settings = {
   contextMemoryEnabled: boolean
   autoReadAloud: boolean
   showReplyTokenUsage: boolean
+  voiceCallBargeIn: boolean
+  voiceCallPause: VoiceCallPause
+  voiceCallSpeaker: boolean
   generation: GenerationSettings
   search: boolean
   siderCollapsed: boolean
@@ -109,6 +113,9 @@ const KEYS = {
   contextMemoryEnabled: 'deepstay:context-memory-enabled',
   autoReadAloud: 'deepstay:auto-read-aloud',
   showReplyTokenUsage: 'deepstay:show-reply-token-usage',
+  voiceCallBargeIn: 'deepstay:voice-call-barge-in',
+  voiceCallPause: 'deepstay:voice-call-pause',
+  voiceCallSpeaker: 'deepstay:voice-call-speaker',
   generation: 'deepstay:generation',
   modelContextWindows: 'deepstay:model-context-windows',
   search: 'chat-demo:search',
@@ -316,6 +323,10 @@ export const useSettings = create<Settings>(() => ({
   contextMemoryEnabled: read(KEYS.contextMemoryEnabled) === 'true',
   autoReadAloud: read(KEYS.autoReadAloud) === 'true',
   showReplyTokenUsage: read(KEYS.showReplyTokenUsage) === 'true',
+  voiceCallBargeIn: read(KEYS.voiceCallBargeIn) !== 'false',
+  voiceCallPause: read(KEYS.voiceCallPause) === 'short' || read(KEYS.voiceCallPause) === 'patient'
+    ? read(KEYS.voiceCallPause) as VoiceCallPause : 'normal',
+  voiceCallSpeaker: read(KEYS.voiceCallSpeaker) !== 'false',
   generation: generationForRoute(savedGeneration, initialRoute),
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
@@ -428,6 +439,21 @@ export const setAutoReadAloud = (autoReadAloud: boolean) => {
 export const setShowReplyTokenUsage = (showReplyTokenUsage: boolean) => {
   write(KEYS.showReplyTokenUsage, String(showReplyTokenUsage))
   useSettings.setState({ showReplyTokenUsage })
+}
+
+export const setVoiceCallBargeIn = (voiceCallBargeIn: boolean) => {
+  write(KEYS.voiceCallBargeIn, String(voiceCallBargeIn))
+  useSettings.setState({ voiceCallBargeIn })
+}
+
+export const setVoiceCallPause = (voiceCallPause: VoiceCallPause) => {
+  write(KEYS.voiceCallPause, voiceCallPause)
+  useSettings.setState({ voiceCallPause })
+}
+
+export const setVoiceCallSpeakerPreference = (voiceCallSpeaker: boolean) => {
+  write(KEYS.voiceCallSpeaker, String(voiceCallSpeaker))
+  useSettings.setState({ voiceCallSpeaker })
 }
 
 export const setGeneration = (value: GenerationSettings) => {

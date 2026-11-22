@@ -11,6 +11,7 @@ import styles from './ComposerMetrics.module.css'
 export const ComposerMetrics = ({
   latestReply,
   estimatedContext,
+  requestBudget,
   estimating,
   empty,
   compactDisabled,
@@ -20,6 +21,7 @@ export const ComposerMetrics = ({
 }: {
   latestReply?: AssistantMessage
   estimatedContext?: ContextEstimate
+  requestBudget?: number
   estimating?: boolean
   empty: boolean
   compactDisabled: boolean
@@ -29,8 +31,7 @@ export const ComposerMetrics = ({
 }) => {
   const t = useTranslate()
   const locale = useSettings((state) => state.locale)
-  const windowTokens =
-    useSettings((state) => state.generation.contextTokens) ?? DEFAULT_CONTEXT_WINDOW
+  const windowTokens = useSettings((state) => state.generation.contextTokens) ?? DEFAULT_CONTEXT_WINDOW
   const [open, setOpen] = useState(false)
   const metrics = getReplyMetrics(latestReply)
   const pending = latestReply?.status === 'pending' || latestReply?.status === 'streaming'
@@ -48,7 +49,7 @@ export const ComposerMetrics = ({
   const tokens = (count: number | undefined) => count?.toLocaleString(locale) ?? '–'
 
   return (
-    <div className={styles.row}>
+    <div className={styles.row} data-composer-metrics="">
       <span title={t('composerReplySpeed')}>{t('composerSpeed', { speed })}</span>
       {cacheHit === undefined ? null : <span>{t('composerCacheHit', { percentage: cacheHit })}</span>}
       <button
@@ -87,6 +88,7 @@ export const ComposerMetrics = ({
               {t('composerContextAmount', { used: tokens(occupied), window: tokens(windowTokens) })}
             </strong>
             {context?.reported === false ? <span>{t('composerEstimated')}</span> : null}
+            {requestBudget !== undefined ? <span>{t('composerRequestBudget', { value: tokens(requestBudget) })}</span> : null}
             {metrics?.context.reported ? <span>{t('composerLastRequestAmount', { used: tokens(metrics.context.occupied) })}</span> : null}
           </div>
           <progress

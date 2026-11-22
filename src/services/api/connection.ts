@@ -1,6 +1,13 @@
 import { useSettings, type ApiProtocol } from '../settings.js'
-import { normalizeApiBaseUrl } from './endpoints.js'
-export { apiEndpoint, isSafeApiPath, normalizeApiBaseUrl } from './endpoints.js'
+import { isPrivateNetworkHostname, normalizeApiBaseUrl } from './endpoints.js'
+export {
+  apiEndpoint,
+  InsecurePublicApiUrlError,
+  isPrivateNetworkApiUrl,
+  isPrivateNetworkHostname,
+  isSafeApiPath,
+  normalizeApiBaseUrl,
+} from './endpoints.js'
 
 export type ApiConnection = { baseUrl: string; protocol: ApiProtocol }
 export const DEEPSEEK_OFFICIAL_API_URL = 'https://api.deepseek.com'
@@ -9,6 +16,14 @@ export const isLoopbackApiUrl = (input: string): boolean => {
   try {
     const { hostname } = new URL(input)
     return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d+){3}$/.test(hostname)
+  } catch {
+    return false
+  }
+}
+
+export const isPrivateNetworkApiAddress = (input: string): boolean => {
+  try {
+    return isPrivateNetworkHostname(new URL(input).hostname)
   } catch {
     return false
   }

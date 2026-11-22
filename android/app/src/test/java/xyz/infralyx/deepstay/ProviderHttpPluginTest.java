@@ -75,7 +75,7 @@ public class ProviderHttpPluginTest {
         Call call = ProviderHttpPlugin.createProviderCall(new OkHttpClient(),
             "http://192.168.1.20:11434/v1/audio/transcriptions", "POST", "Bearer fixture-key", "application/json", null, body);
         assertNotNull(call);
-        assertTrue(call.request().header("Content-Type").startsWith("multipart/form-data; boundary="));
+        assertTrue(call.request().body().contentType().toString().startsWith("multipart/form-data; boundary="));
         Buffer encodedBody = new Buffer();
         call.request().body().writeTo(encodedBody);
         String text = encodedBody.readUtf8();

@@ -532,7 +532,7 @@ public class CallAudioPlugin extends Plugin {
                         type == AudioDeviceInfo.TYPE_BLE_HEADSET) && manager.setCommunicationDevice(device)) return;
                 }
             }
-            if (manager.clearCommunicationDevice()) return;
+            manager.clearCommunicationDevice();
             throw new IllegalStateException("Requested call audio device is unavailable");
         }
         manager.setSpeakerphoneOn(speaker);

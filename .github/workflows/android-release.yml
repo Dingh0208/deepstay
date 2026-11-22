@@ -59,7 +59,7 @@ jobs:
         run: pnpm android:release
       - name: Test Android release units
         working-directory: android
-        run: ./gradlew :app:testReleaseUnitTest
+        run: bash ./gradlew :app:testReleaseUnitTest
       - name: Verify APK
         run: |
           APK="release/deepstay-$(node -p 'require("./package.json").version').apk"

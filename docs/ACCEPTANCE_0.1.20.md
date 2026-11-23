@@ -18,6 +18,8 @@
 ## 发布状态
 
 - [v0.1.20 Release](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.20) 已于 2026-11-23 23:29（北京时间）公开发布，非草稿、非预发布；APK、`latest.json` 和 `SHA256SUMS.txt` 均已上传。
-- 为减少等待，先使用 GitHub 插件取得同一构建任务保存的 artifact，核对本地完整 APK 与清单、校验和后发布 GitHub Release；国内同步仍由原发布任务继续执行，不重新构建。
+- 为减少等待，先使用 GitHub 插件取得同一构建任务保存的 artifact，核对本地完整 APK 与清单、校验和后发布 GitHub Release；国内同步由原发布任务完成，复用同一构建产物。
 - APK 大小 20,326,230 字节，SHA-256：`1ec10ac6650ad7c4865bd67535b41a2f16a6493ecf606932cf4362842a37f530`；GitHub 公开附件 digest 与本地完整文件及构建清单一致。
-- 截至本记录写入时，国内 `latest.json` 仍为 0.1.19，原工作流的 `Publish domestic update` 仍在运行。GitHub APK 已可直接下载覆盖安装，应用内更新源尚待流水线完成同步，未将其标记为已验证完成。
+- 国内发布任务于 2026-11-23 23:44（北京时间）成功完成，整个 Android Release 工作流状态为 `completed / success`。
+- 独立重新读取国内 `https://ds.herohao.top/updates/latest.json`，确认版本为 `0.1.20 / versionCode 21`，APK URL 与构建清单一致；完整 GET 下载国内 APK，20,326,230 字节，SHA-256 为 `1ec10ac6650ad7c4865bd67535b41a2f16a6493ecf606932cf4362842a37f530`，与构建产物及发布后再次读取的 GitHub APK digest 完全一致。
+- GitHub Release 和国内应用内更新源均已发布并验证完成。

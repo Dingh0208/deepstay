@@ -128,11 +128,16 @@ try {
   for (const model of ['deepseek-v4-pro', 'claude-opus-4-6', 'deepseek-flash']) {
     for await (const event of streamMessage('fixture-key', { ...body, model }, new AbortController().signal, connection)) assert.ok(event.type)
   }
-  for (const request of calls.slice(0, 2)) {
+  for (const request of [calls[1]]) {
     assert.deepEqual(request.tools, [])
     assert.equal(request.title, undefined)
     assert.deepEqual(request.messages[1].content, [{ type: 'text', text: 'preserve this answer' }])
     assert.deepEqual(request.safety_check, { level: 'high' })
+  }
+  for (const request of [calls[0], calls[2]]) {
+    assert.deepEqual(request.tools, [tool])
+    assert.deepEqual(request.messages, body.messages)
+    assert.deepEqual(request.title, { enabled: true })
   }
   assert.deepEqual(calls[2].tools, [tool])
   assert.equal(calls[2].title.enabled, true)
@@ -152,8 +157,8 @@ try {
   drafts.setDraftText(null, 'plain question with search off')
   assert.equal(store.sendMessage(null), true)
   await idle()
-  assert.deepEqual(calls.at(-1).tools, [])
-  assert.equal(calls.at(-1).title, undefined, 'New Pro chats do not implicitly enable unsupported title generation')
+  assert.deepEqual(calls.at(-1).tools, [tool])
+  assert.equal(calls.at(-1).title.enabled, true, 'New Pro chats use official title generation and retain link reading with search off')
 
   settings.setApiConnection({ apiKey: 'fixture-key', apiBaseUrl: connection.baseUrl, apiProtocol: connection.protocol, model: 'deepseek-flash', models: ['deepseek-flash'] })
   const sessionId = 'old-large-image'
@@ -250,8 +255,8 @@ try {
   assert.equal(rejected.messages[0].files[0].serverId, rejectedFile.serverId)
   assert.deepEqual(await (await db.loadFile(rejectedFile.id)).arrayBuffer(), await original.arrayBuffer())
   console.log(JSON.stringify({ passed: true, checks: [
-    'Pro and Opus aliases omit unsupported server tools, old tool blocks and auto titles; Flash retains them and safety settings are unchanged.',
-    'A real Pro send with search off has no implicit read-link tool or title request.',
+    'Pro and Flash retain the official DeepSeek tools, tool history and titles; the existing Opus compatibility path remains separate.',
+    'A real Pro send with search off retains the official read-link tool and auto-title request.',
     'Only oversized outbound copies are resized; decoder targets and canvas are bounded, and normal-size originals skip decoding.',
     'Long screenshots over 8192 pixels, downsampled Image fallback and unknown-header ImageBitmap output never upload an oversized original; generic Android image MIME is classified correctly.',
     'A real store request with an old oversized file ID reuploads a bounded copy once, retains the image in the retry and preserves the original in IndexedDB.',

@@ -170,9 +170,38 @@
   font-size: 0.8125rem;
 }
 
+.editHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  padding: 0 8px 0 16px;
+  color: var(--dsw-alias-label-secondary);
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  font-size: 0.875rem;
+}
+
+.editFiles {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px 0;
+  overflow-x: auto;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 0.75rem;
+}
+
+.editFiles span {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
 .textareaWrapper {
   position: relative;
   width: 100%;
+  max-height: min(168px, calc(var(--app-viewport-height, 100dvh) * 0.28));
+  overflow: hidden;
 }
 
 .textarea,
@@ -223,7 +252,8 @@
 .mirror {
   visibility: hidden;
   pointer-events: none;
-  max-height: 336px;
+  max-height: min(168px, calc(var(--app-viewport-height, 100dvh) * 0.28));
+  overflow: hidden;
 }
 
 @media not all and (min-width: 768px) {

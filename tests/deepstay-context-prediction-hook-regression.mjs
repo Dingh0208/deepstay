@@ -88,6 +88,14 @@ try {
   predictions[3].resolve({ system: 8, tools: 0, messages: 80 })
   await settle()
   assert.equal(render(changed).estimate.messages, 80)
+  const autoEnabled = { ...changed, automaticCompaction: true }
+  assert.deepEqual(render(autoEnabled), { estimate: undefined, estimating: true }, 'Changing the compression switch invalidates the previous estimate')
+  advance()
+  assert.equal(predictions[4].options.automaticCompaction, true)
+  predictions[4].resolve({ system: 8, tools: 0, messages: 40 })
+  await settle()
+  assert.equal(render(autoEnabled).estimate.messages, 40)
+  assert.deepEqual(render({ ...autoEnabled, automaticCompaction: false }), { estimate: undefined, estimating: true })
   console.log('Prediction hook: debounce, draft/route changes, abort and stale isolation, unchanged-session compaction refresh, and finite local error state passed')
 } finally {
   for (const slot of slots) slot?.cleanup?.()

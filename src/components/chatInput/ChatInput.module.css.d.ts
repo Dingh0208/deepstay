@@ -9,6 +9,8 @@ declare const styles: {
   readonly "spin": string;
   readonly "failed": string;
   readonly "compactStatus": string;
+  readonly "editHeader": string;
+  readonly "editFiles": string;
   readonly "textareaWrapper": string;
   readonly "textarea": string;
   readonly "mirror": string;

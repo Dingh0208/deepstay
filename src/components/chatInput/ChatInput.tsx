@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  IconCloseOutline16,
   IconGlobeLanguageOutline14,
   IconPaperclipOutline16,
   IconMicOutline16,
@@ -13,10 +14,10 @@ import { applyModelPreset, setModel, setSearch, setThinking, useSettings } from 
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
 import type { FilePurpose } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
-import { compactSession, getEffectiveContextInputBudget, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
+import { compactSession, editMessage, getEffectiveContextInputBudget, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
 import { createLatestReminder } from '../../services/chat/latestReminder.js'
 import { characterSystemPrompt } from '../../services/characters.js'
-import type { AssistantMessage } from '../../services/chat/types.js'
+import type { AssistantMessage, UserMessage } from '../../services/chat/types.js'
 import { hasOwn } from '../../utils/object.js'
 import {
   addDraftFiles,
@@ -50,24 +51,36 @@ import { Menu } from '../base/Menu.js'
 import { startVoiceCall } from '../../services/speech/voiceCall.js'
 
 /** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
-type InputProps = { sessionId: string | null; latestReply?: AssistantMessage }
+type InputProps = {
+  sessionId: string | null
+  latestReply?: AssistantMessage
+  editing?: {
+    message: UserMessage
+    text: string
+    onChange: (text: string) => void
+    onCancel: () => void
+  }
+}
 
-export const ChatInput = memo(function ChatInput({ sessionId, latestReply }: InputProps) {
+export const ChatInput = memo(function ChatInput({ sessionId, latestReply, editing }: InputProps) {
   // 切换目标时释放录音、转写和 DOM 状态；文字与附件由草稿服务保留。
   return (
     <Input
       key={sessionId === null ? 'new' : `session:${sessionId}`}
       sessionId={sessionId}
       latestReply={latestReply}
+      editing={editing}
     />
   )
 })
 
-const Input = ({ sessionId, latestReply }: InputProps) => {
+const Input = ({ sessionId, latestReply, editing }: InputProps) => {
   const t = useTranslate()
   const draft = useDrafts((state) => state.drafts.get(sessionId) ?? EMPTY_DRAFT)
-  const { text, attachments } = draft
-  const setText = (value: string) => setDraftText(sessionId, value)
+  const text = editing?.text ?? draft.text
+  const attachments = editing ? EMPTY_DRAFT.attachments : draft.attachments
+  const editingMessageId = editing?.message.id
+  const setText = (value: string) => editing ? editing.onChange(value) : setDraftText(sessionId, value)
   const draftReady = useUploads((state) => prepareDraftMessage(draft, state.tasks) !== null)
   const streaming = useChatStore(
     (state) => sessionId !== null && hasOwn(state.streaming, sessionId)
@@ -95,6 +108,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   const modelOptions = useMemo(() => [...new Set([...models, model])]
     .filter(Boolean).map((value) => ({ value, label: value })), [model, models])
   const system = useSettings((state) => state.generation.system)
+  const automaticCompaction = useSettings((state) => state.contextMemoryEnabled)
   const inputBudget = getEffectiveContextInputBudget()
   const locale = useSettings((state) => state.locale)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
@@ -116,8 +130,9 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
     tools, model, thinking, connection,
     inputBudget,
     memoryBudget: inputBudget,
+    automaticCompaction,
     latestReminder,
-  }, streaming || importingHistory || (sessionId !== null && !session))
+  }, !!editing || streaming || importingHistory || (sessionId !== null && !session))
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
@@ -142,7 +157,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   }, [t])
 
   const acceptFiles = (files: File[]) => {
-    if (files.length === 0 || documentUpload || useChatStore.getState().importingHistory || !ensureApiKey()) {
+    if (editing || files.length === 0 || documentUpload || useChatStore.getState().importingHistory || !ensureApiKey()) {
       return
     }
     const validation = validateFiles(files, getDraft(sessionId).attachments.length)
@@ -184,7 +199,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   /** 转写结果插入到光标处，并把光标移到插入内容之后 */
   const voice = useVoiceInput((transcript) => {
     const textarea = textareaRef.current
-    const current = getDraft(sessionId).text
+    const current = editing?.text ?? getDraft(sessionId).text
     const start = textarea?.selectionStart ?? current.length
     const end = textarea?.selectionEnd ?? current.length
     setText(current.slice(0, start) + transcript + current.slice(end))
@@ -206,15 +221,36 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
     [cancelVoice]
   )
 
+  useLayoutEffect(() => {
+    if (!editingMessageId) {
+      return
+    }
+    cancelVoice()
+    const textarea = textareaRef.current
+    if (textarea) {
+      textarea.focus({ preventScroll: true })
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+      textarea.scrollTop = textarea.scrollHeight
+    }
+  }, [editingMessageId, cancelVoice])
+
+  const cancelEdit = () => {
+    cancelVoice()
+    editing?.onCancel()
+    textareaRef.current?.focus({ preventScroll: true })
+  }
+
   // 移动端录音时用频谱替代输入框内容
   const recording = voice.status === 'recording'
 
   // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
-  const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
+  const canSend = !importingHistory && !streaming && voice.status === 'idle' &&
+    (editing ? text.trim() !== '' || editing.message.files.length > 0 : draftReady)
 
   const runManualCompaction = (fromCommand = false) => {
     const state = useChatStore.getState()
     if (
+      editing ||
       state.importingHistory ||
       voice.status !== 'idle' ||
       (sessionId !== null && hasOwn(state.streaming, sessionId))
@@ -266,6 +302,20 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
   }
 
   const send = () => {
+    if (editing) {
+      if (!canSend || sessionId === null || useChatStore.getState().importingHistory || !ensureApiKey() ||
+          !editMessage(sessionId, editing.message.id, text.trim())) {
+        return
+      }
+      stopReadAloud()
+      editing.onCancel()
+      if (isMobile) {
+        textareaRef.current?.blur()
+      } else {
+        textareaRef.current?.focus()
+      }
+      return
+    }
     const draft = getDraft(sessionId)
     if (draft.text.trim() === '/compact' && !draft.attachments.length) {
       runManualCompaction(true)
@@ -315,7 +365,17 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
       {contextProgress?.manual ? (
         <div role="status" className={styles.compactStatus}>{progress}</div>
       ) : null}
-      <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />
+      {editing ? (
+        <div className={styles.editHeader}>
+          <span>{t('editingInput')}</span>
+          <IconButton icon={<IconCloseOutline16 />} tooltip={t('cancel')} aria-label={t('cancel')} onClick={cancelEdit} />
+        </div>
+      ) : <DraftAttachments items={attachments} onRetry={retryFile} onRemove={removeFile} />}
+      {editing && editing.message.files.length > 0 ? (
+        <div className={styles.editFiles}>
+          {editing.message.files.map((file) => <span key={file.id}><IconPaperclipOutline16 />{file.name}</span>)}
+        </div>
+      ) : null}
       <div className={styles.textareaWrapper}>
         <textarea
           ref={textareaRef}
@@ -328,6 +388,11 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
           disabled={importingHistory}
           value={text}
           onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (editing && event.key === 'Escape' && !event.nativeEvent.isComposing) {
+              cancelEdit()
+            }
+          }}
           onMouseDown={(event) => {
             // 首次点击时手动聚焦，避免 Safari 把整个页面滚到输入框位置。
             if (isMobile && event.button === 0 && document.activeElement !== event.currentTarget) {
@@ -348,7 +413,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
           {`${text}\n`}
         </div>
       </div>
-      <div className={styles.modelRow}>
+      {!editing ? <div className={styles.modelRow}>
         {modelPresets.length > 0 ? <Select
           className={`${styles.modelSelect} ${styles.presetSelect}`}
           value={activeModelPreset?.id ?? ''}
@@ -366,7 +431,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
           disabled={importingHistory}
           onChange={setModel}
         />
-      </div>
+      </div> : null}
       <div className={styles.functionRow}>
         {/* 深度思考 / 智能搜索开关，tooltip 在按钮上方 */}
         <div ref={togglesRef} className={styles.toggles}>
@@ -396,7 +461,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
           </Tooltip> : null}
         </div>
         <div className={styles.right}>
-          {voiceRecognitionSupported ? <VoiceButton
+          {!editing && voiceRecognitionSupported ? <VoiceButton
             status={voice.status}
             disabled={!voice.available}
             seconds={voice.seconds}
@@ -409,7 +474,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
               }
             }}
           /> : null}
-          <Menu options={[
+          {!editing ? <Menu options={[
             { key: 'voice-call', label: t('voiceCallTitle'), icon: <IconMicOutline16 />, onSelect: () => void startVoiceCall(sessionId) },
             { key: 'upload', label: t('uploadFile'), icon: <IconPaperclipOutline16 />, onSelect: () => ensureApiKey() && fileInputRef.current?.click() },
           ]}>
@@ -422,7 +487,7 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
               disabled={importingHistory}
               onClick={toggle}
             />}
-          </Menu>
+          </Menu> : null}
           <input
             ref={fileInputRef}
             type="file"
@@ -507,17 +572,17 @@ const Input = ({ sessionId, latestReply }: InputProps) => {
           />
         </Modal>
       ) : null}
-      <ComposerMetrics
+      {!editing ? <ComposerMetrics
         latestReply={latestReply}
         estimatedContext={estimatedContext}
         requestBudget={inputBudget}
         estimating={contextEstimating}
         empty={empty}
-        compactDisabled={empty || importingHistory || streaming || voice.status !== 'idle'}
+        compactDisabled={!!editing || empty || importingHistory || streaming || voice.status !== 'idle'}
         progress={progress}
         onCompact={() => runManualCompaction()}
         onStop={sessionId !== null && contextProgress?.manual ? () => stopReply(sessionId) : undefined}
-      />
+      /> : null}
     </>
   )
 }

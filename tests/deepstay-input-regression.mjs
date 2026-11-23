@@ -11,7 +11,7 @@ const mockUrl = value => 'data:text/javascript;base64,' + Buffer.from(value).toS
 const mocks = new Map([
   ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value}); export const useState=value=>[globalThis.__inputState??value,update=>{globalThis.__inputState=typeof update==="function"?update(globalThis.__inputState):update}];'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
-  ['../base/icons.js', ['IconGlobeLanguageOutline14', 'IconMicOutline16', 'IconPaperclipOutline16', 'IconPlusOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
+  ['../base/icons.js', ['IconCloseOutline16', 'IconGlobeLanguageOutline14', 'IconMicOutline16', 'IconPaperclipOutline16', 'IconPlusOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
   ['../../services/settings.js', 'export const applyModelPreset=id=>{globalThis.__appliedModelPreset=id}; export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek"&&connection.baseUrl.replace(/\\/(?:anthropic(?:\\/v1)?|v1)(?:\\/messages)?$/,"")==="https://api.deepseek.com";'],
   ['../../services/api/generation.js', 'export const DEFAULT_CONTEXT_WINDOW=1000000;'],
@@ -19,7 +19,7 @@ const mocks = new Map([
   ['./useContextPrediction.js', 'export const useContextPrediction=(options,paused)=>{globalThis.__estimated.push({...options,paused});return {estimate:paused?undefined:{system:5,tools:options.tools.length,messages:200},estimating:false}};'],
   ['../../services/characters.js', 'export const characterSystemPrompt=base=>base;'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>globalThis.__mobile;'],
-  ['../../services/chat/store.js', 'export const getEffectiveContextInputBudget=()=>globalThis.__settings.generation.contextTokens??1000000;export const SYSTEM_PROMPT="default system";export const serverTools=(search,model)=>model==="deepseek-v4-pro"?(search?[{type:"web_search_20250305",name:"web_search"}]:[]):search?["read","search"]:["read"];export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
+  ['../../services/chat/store.js', 'export const getEffectiveContextInputBudget=()=>globalThis.__settings.generation.contextTokens??1000000;export const SYSTEM_PROMPT="default system";export const serverTools=search=>search?["read","search"]:["read"];export const editMessage=(...args)=>{globalThis.__edits.push(args);return globalThis.__editAllowed};export const sendMessage=()=>{globalThis.__sent++;return true}; export const compactSession=async id=>{globalThis.__compacted.push(id);return "saved"}; export const stopReply=()=>{}; export const useChatStore=Object.assign(select=>select(globalThis.__chat),{getState:()=>globalThis.__chat,subscribe:()=>()=>{}});'],
   ['../../utils/object.js', 'export const hasOwn=(object,key)=>Object.hasOwn(object,key);'],
   ['../../services/chat/drafts.js', 'export const EMPTY_DRAFT={text:"",attachments:[]}; export const useDrafts=select=>select({drafts:{get:()=>globalThis.__draft}}); export const getDraft=()=>globalThis.__draft; export const prepareDraftMessage=draft=>draft.text.trim()?{text:draft.text}:null; export const setDraftText=(_id,text)=>{globalThis.__draft.text=text}; export const retryDraftAttachment=(...args)=>globalThis.__retries.push(args); export const removeDraftAttachment=()=>{}; export const addDraftFiles=(...args)=>{globalThis.__fileBatches.push(args);return null};'],
   ['../../services/speech/readAloud.js', 'export const stopReadAloud=()=>{};'],
@@ -251,7 +251,7 @@ try {
   assert.ok(hasMenuOption(tree, 'voice-call'), 'The attachment menu exposes voice calling')
   find(tree, node => node.type?.name === 'Menu').props.options.find(option => option.key === 'voice-call').onSelect()
   assert.deepEqual(globalThis.__voiceCall, [['imported-chat']], 'Voice call starts in the current chat')
-  assert.deepEqual(globalThis.__estimated.at(-1).tools, [{ type: 'web_search_20250305', name: 'web_search' }])
+  assert.deepEqual(globalThis.__estimated.at(-1).tools, ['read', 'search'])
   globalThis.__settings.model = 'deepseek-v4-flash'
   globalThis.__settings.apiBaseUrl = 'https://api.deepseek.com/anthropic/v1/messages'
   tree = Input({ sessionId: 'imported-chat' })
@@ -277,6 +277,42 @@ try {
   assert.equal(globalThis.__fileBatches.length, beforeLocalDocument + 1, 'Third-party PDF is handed to local attachment parsing without the paid DeepSeek confirmation dialog')
   assert.equal(find(tree, node => node.type?.name === 'Modal'), null)
   checks.push('Search prediction and entry points use the model-specific V4 schemas; official routes expose supported search, upload and voice, while custom routes expose local PDF/image attachments and never call the private DeepSeek ASR endpoint')
+  globalThis.__edits = []
+  globalThis.__editAllowed = true
+  globalThis.__draft = { text: 'Unsaved next question', attachments: [{ id: 'unsent-file', file: new File(['pending'], 'pending.txt'), isImage: false }] }
+  const original = { id: 'edit-target', role: 'user', content: 'Original question', files: [{ id: 'original-file', name: 'original.txt' }] }
+  let cancelled = 0
+  const editing = { message: original, text: 'Revised question', onChange: text => { editing.text = text }, onCancel: () => { cancelled++ } }
+  tree = Input({ sessionId: 'imported-chat', editing })
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, editing.text, 'Editing uses the bottom composer instead of its ordinary draft')
+  find(tree, node => node.type === 'textarea').props.onChange({ target: { value: 'Revised question at the end' } })
+  assert.equal(editing.text, 'Revised question at the end')
+  assert.equal(globalThis.__draft.text, 'Unsaved next question', 'Editing cannot overwrite the ordinary draft')
+  tree = Input({ sessionId: 'imported-chat', editing })
+  assert.equal(find(tree, node => node.type?.name === 'DraftAttachments'), null, 'Pending draft attachments cannot be added to an edited history message')
+  assert.equal(find(tree, node => node.type?.name === 'Menu'), null)
+  const sentBeforeEdit = globalThis.__sent
+  find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()
+  assert.deepEqual(globalThis.__edits, [['imported-chat', 'edit-target', 'Revised question at the end']])
+  assert.equal(cancelled, 1, 'Successful branch submission exits edit mode')
+  assert.equal(globalThis.__sent, sentBeforeEdit, 'Edited questions do not submit the ordinary draft')
+  assert.equal(globalThis.__draft.attachments[0].id, 'unsent-file')
+  globalThis.__editAllowed = false
+  find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()
+  assert.equal(cancelled, 1, 'Rejected branch submission keeps edit mode for retry')
+  const compactedBeforeEdit = globalThis.__compacted.length
+  editing.text = '/compact'
+  tree = Input({ sessionId: 'imported-chat', editing })
+  find(tree, node => node.type === 'button' && node.props['aria-label'] === 'send').props.onClick()
+  assert.equal(globalThis.__edits.at(-1)[2], '/compact', 'History edits preserve literal command text')
+  assert.equal(globalThis.__compacted.length, compactedBeforeEdit)
+  assert.equal(find(tree, node => node.type?.name === 'ComposerMetrics'), null, 'Context controls are hidden while editing a prior message')
+  find(tree, node => node.type?.name === 'IconButton' && node.props['aria-label'] === 'cancel').props.onClick()
+  assert.equal(cancelled, 2)
+  tree = Input({ sessionId: 'imported-chat' })
+  assert.equal(find(tree, node => node.type === 'textarea').props.value, 'Unsaved next question')
+  assert.equal(find(tree, node => node.type?.name === 'DraftAttachments').props.items[0].id, 'unsent-file')
+  checks.push('History edits use the shared composer, submit the original branch, retain ordinary drafts and attachments, and preserve edits after a failed submission')
   const evidence = { passed: true, runtime: process.version, checks, scope: 'Actual ChatInput TSX with mocked application services; verifies event handling and retry calls. Native textarea newline is left to browser.' }
   await writeFile(new URL('./deepstay-input-evidence.json', import.meta.url), JSON.stringify(evidence, null, 2) + '\n')
   console.log(JSON.stringify(evidence, null, 2))

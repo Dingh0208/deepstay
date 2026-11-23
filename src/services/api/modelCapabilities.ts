@@ -1,11 +1,11 @@
 import type { CreateMessageRequest, MessageParam } from './types.js'
 
-const isDeepSeekV4Pro = (model: string) => /^(?:deepseek-v4-pro(?:$|-)|claude-opus)/i.test(model)
+const isClaudeOpus = (model: string) => /^claude-opus/i.test(model)
 
-/** V4 Pro uses Anthropic's standard web search tool. */
-export const usesAnthropicWebSearch = (model: string): boolean => isDeepSeekV4Pro(model)
+/** DeepSeek Pro/Flash use the upstream demo's DeepSeek tools; keep Claude's compatibility path separate. */
+export const usesAnthropicWebSearch = (model: string): boolean => isClaudeOpus(model)
 
-export const supportsDeepSeekTitles = (model: string): boolean => !isDeepSeekV4Pro(model)
+export const supportsDeepSeekTitles = (model: string): boolean => !isClaudeOpus(model)
 
 export const adaptDeepSeekRequest = (body: CreateMessageRequest): CreateMessageRequest => {
   if (supportsDeepSeekTitles(body.model)) {

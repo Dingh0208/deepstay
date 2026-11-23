@@ -38,12 +38,15 @@ const db = await import(new URL('services/chat/db.ts', sourceRoot))
 const { getReplyMetrics, getTokenRate } = await import(new URL('services/chat/replyMetrics.ts', sourceRoot))
 const { estimateRequestParts, estimateRequestTokens } = await import(new URL('services/chat/contextMemory.ts', sourceRoot))
 const checks = [], requests = []
-assert.deepEqual(store.serverTools(true, 'deepseek-v4-pro'), [{ type: 'web_search_20250305', name: 'web_search' }])
-assert.deepEqual(store.serverTools(false, 'deepseek-v4-pro'), [])
-assert.deepEqual(store.serverTools(true, 'deepseek-v4-flash'), [
-  { type: 'deepseek_read_url', name: 'deepseek_read_url' },
-  { type: 'deepseek_web_search', name: 'deepseek_web_search' },
-])
+for (const model of ['deepseek-v4-pro', 'deepseek-v4-pro-20261120', 'deepseek-flash', 'deepseek-v4-flash']) {
+  assert.deepEqual(store.serverTools(true, model), [
+    { type: 'deepseek_read_url', name: 'deepseek_read_url' },
+    { type: 'deepseek_web_search', name: 'deepseek_web_search' },
+  ], `${model} must use the official DeepSeek extension tools`)
+  assert.deepEqual(store.serverTools(false, model), [
+    { type: 'deepseek_read_url', name: 'deepseek_read_url' },
+  ], `${model} keeps link reading when smart search is off`)
+}
 const encoder = new TextEncoder()
 globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body)
@@ -219,7 +222,8 @@ await waitIdle()
 assert.equal(officialRequests.length, 2)
 for (const request of officialRequests) {
   assert.equal(request.url, 'https://api.deepseek.com/anthropic/v1/messages')
-  assert.equal(request.body.messages.length, rounds * 2 + 1) // V4 Pro does not accept latest_reminder.
+  assert.equal(request.body.messages.filter(message => message.role !== 'latest_reminder').length, rounds * 2 + 1)
+  assert.ok(request.body.messages.some(message => message.role === 'latest_reminder'), 'Official Pro retains the latest reminder')
   assert.equal(request.body.messages[0].content[0].source.file_id, 'fixture-image')
   assert.equal(request.body.messages.at(-1).content, '续聊')
 }
@@ -253,7 +257,7 @@ let invalidIndex = false
 let errorAfterContent = false
 globalThis.fetch = async (_url, init) => {
   const body = JSON.parse(init.body)
-  imageRequests.push(body.messages)
+  imageRequests.push(body.messages.filter(message => message.role !== 'latest_reminder'))
   for (const [i, message] of body.messages.entries()) {
     if (message.role !== 'user' || !Array.isArray(message.content)) continue
     const block = message.content.findIndex(item => item.type === 'image' && rejected.includes(item.source.file_id))
@@ -428,7 +432,7 @@ drafts.setDraftText(windowId, '在默认窗口继续')
 assert.equal(store.sendMessage(windowId), true)
 await waitIdle()
 assert.equal(windowRequests.length, 1)
-assert.ok(!windowRequests[0].messages.some(({content}) => content === oldest))
+assert.ok(windowRequests[0].messages.some(({content}) => content === oldest), 'Auto off retains history above the default request budget')
 assert.ok(windowRequests[0].messages.some(({content}) => content === recent))
 assert.equal(windowRequests[0].messages.at(-1).content, '在默认窗口继续')
 settings.setGeneration({ contextTokens: 4096 })
@@ -436,7 +440,8 @@ drafts.setDraftText(windowId, '在自定义窗口继续')
 assert.equal(store.sendMessage(windowId), true)
 await waitIdle()
 assert.equal(windowRequests.length, 2)
-assert.ok(!windowRequests[1].messages.some(({content}) => content === recent))
+assert.ok(windowRequests[1].messages.some(({content}) => content === recent), 'A smaller route window must not silently trim history with auto off')
+assert.equal(store.getEffectiveContextInputBudget(), 4096)
 assert.equal(windowRequests[1].messages.at(-1).content, '在自定义窗口继续')
 assert.equal((await db.loadSession(windowId)).messages[1].blocks[0].text.length, oldest.length)
 settings.setModel('window-budget-other-model')
@@ -450,14 +455,15 @@ drafts.setDraftText(windowId, '切回自定义窗口的模型')
 assert.equal(store.sendMessage(windowId), true)
 await waitIdle()
 assert.equal(windowRequests.length, 4)
-assert.ok(!windowRequests[3].messages.some(({content}) => content === recent), 'Returning to a model restores its custom request budget')
+assert.ok(windowRequests[3].messages.some(({content}) => content === recent), 'Restoring a model window must not override the disabled compression setting')
+assert.equal(store.getEffectiveContextInputBudget(), 4096)
 settings.setGeneration({})
-checks.push('The default 1M displayed window retains eligible history beyond 24k while request fitting only crops the outbound copy')
-checks.push('Switching models changes the real outbound context budget immediately and restores each model\'s saved capacity without altering local history')
+checks.push('With auto compression off, requests retain all history above the default budget or a smaller custom model window')
+checks.push('Switching models restores the saved route capacity without silently trimming outbound or local history when auto is off')
 
 // A real request can be rejected even when the local tokenizer estimate differs from the provider.
 settings.setApiConnection({ ...changedB, model: 'length-limit-fixture' })
-settings.setContextMemoryEnabled(false)
+settings.setContextMemoryEnabled(true)
 const limitId = 'context-length-overflow'
 const limitHistory = Array.from({ length: 32 }, (_, index) => [
   { role: 'user', id: 'limit-user-' + index, content: '旧问题 ' + index, files: [], createdAt: index },
@@ -512,15 +518,18 @@ const nextPrediction = await predictionModule.predictNextContext({
   system: settings.useSettings.getState().generation.system ?? store.SYSTEM_PROMPT,
   tools: [], model: 'length-limit-fixture', thinking: originalThinking,
   connection: { baseUrl: changedB.apiBaseUrl, protocol: changedB.apiProtocol },
-  inputBudget: learnedPredictionBudget, signal: new AbortController().signal,
+  inputBudget: learnedPredictionBudget, automaticCompaction: true, signal: new AbortController().signal,
 })
 assert.ok(nextPrediction.system + nextPrediction.tools + nextPrediction.messages <= learnedPredictionBudget)
+settings.setContextMemoryEnabled(false)
 drafts.setDraftText(limitId, '再继续')
 assert.equal(store.sendMessage(limitId), true)
 await waitIdle()
-assert.equal(limitedRequests.length, 3, 'the same provider/model should reuse the successful budget')
+assert.equal(limitedRequests.length, 3, 'Disabling auto must send one normal request without using the learned limit to trim history')
 assert.equal(limitedRequests[2].messages.at(-1).content, '再继续')
-checks.push('An explicit provider length rejection retries once with fewer complete turns, preserves the latest question and local history, and shares the smaller credential/route-bound budget with next-request prediction')
+assert.ok(limitedRequests[2].messages.some(({content}) => content === '旧问题 0'))
+assert.equal((await db.loadSession(limitId)).messages.at(-1).error.localMessage.key, 'replyContextLimitAutoDisabled')
+checks.push('With auto on a provider length rejection retries within a learned route budget; turning auto off stops fitting that budget and preserves the full history')
 
 settings.setApiConnection({ ...changedB, model: 'always-reject-length' })
 let repeatedRejections = 0
@@ -533,16 +542,15 @@ globalThis.fetch = async (_url, init) => {
 drafts.setDraftText(limitId, '不能一直重试')
 assert.equal(store.sendMessage(limitId), true)
 await waitIdle()
-assert.equal(repeatedRejections, 2)
-assert.ok(repeatedRequestSizes[1] < repeatedRequestSizes[0])
-assert.equal((await db.loadSession(limitId)).messages.at(-1).error.localMessage.key, 'replyContextLimit')
+assert.equal(repeatedRejections, 1)
+assert.equal((await db.loadSession(limitId)).messages.at(-1).error.localMessage.key, 'replyContextLimitAutoDisabled')
 const firstRejectedRequestSize = repeatedRequestSizes[0]
 repeatedRequestSizes.length = 0
 drafts.setDraftText(limitId, '继续对话')
 assert.equal(store.sendMessage(limitId), true)
 await waitIdle()
-assert.ok(repeatedRequestSizes[0] < firstRejectedRequestSize, 'the next turn starts from the learned smaller budget')
-checks.push('A failed context-limit retry still teaches the route a smaller input budget for the next turn without trimming current text')
+assert.ok(repeatedRequestSizes[0] >= firstRejectedRequestSize, 'Auto off keeps the original history on every turn rather than shrinking after rejections')
+checks.push('With auto off, repeated provider length rejections never trim history or issue a smaller retry')
 repeatedRejections = 0
 store.newChat()
 drafts.setDraftText(null, '唯一的新消息')
@@ -551,7 +559,7 @@ const newSessionId = store.useChatStore.getState().activeId
 assert.equal(store.useChatStore.getState().sessionCache[newSessionId]?.linearMessagePath, true)
 await waitIdle()
 assert.equal(repeatedRejections, 1, 'no shorter retry is possible with only the current question')
-checks.push('A repeated overflow stops after one retry, and an irreducible current question is sent only once')
+checks.push('With auto off, both long conversations and a lone current question are sent only once on overflow')
 
 settings.setContextMemoryEnabled(true)
 const oversizedText = '这是要完整保留的本轮原文。'.repeat(1600)
@@ -635,7 +643,7 @@ await waitIdle()
 assert.equal(docUploads, 1)
 assert.equal(oversizedRequests.length, 3)
 assert.ok(oversizedRequests[2].system.includes(fixedMemory))
-assert.deepEqual(oversizedRequests[2].messages, [
+assert.deepEqual(oversizedRequests[2].messages.filter(message => message.role !== 'latest_reminder'), [
   { role: 'user', content: [
     { type: 'document', source: { type: 'file', file_id: 'uploaded-document' } },
     { type: 'text', text: '接着说' },
@@ -645,7 +653,7 @@ assert.deepEqual(oversizedRequests[2].messages, [
 const continued = (await db.loadSession(continuationId)).messages.at(-1)
 assert.equal(continued.status, 'done')
 assert.equal(continued.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), oversizedText + '新回答')
-checks.push('Continuing an oversized prefix uploads and preserves the current document and whole prefix; V4 Pro omits its unsupported reminder and only optional old history is trimmed')
+checks.push('Continuing an oversized prefix uploads and preserves the current document and whole prefix; V4 Pro retains its official reminder and only optional old history is trimmed')
 settings.setGeneration({})
 
 const { describeReply } = await import(new URL('services/chat/describe.ts', sourceRoot))
@@ -797,6 +805,71 @@ assert.equal(disabledThinkingReply.thinking, false)
 assert.equal(disabledThinkingReply.blocks.some(block => block.type === 'thinking'), false)
 assert.equal(disabledThinkingReply.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), '正常回答')
 checks.push('A model-provided reasoning stream is discarded from the reply when the request has deep thinking disabled')
+
+// Official chat-demo protocol fixture: built-in DeepSeek tools cannot mix with other tools.
+const readLink = { type: 'deepseek_read_url', name: 'deepseek_read_url' }
+const webSearch = { type: 'deepseek_web_search', name: 'deepseek_web_search' }
+const searchRequests = []
+for (const model of ['deepseek-v4-pro', 'deepseek-flash']) {
+  for (const search of [false, true]) {
+    for (const thinking of [false, true]) {
+      settings.setApiConnection({ apiKey: 'official-search-fixture', apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', model, models: [model] })
+      settings.setSearch(search)
+      settings.setThinking(thinking)
+      store.newChat()
+      globalThis.fetch = async (url, init) => {
+        const body = JSON.parse(init.body)
+        searchRequests.push(body)
+        assert.equal(url, 'https://api.deepseek.com/anthropic/v1/messages')
+        if (body.tools.some(tool => !['deepseek_read_url', 'deepseek_web_search'].includes(tool.type))) {
+          return Response.json({ error: { message: 'tools: other tools cannot be used together with `deepseek_web_search`, `deepseek_read_url`, `safety_check` or `title` yet' } }, { status: 400 })
+        }
+        assert.deepEqual(body.tools, search ? [readLink, webSearch] : [readLink])
+        assert.deepEqual(body.safety_check, { level: 'high' })
+        assert.deepEqual(body.thinking, { type: thinking ? 'enabled' : 'disabled' })
+        assert.equal(body.model, model)
+        const frames = [
+          { type: 'message_start', message: { id: 'official-search-fixture', model } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 'read-link', name: 'deepseek_read_url', kind: 'read_link', input: { action: 'read_link', url: 'https://example.test/source' } } },
+          { type: 'content_block_start', index: 1, content_block: { type: 'web_fetch_tool_result', tool_use_id: 'read-link', kind: 'read_link', signature: 'fixture-page-signature', content: { type: 'web_fetch_result', url: 'https://example.test/source', content: { type: 'document', source: { type: 'text', media_type: 'text/plain', data: '' }, title: '网页来源' }, published_at: null } } },
+          ...(search ? [
+            { type: 'content_block_start', index: 2, content_block: { type: 'server_tool_use', id: 'search', name: 'deepseek_web_search', kind: 'search', input: { action: 'search', queries: ['最新消息'] } } },
+            { type: 'content_block_start', index: 3, content_block: { type: 'web_search_tool_result', tool_use_id: 'search', kind: 'search', content: [{ type: 'web_search_result', title: '搜索来源', url: 'https://example.test/search', snippet: '资料摘要', encrypted_content: 'fixture', site_icon: null, site_name: null, page_age: null }] } },
+          ] : []),
+          { type: 'content_block_start', index: 4, content_block: { type: 'text', text: '联网结果已展示。', citations: [{ type: 'web_search_result_location', url: 'https://example.test/source', title: '网页来源', cited_text: '联网结果', encrypted_index: '' }] } },
+          { type: 'content_block_stop', index: 4 },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null, title: '联网测试' } },
+          { type: 'message_stop' },
+        ]
+        return new Response(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+      }
+      const before = searchRequests.length
+      drafts.setDraftText(null, '请读取 https://example.test/source 并查询最新消息')
+      assert.equal(store.sendMessage(null), true)
+      const id = store.useChatStore.getState().activeId
+      await waitIdle()
+      const session = await db.loadSession(id)
+      const reply = session.messages.at(-1)
+      assert.equal(searchRequests.length, before + 1, 'A normal search does not require a protocol repair retry')
+      assert.equal(reply.status, 'done')
+      assert.equal(reply.blocks.some(block => block.name === 'deepseek_web_search'), search)
+      assert.equal(reply.blocks.find(block => block.type === 'web_fetch_tool_result').signature, 'fixture-page-signature')
+      assert.equal(reply.blocks.find(block => block.type === 'text').citations[0].url, 'https://example.test/source')
+      assert.equal(session.title, '联网测试')
+      assert.deepEqual(searchRequests.at(-1).title, { enabled: true })
+      if (model === 'deepseek-v4-pro' && search && thinking) {
+        drafts.setDraftText(id, '继续刚才的网页内容')
+        assert.equal(store.sendMessage(id), true)
+        await waitIdle()
+        const history = searchRequests.at(-1).messages.filter(message => message.role === 'assistant').flatMap(message => message.content)
+        assert.ok(history.some(block => block.type === 'web_fetch_tool_result' && block.signature === 'fixture-page-signature'))
+        assert.ok(history.some(block => block.type === 'server_tool_use' && block.name === 'deepseek_read_url'))
+        assert.equal((await db.loadSession(id)).messages.at(-1).status, 'done')
+      }
+    }
+  }
+}
+checks.push('Official Pro/Flash search on/off and thinking on/off use only DeepSeek tools; titles, citations, signed link history and follow-up replies survive the actual store/client/SSE/persistence path without protocol retries')
 
 const evidence = { passed: true, runtime: process.version, checks,
   requests: requests.map(({ url, body }) => ({ url, model: body.model, messages: body.messages.length })),

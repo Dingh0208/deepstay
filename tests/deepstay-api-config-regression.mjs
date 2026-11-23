@@ -604,22 +604,26 @@ assert.equal(getUsageTotal(renderEvents(originalEvents.filter(event => event.typ
 checks.push('Existing DeepSeek Anthropic endpoint, x-api-key authentication, selected model and event-driven answer rendering continue to work')
 
 const { supportsDeepSeekTitles } = await import(new URL('services/api/modelCapabilities.ts', sourceRoot))
-assert.equal(supportsDeepSeekTitles('deepseek-v4-pro'), false)
+assert.equal(supportsDeepSeekTitles('deepseek-v4-pro'), true)
 const proSearchBody = {
   ...body,
   model: 'deepseek-v4-pro',
-  tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+  tools: [
+    { type: 'deepseek_read_url', name: 'deepseek_read_url' },
+    { type: 'deepseek_web_search', name: 'deepseek_web_search' },
+  ],
 }
 responder = (url, init) => {
   assert.equal(url, 'https://api.deepseek.com/anthropic/v1/messages')
   const requestBody = JSON.parse(init.body)
-  assert.deepEqual(requestBody.tools, [{ type: 'web_search_20250305', name: 'web_search' }])
-  assert.equal('title' in requestBody, false)
-  assert.equal(requestBody.messages.some(message => message.role === 'latest_reminder'), false)
+  assert.deepEqual(requestBody.tools, proSearchBody.tools)
+  assert.deepEqual(requestBody.title, { enabled: true })
+  assert.deepEqual(requestBody.safety_check, { level: 'high' })
+  assert.equal(requestBody.messages.some(message => message.role === 'latest_reminder'), true)
   return streamedResponse([
     { type: 'message_start', message: { id: 'pro-search' } },
-    { type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 'srvtoolu_pro_search', name: 'web_search', input: { query: 'DeepSeek V4' } } },
-    { type: 'content_block_start', index: 1, content_block: { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_pro_search', content: [{ type: 'web_search_result', title: 'DeepSeek', url: 'https://www.deepseek.com' }] } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'server_tool_use', id: 'srvtoolu_pro_search', name: 'deepseek_web_search', kind: 'search', input: { action: 'search', query: 'DeepSeek V4', queries: ['DeepSeek V4'] } } },
+    { type: 'content_block_start', index: 1, content_block: { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_pro_search', kind: 'search', content: [{ type: 'web_search_result', title: 'DeepSeek', url: 'https://www.deepseek.com' }] } },
     { type: 'content_block_start', index: 2, content_block: { type: 'text', text: '' } },
     { type: 'content_block_delta', index: 2, delta: { type: 'text_delta', text: '已搜索。' } },
     { type: 'content_block_stop', index: 2 },
@@ -634,7 +638,7 @@ assert.deepEqual(proSearchUse.content_block.input, { action: 'search', query: 'D
 assert.equal(proSearchUse.content_block.kind, 'search')
 assert.equal(proSearchResult.content_block.kind, 'search')
 assert.equal(getReplyText(renderEvents(proSearchEvents)), '已搜索。')
-checks.push('V4 Pro uses standard web_search_20250305; standard server_tool_use and result blocks are normalized into the existing search view, and unsupported latest_reminder/title fields are omitted')
+checks.push('V4 Pro follows the official demo: DeepSeek search/link tools, safety check, title and latest reminder are preserved, and search results render through the existing view')
 checks.push('Reply token visibility defaults off and survives reload; both protocols count cached input once, omit partial or malformed usage, and clear previous usage on continuation')
 
 const deepseek = { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }

@@ -166,7 +166,7 @@ try {
     assert.equal(requests.length - before, 1)
     const cancelled = await db.loadMemorySnapshot(id)
     assert.equal(cancelled.segments.length, 0, 'Invalidation during transaction reads must roll back all memory writes')
-    assert.equal(cancelled.session.messages.at(-1).status, id.startsWith('stop') ? 'stopped' : 'error', 'Cancellation without a competing write must still persist the final reply status')
+    assert.equal(cancelled.session.messages.at(-1).status, 'stopped', 'Stopping or disabling automatic compaction must persist the cancelled reply status')
   }
   checks.push('Disabling compression or stopping while the commit transaction is reading prevents derived writes and the main request')
 

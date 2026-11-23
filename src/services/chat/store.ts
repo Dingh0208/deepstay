@@ -1459,6 +1459,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const connection = getApiConnection()
   const apiKey = settings.apiKey ?? ''
   const model = initial.model ?? settings.model
+  const automaticCompactionEnabled = () => settings.contextMemoryEnabled && useSettings.getState().contextMemoryEnabled
   const generation = settings.generation
   const sourceSession = getSession(sessionId)
   const baseSystem = characterSystemPrompt(generation.system ?? SYSTEM_PROMPT, sourceSession?.character)
@@ -1510,6 +1511,11 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   if (settings.contextMemoryEnabled) {
     contextPreparations.add(sessionId)
   }
+  const unsubscribeAutomaticCompaction = useSettings.subscribe((state) => {
+    if (settings.contextMemoryEnabled && !state.contextMemoryEnabled && contextPreparations.has(sessionId)) {
+      controller.abort()
+    }
+  })
 
   try {
     await yieldToBrowser()
@@ -1604,7 +1610,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           }
           let expected = snapshot.state
           const context = await prepareContextMemory({
-            mode: settings.contextMemoryEnabled ? 'auto' : 'reuse',
+            mode: automaticCompactionEnabled() ? 'auto' : 'reuse',
             sessionId,
             snapshot,
             history: request.history,
@@ -1711,7 +1717,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           tools: serverExtras ? serverTools(initial.search ?? false, model) : [],
           ...(serverExtras && supportsDeepSeekTitles(model) && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
         }
-        body = fitRequestHistory(body, compactContext ? memoryBudget() : effectiveBudget(), requiredSystem)
+        if (automaticCompactionEnabled()) {
+          body = fitRequestHistory(body, compactContext ? memoryBudget() : effectiveBudget(), requiredSystem)
+        }
         body = adaptRequestForConnection(body, connection)
         submitted = body
         reply = { ...reply, metrics: estimateRequestParts(body) }
@@ -1786,7 +1794,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         const messages = submitted?.messages ?? []
         const currentDocument = request.question.files.some((file) => !file.isImage && !file.contextExcluded)
         // 服务端展开文件后的实际长度未知；本轮文档超限时不自动再提交整份文件。
-        if (lengthError && submitted && !currentDocument && !receivedContent && !retriedContextLimit) {
+        if (automaticCompactionEnabled() && lengthError && submitted && !currentDocument && !receivedContent && !retriedContextLimit) {
           const budget = getRetryInputBudget(estimateRequestTokens(submitted), lengthError, generation.contextTokens)
           if (fitRequestHistory(submitted, budget, requiredSystem) !== submitted) {
             retriedContextLimit = true
@@ -1891,7 +1899,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             localMessage: reupload === 'confirmationRequired'
               ? { key: 'replyDocumentExpired' }
               : lengthError
-              ? { key: currentDocument ? 'replyDocumentContextLimit' : 'replyContextLimit' }
+              ? { key: currentDocument ? 'replyDocumentContextLimit' : automaticCompactionEnabled() ? 'replyContextLimit' : 'replyContextLimitAutoDisabled' }
               : oversizedImage
                 ? { key: 'replyImageTooLarge' }
                 : unsupportedImage
@@ -1908,6 +1916,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
       }
     }
   } finally {
+    unsubscribeAutomaticCompaction()
     let sourceVerified = true
     if (!contextPrepared && sourceState && !sourceConflict) {
       try {

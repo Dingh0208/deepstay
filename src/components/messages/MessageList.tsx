@@ -8,7 +8,7 @@ import {
 } from '../../services/chat/branches.js'
 import { deleteMessageRound, deleteMessages, selectMessageVersion } from '../../services/chat/store.js'
 import { useHistoryTarget } from '../../services/chat/historySearch.js'
-import type { AssistantMessage as AssistantReply, Message, Session } from '../../services/chat/types.js'
+import type { AssistantMessage as AssistantReply, Message, Session, UserMessage as UserMessageType } from '../../services/chat/types.js'
 import { addFavoriteMessages } from '../../services/settings.js'
 import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
@@ -52,10 +52,16 @@ export const MessageList = ({
   streaming,
   footer,
   jumpRequest = 0,
+  editingMessageId,
+  onEditMessage,
+  onCancelEdit,
 }: {
   session: Session
   streaming: boolean
   jumpRequest?: number
+  editingMessageId: string | null
+  onEditMessage: (message: UserMessageType) => void
+  onCancelEdit: () => void
   footer: ((latestReply: AssistantReply | undefined) => React.ReactNode) | null
 }) => {
   const t = useTranslate()
@@ -92,6 +98,9 @@ export const MessageList = ({
     searchTarget.sessionId === session.id
       ? messages.findIndex((message) => message.id === searchTarget.messageId)
       : -1
+  const editingTargetIndex = editingMessageId
+    ? messages.findIndex((message) => message.id === editingMessageId && message.role === 'user')
+    : -1
   const branchIndex = restoreScrollRef.current
     ? messages.findIndex((message) => message.id === restoreScrollRef.current?.messageId)
     : -1
@@ -132,6 +141,28 @@ export const MessageList = ({
       useHistoryTarget.setState({ sessionId: null, messageId: null })
     }
   }, [searchTarget, start, end, targetIndex])
+
+  useLayoutEffect(() => {
+    if (!editingMessageId) {
+      return
+    }
+    if (editingTargetIndex < 0) {
+      onCancelEdit()
+      return
+    }
+    const node = contentRef.current?.querySelector<HTMLElement>(`[data-chat-message="${CSS.escape(editingMessageId)}"]`)
+    if (!node) {
+      setHistoryWindow(windowAround(editingTargetIndex, messages.length))
+      return
+    }
+    stickyRef.current = false
+    node.scrollIntoView({ block: 'center' })
+    const scroll = scrollRef.current
+    if (scroll) {
+      scrollTopRef.current = scroll.scrollTop
+      setAtBottom(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICKY_THRESHOLD)
+    }
+  }, [editingMessageId, editingTargetIndex, start, end, messages.length, onCancelEdit])
   const scrollToBottom = useCallback(() => {
     if (scrollFrameRef.current || !stickyRef.current) {
       return
@@ -380,6 +411,8 @@ export const MessageList = ({
                 onSelectVersion={selectVersion}
                 onMultiSelect={selected ? undefined : chooseMessages}
                 onDelete={selected ? undefined : chooseRound}
+                onEditMessage={onEditMessage}
+                editingTarget={message.id === editingMessageId}
               />
             ) : (
               <AssistantMessage

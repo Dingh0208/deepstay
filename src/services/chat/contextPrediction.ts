@@ -19,6 +19,7 @@ export type ContextPredictionOptions = {
   connection: ApiConnection
   inputBudget: number
   memoryBudget?: number
+  automaticCompaction?: boolean
   latestReminder?: string
   signal: AbortSignal
 }
@@ -57,8 +58,10 @@ export const predictNextContext = async (options: ContextPredictionOptions): Pro
     thinking: { type: thinking ? 'enabled' : 'disabled' },
     safety_check: { level: 'high' },
   }
-  const fitted = fitRequestHistory(request, context.active ? memoryBudget : inputBudget,
-    [system, context.requiredSystemMemory].filter(Boolean).join('\n\n'))
+  const fitted = options.automaticCompaction
+    ? fitRequestHistory(request, context.active ? memoryBudget : inputBudget,
+        [system, context.requiredSystemMemory].filter(Boolean).join('\n\n'))
+    : request
   checkAbort(signal)
   return estimateRequestParts(fitted)
 }

@@ -185,10 +185,12 @@ try {
   assert.equal(current(legacy.id).character, undefined)
   checks.push('Actual OpenAI requests carry only their own character and global prompt even with auto compression disabled; ordinary and legacy chats remain character-free')
 
+  settings.setContextMemoryEnabled(true)
   const previousRequests = requests.length
   rejectForLength = true
   await send(firstId)
   assert.equal(requests.length, previousRequests + 2)
+  settings.setContextMemoryEnabled(false)
   assert.ok(requests.at(-1).messages[0].content.includes(first.prompt))
   const base = characters.characterSystemPrompt('全局', firstSnapshot)
   const fitted = fitRequestHistory({ model: 'fixture', system: base + '\n可移除摘要'.repeat(1000), tools: [], messages: [

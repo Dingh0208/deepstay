@@ -1,14 +1,11 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
-import { memo, useLayoutEffect, useRef, useState } from 'react'
+import { memo } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
 import { IconEditOutline16, IconListCheckOutline16, IconTrashOutline16 } from '../base/icons.js'
-import { editMessage, retryUpload, setFileContextExcluded } from '../../services/chat/store.js'
-import { stopReadAloud } from '../../services/speech/readAloud.js'
+import { retryUpload, setFileContextExcluded } from '../../services/chat/store.js'
 import type { UserMessage as UserMessageType } from '../../services/chat/types.js'
-import { Button } from '../base/Button.js'
 import { IconButton } from '../base/IconButton.js'
-import { ensureApiKey } from '../settings/settingsDialogState.js'
 import {
   BranchSwitcher,
   type MessageVersions,
@@ -30,6 +27,8 @@ export const UserMessage = memo(function UserMessage({
   onSelectVersion,
   onMultiSelect,
   onDelete,
+  onEditMessage,
+  editingTarget,
 }: {
   sessionId: string
   message: UserMessageType
@@ -42,49 +41,20 @@ export const UserMessage = memo(function UserMessage({
   onSelectVersion: SelectMessageVersion
   onMultiSelect?: (id: string) => void
   onDelete?: (id: string) => void
+  onEditMessage: (message: UserMessageType) => void
+  editingTarget: boolean
 }) {
   const t = useTranslate()
-  const [editing, setEditing] = useState(false)
-  const [draft, setDraft] = useState(message.content)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isMobile = useIsMobile()
-  const canSend = !busy && (draft.trim() !== '' || message.files.length > 0)
-  const startEdit = () => {
-    setDraft(message.content)
-    setEditing(true)
-  }
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current
-    if (editing && textarea) {
-      textarea.style.height = 'auto'
-      textarea.style.height = `${Math.min(textarea.scrollHeight, 202)}px`
-    }
-  }, [editing, draft])
-
-  useLayoutEffect(() => {
-    const textarea = textareaRef.current
-    if (editing && textarea) {
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length)
-      textarea.scrollTop = textarea.scrollHeight
-    }
-  }, [editing])
-
-  const sendEdit = () => {
-    if (canSend && ensureApiKey() && editMessage(sessionId, message.id, draft.trim())) {
-      stopReadAloud()
-      setEditing(false)
-    }
-  }
-  const select = onMultiSelect && !busy && !editing ? () => onMultiSelect(message.id) : undefined
-  const remove = onDelete && !busy && !editing ? () => onDelete(message.id) : undefined
+  const select = onMultiSelect && !busy && !editingTarget ? () => onMultiSelect(message.id) : undefined
+  const remove = onDelete && !busy && !editingTarget ? () => onDelete(message.id) : undefined
 
   return (
     <MessageActions
-      className={clsx(styles.container, isFirst && styles.isFirst)}
+      className={clsx(styles.container, isFirst && styles.isFirst, editingTarget && styles.editingTarget)}
       messageId={message.id}
-      text={editing ? undefined : message.content}
-      onEdit={busy || editing ? undefined : startEdit}
+      text={message.content}
+      onEdit={busy || editingTarget ? undefined : () => onEditMessage(message)}
       onMultiSelect={select}
       onDelete={remove}
     >
@@ -108,60 +78,26 @@ export const UserMessage = memo(function UserMessage({
           ))}
         </div>
       ) : null}
-      {editing ? (
-        <div className={styles.editor}>
-          <textarea
-            ref={textareaRef}
-            className={styles.textarea}
-            aria-label={t('editMessage')}
-            autoFocus
-            rows={1}
-            enterKeyHint="enter"
-            value={draft}
-            disabled={busy}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing) {
-                return
-              }
-              if (event.key === 'Escape') {
-                setEditing(false)
-              }
-            }}
+      {message.content ? <div className={styles.bubble}>{message.content}</div> : null}
+      <div className={styles.bottom}>
+        <div className={clsx(styles.actions, (isLast || (isMobile && !message.content)) && styles.alwaysShow)}>
+          {message.content ? <CopyButton text={message.content} /> : null}
+          <IconButton
+            icon={<IconEditOutline16 />}
+            tooltip={t('editMessage')}
+            tooltipPlacement="bottom"
+            disabled={busy || editingTarget}
+            onClick={() => onEditMessage(message)}
           />
-          <div className={styles.editorActions}>
-            <Button size="s" variant="outlined" onClick={() => setEditing(false)}>
-              {t('cancel')}
-            </Button>
-            <Button size="s" disabled={!canSend} onClick={sendEdit}>
-              {t('send')}
-            </Button>
-          </div>
+          {select && (!isMobile || !message.content) ? (
+            <IconButton icon={<IconListCheckOutline16 />} tooltip={t('messageMultiSelect')} tooltipPlacement="bottom" onClick={select} />
+          ) : null}
+          {remove ? (
+            <IconButton icon={<IconTrashOutline16 />} tooltip={t('deleteMessageRound')} tooltipPlacement="bottom" onClick={remove} />
+          ) : null}
         </div>
-      ) : (
-        <>
-          {message.content ? <div className={styles.bubble}>{message.content}</div> : null}
-          <div className={styles.bottom}>
-            <div className={clsx(styles.actions, (isLast || (isMobile && !message.content)) && styles.alwaysShow)}>
-              {message.content ? <CopyButton text={message.content} /> : null}
-              <IconButton
-                icon={<IconEditOutline16 />}
-                tooltip={t('editMessage')}
-                tooltipPlacement="bottom"
-                disabled={busy}
-                onClick={startEdit}
-              />
-              {select && (!isMobile || !message.content) ? (
-                <IconButton icon={<IconListCheckOutline16 />} tooltip={t('messageMultiSelect')} tooltipPlacement="bottom" onClick={select} />
-              ) : null}
-              {remove ? (
-                <IconButton icon={<IconTrashOutline16 />} tooltip={t('deleteMessageRound')} tooltipPlacement="bottom" onClick={remove} />
-              ) : null}
-            </div>
-            <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
-          </div>
-        </>
-      )}
+        <BranchSwitcher versions={versions} disabled={busy || editingTarget} onSelect={onSelectVersion} />
+      </div>
     </MessageActions>
   )
 })

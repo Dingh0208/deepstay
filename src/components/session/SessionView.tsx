@@ -1,8 +1,8 @@
 import clsx from 'clsx'
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useIsMobile } from '../../app/viewport.js'
 import { useTranslate } from '../../i18n/index.js'
-import type { Session } from '../../services/chat/types.js'
+import type { Session, UserMessage as UserMessageType } from '../../services/chat/types.js'
 import { ChatInput } from '../chatInput/ChatInput.js'
 import { MessageList } from '../messages/MessageList.js'
 import { ConversationTitle } from './ConversationTitle.js'
@@ -26,7 +26,10 @@ export const SessionView = ({
   const t = useTranslate()
   const isMobile = useIsMobile()
   const [jumpRequest, setJumpRequest] = useState(0)
+  const [editingMessage, setEditingMessage] = useState<{ message: UserMessageType; text: string } | null>(null)
   const jumpToFirst = () => setJumpRequest((value) => value + 1)
+  const startEditing = useCallback((message: UserMessageType) => setEditingMessage({ message, text: message.content }), [])
+  const cancelEditing = useCallback(() => setEditingMessage(null), [])
   const title = session.title || t('untitledChat')
   if (session.messages.length === 0) {
     return <Welcome sessionId={session.id} />
@@ -51,9 +54,21 @@ export const SessionView = ({
         session={session}
         streaming={streaming}
         jumpRequest={jumpRequest}
+        editingMessageId={editingMessage?.message.id ?? null}
+        onEditMessage={startEditing}
+        onCancelEdit={cancelEditing}
         footer={(latestReply) => (
           <div className={styles.inputContainer}>
-            <ChatInput sessionId={session.id} latestReply={latestReply} />
+            <ChatInput
+              sessionId={session.id}
+              latestReply={latestReply}
+              editing={editingMessage ? {
+                message: editingMessage.message,
+                text: editingMessage.text,
+                onChange: (text) => setEditingMessage((current) => current ? { ...current, text } : current),
+                onCancel: cancelEditing,
+              } : undefined}
+            />
             <div className={styles.caveat} data-input-caveat="">{t('contentCaveat')}</div>
           </div>
         )}

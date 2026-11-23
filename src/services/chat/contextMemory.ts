@@ -421,7 +421,7 @@ const buildContextMemory = async (
   const allowExtraction = mode === 'manual' ||
     (mode === 'auto' && (!checkpoint || (alreadyOver && grew >= MIN_GROWTH_ROUNDS)))
   let tailStart = checkpoint?.start ?? 0
-  if (!checkpoint || alreadyOver || mode === 'manual') {
+  if (!checkpoint || (mode !== 'reuse' && alreadyOver) || mode === 'manual') {
     const retainedTailBudget = mode === 'manual'
       ? Math.min(
           Math.floor((inputLimit - outputReserve) * RETAINED_CONTEXT_RATIO),
@@ -831,7 +831,7 @@ const buildContextMemory = async (
       .filter(Boolean)
       .join('\n\n')
   let systemMemory = render()
-  while (requestSize(recent, systemMemory) > budget) {
+  while (mode !== 'reuse' && requestSize(recent, systemMemory) > budget) {
     if (recent.length) {
       // When the full tail is just over the budget, keep its newest complete turns.
       recent.splice(0, 2)

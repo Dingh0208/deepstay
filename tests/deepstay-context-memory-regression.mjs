@@ -883,7 +883,7 @@ try {
   await wait(() => !store.useChatStore.getState().streaming['chat-continue'])
   assert.equal(continuations.length, 1)
   assert.equal(continuations[0].model, 'deepseek-v4-pro')
-  assert.equal(continuations[0].messages.some(message => message.role === 'latest_reminder'), false)
+  assert.equal(continuations[0].messages.some(message => message.role === 'latest_reminder'), true)
   const sentPrefix = continuations[0].messages.at(-1)
   assert.equal(sentPrefix.role, 'assistant')
   assert.ok(sentPrefix.content.some(block => block.type === 'text' && block.text === '尚未讲完的正文。'))
@@ -892,7 +892,7 @@ try {
   assert.equal(completedContinuation.status, 'done')
   assert.equal(completedContinuation.blocks.filter(block => block.type === 'text').map(block => block.text).join(''), '尚未讲完的正文。续写完成。')
   assert.equal((await db.loadMemorySnapshot('chat-continue')).session.contextMemory.fixed, '保持此会话旅途设定。')
-  checks.push('The real V4 Pro continuation path accepts its saved pending snapshot, compresses long prior history, preserves original text/thinking/signature/model, omits unsupported latest_reminder, and appends the new answer')
+  checks.push('The real V4 Pro continuation path accepts its saved pending snapshot, compresses long prior history, preserves original text/thinking/signature/model, retains the official latest_reminder, and appends the new answer')
 
   settings.setContextMemoryEnabled(false)
   settings.setApiConnection({ apiKey: 'default-budget-key', apiBaseUrl: 'https://default-budget.example.test/v1', apiProtocol: 'openai', model: 'default-budget-model', models: ['default-budget-model'] })
@@ -919,13 +919,14 @@ try {
       role, content: role === 'assistant' ? [{ type: 'text', text: content }] : content,
     })),
     tools: defaultBudgetRequest.tools ?? [],
-  }) <= 128_000, 'The default store request fits the bounded input budget')
+  }) > 128_000, 'Auto off must not silently fit the history to the default request budget')
+  assert.ok(defaultBudgetRequest.messages.some(message => message.content === routeLimitHistory[0].content))
   assert.equal(defaultBudgetRequest.messages.at(-1).content, '请继续。')
   const persistedDefaultBudget = await db.loadSession(defaultBudgetId)
   assert.equal(persistedDefaultBudget.messages.length, routeLimitHistory.length + 2)
   assert.equal(persistedDefaultBudget.messages[0].content, routeLimitHistory[0].content,
     'Request fitting never deletes or rewrites the oversized local history')
-  checks.push('With no per-route context setting, a very long store request uses the 128k default budget, keeps the newest question, and preserves the complete local history')
+  checks.push('With auto off, the default 128k budget never silently trims an oversized request; the global prompt, full history and newest question remain intact')
 
   await writeFile(new URL('deepstay-context-memory-evidence.json', import.meta.url), JSON.stringify({ passed: true, runtime: process.version, checks, extractionRequests: requests.filter(isExtraction).length, scope: 'Real context memory pipeline, IndexedDB, OpenAI adapter and SSE parser with deterministic fixture responses. No paid upstream calls; model semantic quality requires separate evaluation.' }, null, 2))
   console.log(JSON.stringify({ passed: true, checks, extractionRequests: requests.filter(isExtraction).length }, null, 2))

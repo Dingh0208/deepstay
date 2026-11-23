@@ -7,11 +7,11 @@ export const useContextPrediction = (
   paused: boolean
 ): { estimate?: ContextEstimate; estimating: boolean } => {
   const { session, text, files, system, tools, model, thinking, connection,
-    inputBudget, memoryBudget, latestReminder } = options
+    inputBudget, memoryBudget, latestReminder, automaticCompaction } = options
   // The identity gates results immediately, including the render before effect cleanup runs.
   const request = useMemo(() => ({ session, text, files, system, tools, model, thinking, connection,
-    inputBudget, memoryBudget, latestReminder, paused }), [session, text, files,
-    system, tools, model, thinking, connection, inputBudget, memoryBudget, latestReminder, paused])
+    inputBudget, memoryBudget, latestReminder, automaticCompaction, paused }), [session, text, files,
+    system, tools, model, thinking, connection, inputBudget, memoryBudget, latestReminder, automaticCompaction, paused])
   const [result, setResult] = useState<{ request: typeof request; estimate?: ContextEstimate }>()
   useEffect(() => {
     if (paused) {

@@ -125,7 +125,7 @@ public class ProviderHttpPlugin extends Plugin {
         String accept = call.getString("accept");
         String body = call.getString("body");
         Boolean streamBodyOption = call.getBoolean("streamBody");
-        Long bodyLengthOption = readBodyLength(call);
+        Long bodyLengthOption = readBodyLength(call.getInt("bodyLength"), call.getLong("bodyLength"));
         boolean streamBody = Boolean.TRUE.equals(streamBodyOption);
         long bodyLength = streamBody && bodyLengthOption != null ? bodyLengthOption : -1;
         String audioModel = call.getString("audioModel");
@@ -222,9 +222,8 @@ public class ProviderHttpPlugin extends Plugin {
             ("http".equalsIgnoreCase(scheme) && isPrivateNetworkHost(host));
     }
 
-    static Long readBodyLength(PluginCall call) {
-        Integer integerValue = call.getInt("bodyLength");
-        return integerValue == null ? call.getLong("bodyLength") : integerValue.longValue();
+    static Long readBodyLength(Integer integerValue, Long longValue) {
+        return integerValue == null ? longValue : integerValue.longValue();
     }
 
     static boolean isPrivateNetworkHost(String input) {

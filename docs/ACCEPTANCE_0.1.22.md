@@ -6,7 +6,7 @@
 
 0.1.21 为 Android 长上下文加入 128 KiB 以上 JSON 请求分块上传。Capacitor 的 PluginCall.getLong 只接受 Java Long；JSON 解析将常见的小于 2 GiB 的整数映射为 Integer，导致 bodyLength 读取为空，原生层把有效长请求误判为 `PROVIDER_URL`，显示“Android 接口请求格式不受支持”。现在先读取 Integer，再兼容 Long。
 
-新增 Android 单测以真实 PluginCall/JSObject 数据复现 `bodyLength=131072`：确认 getInt 可读、getLong 为空、兼容读取函数返回正确长度。
+新增 Android 单测覆盖 `bodyLength=131072` 的 Integer 路径和大于 32 位的 Long 路径，验证兼容读取函数返回正确长度。Capacitor 源码中的 `PluginCall.getLong` 仅接受 Long、`getInt` 仅接受 Integer；用例不构造 Android `org.json` 桩。
 
 ## 验证
 

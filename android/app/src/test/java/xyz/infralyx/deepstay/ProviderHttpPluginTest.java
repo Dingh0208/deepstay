@@ -2,8 +2,6 @@ package xyz.infralyx.deepstay;
 
 import static org.junit.Assert.*;
 
-import com.getcapacitor.JSObject;
-import com.getcapacitor.PluginCall;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -21,12 +19,9 @@ import org.junit.Test;
 
 public class ProviderHttpPluginTest {
     @Test
-    public void readsJsonIntegerBodyLengthForLargeProviderRequests() throws Exception {
-        PluginCall call = new PluginCall(null, "ProviderHttp", "1", "open", new JSObject("{\"bodyLength\":131072}"));
-
-        assertEquals(Integer.valueOf(131072), call.getInt("bodyLength"));
-        assertNull(call.getLong("bodyLength"));
-        assertEquals(Long.valueOf(131072), ProviderHttpPlugin.readBodyLength(call));
+    public void readsIntegerAndLongBodyLengthsForLargeProviderRequests() {
+        assertEquals(Long.valueOf(131072), ProviderHttpPlugin.readBodyLength(Integer.valueOf(131072), null));
+        assertEquals(Long.valueOf(2147483648L), ProviderHttpPlugin.readBodyLength(null, Long.valueOf(2147483648L)));
     }
 
     @Test

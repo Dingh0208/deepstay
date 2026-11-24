@@ -28,4 +28,16 @@
 
 ## Android 与发布
 
-本机缺少 Android SDK，签名构建、Android release 单元测试、包名、versionCode、正式证书和校验和需由本次标签 CI 验证。当前记录为发布前验收，公开 Release 与国内同步结果在流水线完成后追加。未执行实体手机大历史导出实测。
+- 候选源码：`c5e76c3a2b59d7cc86243c4f60cb42c7dbfc5942`；标签 `v0.1.21`，版本 `0.1.21 / versionCode 22`。
+- GitHub Actions [45408638358](https://github.com/Dingh0208/deepstay/actions/runs/45408638358) 的 build 任务已通过：签名 APK、`:app:testReleaseUnitTest`、包名和版本检查全部成功。
+- 正式证书 SHA-256：`64dba31f8f30a392fc850dd81ead8bedccb374568a7e4821be0b64fdb2ec2f1f`，与上一版一致。
+- 构建 artifact 中 `latest.json` 和 `SHA256SUMS.txt` 的 ZIP 条目已独立校验 CRC 并读取：APK 为 20,335,552 字节；预期 SHA-256 `19a747d1b22c41b9868e701e9bd30702df0a75659544adfd8763d942692580ab`。这些小条目校验不等于完整 APK 下载校验。
+- 本机没有 Android SDK，Android 构建和单测由 CI 执行；未执行实体手机大历史导出内存测试。
+
+## 发布验证
+
+- GitHub Actions 45408638358 已全部成功；[v0.1.21 Release](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.21) 于北京时间 2026-11-24 22:27:43 发布，为正式公开版本。
+- 远端标签已核对，指向上述候选源码提交；Release 包含 APK、`latest.json` 和 `SHA256SUMS.txt`，中文说明已补齐。
+- [国内更新清单](https://ds.herohao.top/updates/latest.json) 已切换为 `0.1.21 / versionCode 22`，下载地址为同目录完整 SHA-256 命名的 APK。
+- 已从国内公开 HTTPS 地址完整下载 APK：20,335,552 字节；本机计算 SHA-256 为 `19a747d1b22c41b9868e701e9bd30702df0a75659544adfd8763d942692580ab`，与构建清单、校验和及 GitHub APK asset digest 一致。
+- 本地开发预览已重启至 0.1.21，可通过 `http://localhost:8090/` 继续测试。上述发布与文件一致性验证不替代实体手机导出内存验收。

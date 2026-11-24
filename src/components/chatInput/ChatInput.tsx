@@ -10,9 +10,10 @@ import {
   IconThinkOutline14,
   IconPlusOutline16,
 } from '../base/icons.js'
-import { applyModelPreset, setModel, setSearch, setThinking, useSettings } from '../../services/settings.js'
+import { applyModelPreset, getModelReasoningProfile, setModel, setModelReasoningEffort, setModelReasoningProfile, setModelVisibleReasoningLevels, setSearch, setThinking, useSettings } from '../../services/settings.js'
 import { supportsDeepSeekExtras } from '../../services/api/connection.js'
-import type { FilePurpose } from '../../services/api/types.js'
+import { fetchOfficialModelReasoningLevels } from '../../services/api/client.js'
+import { reasoningEffortLevels, type FilePurpose, type ReasoningEffort } from '../../services/api/types.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { compactSession, editMessage, getEffectiveContextInputBudget, sendMessage, serverTools, stopReply, SYSTEM_PROMPT, useChatStore } from '../../services/chat/store.js'
 import { createLatestReminder } from '../../services/chat/latestReminder.js'
@@ -49,6 +50,7 @@ import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
 import { Menu } from '../base/Menu.js'
 import { startVoiceCall } from '../../services/speech/voiceCall.js'
+import { ReasoningEffortDialog, type ReasoningEffortLevel } from './ReasoningEffortDialog.js'
 
 /** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
 type InputProps = {
@@ -101,12 +103,23 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
   const apiProtocol = useSettings((state) => state.apiProtocol)
   const model = useSettings((state) => state.model)
   const models = useSettings((state) => state.models)
+  const modelReasoningProfiles = useSettings((state) => state.modelReasoningProfiles)
   const modelPresets = useSettings((state) => state.modelPresets)
   const activeModelPreset = modelPresets.find((preset) => preset.apiKey === apiKey &&
     preset.apiBaseUrl === apiBaseUrl && preset.apiProtocol === apiProtocol && preset.model === model)
   const modelPresetOptions = useMemo(() => modelPresets.map((preset) => ({ value: preset.id, label: preset.name })), [modelPresets])
   const modelOptions = useMemo(() => [...new Set([...models, model])]
     .filter(Boolean).map((value) => ({ value, label: value })), [model, models])
+  const currentRoute = useMemo(() => ({ apiBaseUrl, apiProtocol, model }), [apiBaseUrl, apiProtocol, model])
+  const reasoningProfile = getModelReasoningProfile(currentRoute, model, modelReasoningProfiles)
+  const officialDeepSeek = (() => {
+    try { return new URL(apiBaseUrl).hostname === 'api.deepseek.com' } catch { return false }
+  })()
+  const reasoningLevels = officialDeepSeek ? reasoningProfile.supportedLevels : reasoningEffortLevels
+  const visibleReasoningLevels = officialDeepSeek
+    ? reasoningLevels
+    : reasoningProfile.visibleLevels ?? ['low', 'high', 'max'] as ReasoningEffort[]
+  const displayedReasoningEffort = reasoningProfile.selectedLevel ?? reasoningProfile.defaultLevel ?? null
   const system = useSettings((state) => state.generation.system)
   const automaticCompaction = useSettings((state) => state.contextMemoryEnabled)
   const inputBudget = getEffectiveContextInputBudget()
@@ -136,8 +149,29 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const togglesRef = useRef<HTMLDivElement>(null)
+  const reasoningAnchor = useRef<HTMLButtonElement | null>(null)
   const documentUploadConfirmed = useRef(false)
   const [documentUpload, setDocumentUpload] = useState<{ files: File[]; purpose: FilePurpose } | null>(null)
+  const [reasoningDialogOpen, setReasoningDialogOpen] = useState(false)
+  const [reasoningMetadataLoading, setReasoningMetadataLoading] = useState(false)
+
+  const openReasoningDialog = (anchor: HTMLButtonElement) => {
+    reasoningAnchor.current = anchor
+    setReasoningDialogOpen(true)
+    if (!officialDeepSeek || reasoningProfile.supportedLevels.length > 0 || !apiKey || reasoningMetadataLoading) {
+      return
+    }
+    setReasoningMetadataLoading(true)
+    void fetchOfficialModelReasoningLevels(apiKey, apiBaseUrl).then((profiles) => {
+      if (profiles) {
+        setModelReasoningProfile(
+          currentRoute,
+          model,
+          profiles[model] ?? { supportedLevels: [] }
+        )
+      }
+    }).catch(() => undefined).finally(() => setReasoningMetadataLoading(false))
+  }
 
   useLayoutEffect(() => {
     const toggles = togglesRef.current
@@ -430,6 +464,7 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
           ariaLabel={t('apiModel')}
           disabled={importingHistory}
           onChange={setModel}
+          onLongPress={openReasoningDialog}
         />
       </div> : null}
       <div className={styles.functionRow}>
@@ -572,6 +607,19 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
           />
         </Modal>
       ) : null}
+      <ReasoningEffortDialog
+        open={reasoningDialogOpen}
+        anchor={reasoningAnchor.current}
+        supportedLevels={reasoningLevels as readonly ReasoningEffortLevel[]}
+        selectedLevel={displayedReasoningEffort as ReasoningEffortLevel | null}
+        defaultLevel={reasoningProfile.defaultLevel as ReasoningEffortLevel | undefined ?? null}
+        loading={reasoningMetadataLoading}
+        visibleLevels={visibleReasoningLevels as readonly ReasoningEffortLevel[]}
+        customizable={!officialDeepSeek}
+        onSelect={(level) => setModelReasoningEffort(currentRoute, model, (level ?? undefined) as ReasoningEffort | undefined)}
+        onVisibleLevelsChange={(levels) => setModelVisibleReasoningLevels(currentRoute, model, levels as ReasoningEffort[])}
+        onClose={() => setReasoningDialogOpen(false)}
+      />
       {!editing ? <ComposerMetrics
         latestReply={latestReply}
         estimatedContext={estimatedContext}

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { ApiError, fetchModels } from '../../services/api/client.js'
+import { ApiError, fetchModels, fetchOfficialModelReasoningLevels } from '../../services/api/client.js'
 import { DEEPSEEK_OFFICIAL_API_URL, InsecurePublicApiUrlError, normalizeApiBaseUrl } from '../../services/api/connection.js'
 import { classifyApiError } from '../../services/api/errors.js'
-import { setApiConnection, useSettings, type ApiProtocol, type ModelPreset } from '../../services/settings.js'
+import { setApiConnection, setModelReasoningProfile, useSettings, type ApiProtocol, type ModelPreset } from '../../services/settings.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 
@@ -55,12 +55,27 @@ export const useApiKeyForm = () => {
     setStatus(null)
     setFailure(null)
     try {
-      const available = await fetchModels(value.trim(), url, controller.signal)
+      const reasoningTask: ReturnType<typeof fetchOfficialModelReasoningLevels> = action === 'models'
+        ? fetchOfficialModelReasoningLevels(value.trim(), url, controller.signal).catch(() => null)
+        : Promise.resolve(null)
+      const [available, reasoningProfiles] = await Promise.all([
+        fetchModels(value.trim(), url, controller.signal),
+        reasoningTask,
+      ])
       if (!alive.current || task.current !== controller) {
         return
       }
       if (action === 'models') {
         setModels(available)
+        if (reasoningProfiles) {
+          for (const modelId of available) {
+            setModelReasoningProfile(
+              { apiBaseUrl: url, apiProtocol: protocol, model: modelId },
+              modelId,
+              reasoningProfiles[modelId] ?? { supportedLevels: [] }
+            )
+          }
+        }
         if (!available.includes(model)) {
           setModel(available[0] ?? model)
         }

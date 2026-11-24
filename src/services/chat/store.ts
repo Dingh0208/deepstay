@@ -12,14 +12,16 @@ import {
   getContextLengthError,
   getFileErrorCode,
   getImageSizeError,
+  isTotalImageSizeError,
   getUnsupportedImageError,
   isRetryableApiError,
 } from '../api/errors.js'
 import { cancelUpload, describeUploadError, getUploadPurpose, uploadAttachment, useUploads } from '../attachments.js'
 import { encodeLocalImage, extractLocalAttachmentText, LocalAttachmentError, type LocalAttachmentContent } from '../localAttachments.js'
-import { clearFavoriteMessages, clearPinnedSessions, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
+import { clearFavoriteMessages, clearPinnedSessions, getModelReasoningProfile, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
 import { appendBranch, getRoundMessageIds, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
 import * as db from './db.js'
+import { limitRequestImages } from './requestImages.js'
 import {
   clearAllDrafts,
   clearDraft,
@@ -327,14 +329,20 @@ export const bindChatPersistence = () => {
 }
 
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
-const createReply = (): AssistantMessage => {
+const createReply = (snapshot?: Pick<AssistantMessage, 'thinking' | 'reasoningEffort'>): AssistantMessage => {
   const { thinking, search, model, apiProtocol } = useSettings.getState()
+  const { apiBaseUrl } = useSettings.getState()
+  const replyThinking = snapshot?.thinking ?? thinking
+  const reasoningEffort = snapshot
+    ? snapshot.reasoningEffort
+    : replyThinking ? getModelReasoningProfile({ apiBaseUrl, apiProtocol, model }).selectedLevel : undefined
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
     model,
-    thinking,
+    thinking: replyThinking,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
     search: supportsDeepSeekExtras() && search,
     prefix: apiProtocol === 'deepseek',
     status: 'pending',
@@ -1034,7 +1042,7 @@ export const regenerateReply = (sessionId: string, messageId?: string) => {
     return
   }
   const history = path.slice(0, index - 1)
-  const reply = createReply()
+  const reply = createReply({ thinking: previous.thinking, reasoningEffort: previous.reasoningEffort })
   updateSession(sessionId, (s) => ({
     ...appendBranch(s, question.id, [reply]),
     updatedAt: Date.now(),
@@ -1239,7 +1247,7 @@ const refreshRequest = (sessionId: string, request: Request): Request => {
  * - 历史轮次（仅进入上下文的）中没有 serverId 的附件，多为导入的图片：从最新的消息往前逐张补传，
  *   图片失败静默跳过；需要付费解析的文档必须由用户重新选择确认。
  */
-const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal, apiKey: string, connection: ApiConnection) => {
+const prepareFiles = async (sessionId: string, request: Request, signal: AbortSignal, apiKey: string, connection: ApiConnection, omitHistoryImages = false) => {
   if (
     request.question.files.length === 0 &&
     !request.history.some((message) => message.role === 'user' && message.files.length > 0)
@@ -1247,6 +1255,7 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
     return request
   }
   request = refreshRequest(sessionId, request)
+  request = { ...request, ...await limitRequestImages(request.history, request.question, db.loadFile, omitHistoryImages) }
   if (!supportsDeepSeekExtras(connection)) {
     await pendingSaves.get(sessionId)
     const localFiles = new Map(request.localFiles ?? [])
@@ -1303,7 +1312,6 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   const epoch = historyEpoch
   // 服务端判定 file_id 失效时会清掉会话里的 serverId，先用最新消息替换请求快照，
   // 否则快照里仍是旧 id，补传会直接复用它。
-  request = refreshRequest(sessionId, request)
   const serverIds = new Map<string, string>()
   // 停止生成立即生效；上传本身不取消（输入框与其他消息可能共用同一任务），完成后照常写回 serverId
   const aborted = new Promise<never>((_, reject) => {
@@ -1360,7 +1368,13 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   }
 
   // 用补齐后的会话重新取历史与提问，保证请求里都是 serverId
-  return serverIds.size > 0 ? refreshRequest(sessionId, request) : request
+  const withServerIds = (message: UserMessage): UserMessage => ({ ...message,
+    files: message.files.map((file) => serverIds.has(file.id) ? { ...file, serverId: serverIds.get(file.id) ?? file.serverId } : file),
+  })
+  return serverIds.size === 0 ? request : { ...request,
+    history: request.history.map((message) => message.role === 'user' ? withServerIds(message) : message),
+    question: withServerIds(request.question),
+  }
 }
 
 /** 本次请求实际会用到的服务端 file_id */
@@ -1507,6 +1521,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   // 接口拒绝的历史图片只在本次生成的请求中省略。
   const excludedHistoryImageIds = new Set<string>()
   let retriedWithoutHistoryImages = false
+  let omitHistoryImages = false
   const initialSave = pendingSaves.get(sessionId)
   if (settings.contextMemoryEnabled) {
     contextPreparations.add(sessionId)
@@ -1680,7 +1695,7 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
         contextPreparations.delete(sessionId)
         contextPrepared = true
         preparing = true
-        const prepared = await prepareFiles(sessionId, request, controller.signal, apiKey, connection)
+        const prepared = await prepareFiles(sessionId, request, controller.signal, apiKey, connection, omitHistoryImages)
         preparing = false
         if (controller.signal.aborted) {
           throw controller.signal.reason
@@ -1712,7 +1727,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           ...generationParameters(generation, connection, initial.thinking ?? false),
           system: [baseSystem, systemMemory].filter(Boolean).join('\n\n'),
           messages,
-          thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+          thinking: { type: initial.thinking && initial.reasoningEffort !== 'none' ? 'enabled' : 'disabled' },
+          ...(initial.thinking && initial.reasoningEffort ? { reasoningEffort: initial.reasoningEffort } : {}),
           safety_check: SAFETY_CHECK,
           tools: serverExtras ? serverTools(initial.search ?? false, model) : [],
           ...(serverExtras && supportsDeepSeekTitles(model) && titleRequests.has(controller) ? { title: { enabled: true } } : {}),
@@ -1800,6 +1816,15 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
             retriedContextLimit = true
             inputBudget = budget
             learnedContextLimit = { route: contextRoute, key: apiKey, budget }
+            continue
+          }
+        }
+        if (submitted && isTotalImageSizeError(error) && !receivedContent && !omitHistoryImages) {
+          const currentIndex = messages.length - (messages.at(-1)?.role === 'assistant' ? 2 : 1)
+          if (messages.slice(0, currentIndex).some((message) => Array.isArray(message.content) &&
+            message.content.some((block) => block.type === 'image'))) {
+            // Retry once for providers that count decoded or server-transformed images differently.
+            omitHistoryImages = true
             continue
           }
         }

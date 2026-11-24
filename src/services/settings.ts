@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { TtsVoice } from './api/speech.js'
+import { reasoningEffortLevels, type ReasoningEffort } from './api/types.js'
 import { normalizeGeneration, type GenerationSettings } from './api/generation.js'
 import { apiEndpoint, normalizeApiBaseUrl } from './api/endpoints.js'
 
@@ -62,6 +63,7 @@ type Settings = {
   apiProtocol: ApiProtocol
   model: string
   models: string[]
+  modelReasoningProfiles: Record<string, ModelReasoningProfile>
   modelPresets: ModelPreset[]
   locale: Locale
   themePreference: ThemePreference
@@ -83,6 +85,13 @@ type Settings = {
   favoriteMessages: FavoriteMessage[]
 }
 
+export type ModelReasoningProfile = {
+  supportedLevels: ReasoningEffort[]
+  defaultLevel?: ReasoningEffort
+  selectedLevel?: ReasoningEffort
+  visibleLevels?: ReasoningEffort[]
+}
+
 export type ModelPreset = {
   id: string
   name: string
@@ -102,6 +111,7 @@ const KEYS = {
   apiProtocol: 'deepstay:api-protocol',
   model: 'deepstay:model',
   models: 'deepstay:models',
+  modelReasoningProfiles: 'deepstay:model-reasoning-profiles',
   modelPresets: 'deepstay:model-presets',
   locale: 'chat-demo:locale',
   themePreference: 'chat-demo:theme-preference',
@@ -249,6 +259,45 @@ const contextWindowKey = ({ apiBaseUrl, apiProtocol, model }: ModelRoute) => {
   return JSON.stringify([apiProtocol, endpoint, model])
 }
 
+const reasoningProfileKey = (route: ModelRoute, model = route.model) =>
+  contextWindowKey({ ...route, model })
+
+const readModelReasoningProfiles = (): Record<string, ModelReasoningProfile> => {
+  try {
+    const value: unknown = JSON.parse(read(KEYS.modelReasoningProfiles) ?? '{}')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {}
+    }
+    const isReasoningEffort = (level: unknown): level is ReasoningEffort =>
+      typeof level === 'string' && (reasoningEffortLevels as readonly string[]).includes(level)
+    return Object.fromEntries(Object.entries(value).flatMap(([key, entry]) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        return []
+      }
+      const profile = entry as Record<string, unknown>
+      const supportedLevels = Array.isArray(profile.supportedLevels)
+        ? [...new Set(profile.supportedLevels.filter(isReasoningEffort))]
+        : []
+      if (supportedLevels.length === 0) {
+        return []
+      }
+      const visibleLevels = Array.isArray(profile.visibleLevels)
+        ? [...new Set(profile.visibleLevels.filter((level): level is ReasoningEffort => isReasoningEffort(level) && supportedLevels.includes(level)))]
+        : undefined
+      const defaultLevel = isReasoningEffort(profile.defaultLevel) && supportedLevels.includes(profile.defaultLevel)
+        ? profile.defaultLevel as ReasoningEffort : undefined
+      const selectedLevel = isReasoningEffort(profile.selectedLevel) && supportedLevels.includes(profile.selectedLevel)
+        ? profile.selectedLevel as ReasoningEffort : undefined
+      return [[key, { supportedLevels, ...(defaultLevel ? { defaultLevel } : {}), ...(selectedLevel ? { selectedLevel } : {}), ...(visibleLevels ? { visibleLevels } : {}) }]]
+    }))
+  } catch {
+    return {}
+  }
+}
+
+const saveModelReasoningProfiles = (profiles: Record<string, ModelReasoningProfile>) =>
+  write(KEYS.modelReasoningProfiles, Object.keys(profiles).length ? JSON.stringify(profiles) : null)
+
 const readModelContextWindows = (): Map<string, number> => {
   try {
     const raw: unknown = JSON.parse(read(KEYS.modelContextWindows) ?? '{}')
@@ -312,6 +361,7 @@ export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   ...initialRoute,
   models: readStringList(KEYS.models),
+  modelReasoningProfiles: readModelReasoningProfiles(),
   modelPresets: readModelPresets(),
   locale: initialLocale(),
   themePreference: initialThemePreference(),
@@ -371,6 +421,66 @@ export const setApiConnection = (connection: Pick<Settings, 'apiKey' | 'apiBaseU
   write(KEYS.model, connection.model)
   write(KEYS.models, JSON.stringify(connection.models))
   useSettings.setState({ ...connection, generation: generationForRoute(useSettings.getState().generation, connection) })
+}
+
+export const getModelReasoningProfile = (
+  route: ModelRoute,
+  model = route.model,
+  profiles = useSettings.getState().modelReasoningProfiles
+): ModelReasoningProfile => profiles[reasoningProfileKey(route, model)] ?? { supportedLevels: [] }
+
+export const setModelReasoningProfile = (
+  route: ModelRoute,
+  model: string,
+  update: { supportedLevels: ReasoningEffort[]; defaultLevel?: ReasoningEffort }
+) => {
+  let profiles = { ...useSettings.getState().modelReasoningProfiles }
+  const key = reasoningProfileKey(route, model)
+  const previous = profiles[key]
+  const supportedLevels = [...new Set(update.supportedLevels.filter((level) => reasoningEffortLevels.includes(level)))]
+  if (supportedLevels.length === 0) {
+    profiles = Object.fromEntries(Object.entries(profiles).filter(([profileKey]) => profileKey !== key))
+  } else {
+    const defaultLevel = update.defaultLevel && supportedLevels.includes(update.defaultLevel) ? update.defaultLevel : undefined
+    const selectedLevel = previous?.selectedLevel && supportedLevels.includes(previous.selectedLevel) ? previous.selectedLevel : undefined
+    profiles[key] = {
+      supportedLevels,
+      ...(defaultLevel ? { defaultLevel } : {}),
+      ...(selectedLevel ? { selectedLevel } : {}),
+      ...(previous?.visibleLevels ? { visibleLevels: previous.visibleLevels.filter((level) => supportedLevels.includes(level)) } : {}),
+    }
+  }
+  saveModelReasoningProfiles(profiles)
+  useSettings.setState({ modelReasoningProfiles: profiles })
+}
+
+export const setModelReasoningEffort = (route: ModelRoute, model: string, selectedLevel: ReasoningEffort | undefined) => {
+  const profiles = { ...useSettings.getState().modelReasoningProfiles }
+  const key = reasoningProfileKey(route, model)
+  const current = profiles[key] ?? { supportedLevels: [...reasoningEffortLevels], visibleLevels: ['low', 'high', 'max'] as ReasoningEffort[] }
+  if (selectedLevel !== undefined && !current.supportedLevels.includes(selectedLevel)) {
+    return
+  }
+  profiles[key] = { ...current, selectedLevel }
+  saveModelReasoningProfiles(profiles)
+  useSettings.setState({ modelReasoningProfiles: profiles })
+}
+
+export const setModelVisibleReasoningLevels = (route: ModelRoute, model: string, visibleLevels: ReasoningEffort[]) => {
+  const profiles = { ...useSettings.getState().modelReasoningProfiles }
+  const key = reasoningProfileKey(route, model)
+  const current = profiles[key] ?? { supportedLevels: [...reasoningEffortLevels], visibleLevels: ['low', 'high', 'max'] as ReasoningEffort[] }
+  const visible = [...new Set(visibleLevels.filter((level) => current.supportedLevels.includes(level)))]
+  if (visible.length === 0) {
+    return
+  }
+  profiles[key] = {
+    ...current,
+    visibleLevels: visible,
+    ...(current.selectedLevel && !visible.includes(current.selectedLevel) ? { selectedLevel: visible[0] } : {}),
+  }
+  saveModelReasoningProfiles(profiles)
+  useSettings.setState({ modelReasoningProfiles: profiles })
 }
 
 export const saveModelPreset = (value: Omit<ModelPreset, 'id'>, id?: string) => {

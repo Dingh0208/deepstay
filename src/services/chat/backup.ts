@@ -22,10 +22,13 @@ const enqueueBackup = <T>(run: () => Promise<T>): Promise<T> => {
   return task
 }
 
-const backupFileName = (date: Date) => `deepseek_data-${formatDate(date)}.zip`
+export const backupFileName = (date: Date) => `deepseek_data-${formatDate(date)}.zip`
 
 /** 导出为历史会话导出格式的 ZIP，可再次导入。 */
-export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
+export const exportHistory = (
+  onProgress?: (percent: number) => void,
+  writeChunk?: (chunk: Uint8Array) => Promise<void>
+): Promise<{ name: string; blob: Blob }> =>
   enqueueBackup(async () => {
     // 列表和已加载内容保留导出开始时的快照；未打开的会话逐条读取，不填满详情缓存。
     const { sessions, sessionCache } = useChatStore.getState()
@@ -43,7 +46,12 @@ export const exportHistory = (): Promise<{ name: string; blob: Blob }> =>
     }
     const { exportArchive } = await import('./history/exportArchive.js')
     const now = new Date()
-    const blob = await exportArchive(readSessions())
+    let completed = 0
+    onProgress?.(0)
+    const blob = await exportArchive(readSessions(), writeChunk, () => {
+      onProgress?.(Math.floor(++completed / Math.max(1, sessions.length) * 99))
+    })
+    onProgress?.(100)
     return { name: backupFileName(now), blob }
   })
 

@@ -5,7 +5,7 @@ import { registerHooks, stripTypeScriptTypes } from 'node:module'
 import { fileURLToPath } from 'node:url'
 
 const sourceRoot = new URL('../src/', import.meta.url)
-const capacitorBridgeSource = 'export const Capacitor = { getPlatform: () => globalThis.__DEEPSTAY_CAPACITOR__?.platform ?? "web", isPluginAvailable: name => name === "ProviderHttp" && globalThis.__DEEPSTAY_CAPACITOR__?.available === true }; export const registerPlugin = () => ({ open: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.open(...args), read: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.read(...args), close: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.close?.(...args) ?? Promise.resolve() })'
+const capacitorBridgeSource = 'export const Capacitor = { getPlatform: () => globalThis.__DEEPSTAY_CAPACITOR__?.platform ?? "web", isPluginAvailable: name => name === "ProviderHttp" && globalThis.__DEEPSTAY_CAPACITOR__?.available === true }; export const registerPlugin = () => ({ open: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.open(...args), writeBodyChunk: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.writeBodyChunk(...args), finishBody: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.finishBody(...args), awaitResponse: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.awaitResponse(...args), read: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.read(...args), close: (...args) => globalThis.__DEEPSTAY_CAPACITOR__?.transport?.close?.(...args) ?? Promise.resolve() })'
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === '@capacitor/core' && context.parentURL?.startsWith(sourceRoot.href) && context.parentURL.endsWith('/services/api/androidTransport.ts')) {
@@ -54,7 +54,7 @@ checks.push('Fresh settings preserve the existing DeepSeek defaults and expanded
 
 const { normalizeApiBaseUrl, apiEndpoint, getApiConnection, supportsDeepSeekExtras,
   isPrivateNetworkHostname, isPrivateNetworkApiUrl, InsecurePublicApiUrlError } = await import(new URL('services/api/connection.ts', sourceRoot))
-const { ApiError, fetchModels, verifyApiKey, streamMessage, uploadFile } = await import(new URL('services/api/client.ts', sourceRoot))
+const { ApiError, fetchModels, fetchOfficialModelReasoningLevels, verifyApiKey, streamMessage, uploadFile } = await import(new URL('services/api/client.ts', sourceRoot))
 const { transcribeForConnection } = await import(new URL('services/api/speech.ts', sourceRoot))
 const { toProviderApiError } = await import(new URL('services/api/http.ts', sourceRoot))
 assert.equal(normalizeApiBaseUrl(' https://gateway.example.test/proxy/v1/// '), 'https://gateway.example.test/proxy/v1')
@@ -100,6 +100,19 @@ for (const input of ['https://gateway.example.test/proxy/chat/completions', 'htt
   assert.equal(apiEndpoint(normalizeApiBaseUrl(input), 'v1/models'), apiEndpoint(input, 'v1/models'), 'Saving an explicit endpoint retains its parent route')
 }
 assert.deepEqual(getApiConnection(), { baseUrl: configured.apiBaseUrl, protocol: 'openai' })
+const reasoningRoute = { apiBaseUrl: configured.apiBaseUrl, apiProtocol: configured.apiProtocol, model: configured.model }
+settings.setModelReasoningProfile(reasoningRoute, configured.model, {
+  supportedLevels: ['low', 'high', 'max'], defaultLevel: 'high',
+})
+settings.setModelReasoningEffort(reasoningRoute, configured.model, 'max')
+settings.setModelVisibleReasoningLevels(reasoningRoute, configured.model, ['low', 'max'])
+assert.deepEqual(settings.getModelReasoningProfile(reasoningRoute), {
+  supportedLevels: ['low', 'high', 'max'], defaultLevel: 'high', selectedLevel: 'max', visibleLevels: ['low', 'max'],
+})
+assert.deepEqual(settings.getModelReasoningProfile({ ...reasoningRoute, apiBaseUrl: 'https://another-gateway.example.test/v1' }), { supportedLevels: [] })
+const reasoningReload = await import(new URL('services/settings.ts?reasoning-reload', sourceRoot))
+assert.deepEqual(reasoningReload.getModelReasoningProfile(reasoningRoute), settings.getModelReasoningProfile(reasoningRoute))
+checks.push('Reasoning levels, visible custom choices and selected effort persist per API route and model without leaking to another provider')
 settings.setGeneration({ system: '全局设定保持不变', temperature: 0.7, contextTokens: 32_768 })
 const presetA = settings.saveModelPreset({ name: '中转站', ...configured })
 settings.setApiConnection({
@@ -148,6 +161,22 @@ responder = (url, init) => {
   return Response.json({ data: [{ id: 'chosen-reasoner' }, { id: 'second-model' }, { id: 'chosen-reasoner' }, { id: '' }, { id: 1 }, null] })
 }
 assert.deepEqual(await fetchModels(configured.apiKey, configured.apiBaseUrl), configured.models)
+responder = (url, init) => {
+  assert.equal(url, 'https://api.deepseek.com/models')
+  assert.equal(new Headers(init.headers).get('Authorization'), 'Bearer deepseek-fixture-key')
+  return Response.json({ data: [
+    { id: 'deepseek-v4-pro', effort: { supported_levels: ['low', 'high', 'max', 'ultra', 'none', 'unknown', 'high'], default_level: 'high' } },
+    { id: 'deepseek-chat', effort: { supported_levels: [] } },
+    { id: 'legacy-model' },
+  ] })
+}
+assert.deepEqual(await fetchOfficialModelReasoningLevels('deepseek-fixture-key', 'https://api.deepseek.com/v1'), {
+  'deepseek-v4-pro': { supportedLevels: ['low', 'high', 'max', 'ultra'], defaultLevel: 'high' },
+})
+const metadataCalls = networkCalls
+assert.equal(await fetchOfficialModelReasoningLevels('fixture-private-key', configured.apiBaseUrl), null)
+assert.equal(networkCalls, metadataCalls, 'A custom provider must not be queried for DeepSeek-specific reasoning metadata')
+responder = () => Response.json({ data: configured.models.map(id => ({ id })) })
 await verifyApiKey(configured.apiKey)
 responder = () => Response.json({ error: { message: 'Invalid credentials' } }, { status: 401 })
 await assert.rejects(fetchModels('invalid-fixture-key', configured.apiBaseUrl), error => error instanceof ApiError && error.kind === 'http' && error.status === 401)
@@ -183,6 +212,21 @@ let nativeFailureCode
 const nativeRequestUrls = []
 const nativeRequests = []
 let nativeResponseChunks = []
+const nativeBodyChunks = new Map()
+const finishedNativeBodies = new Set()
+const awaitedNativeBodies = new Set()
+const closedNativeRequests = new Set()
+const nativeResponseWaiters = new Map()
+const nativeEarlyResponses = new Map()
+let nativeWriteGate
+const deliverNativeResponse = (id, response) => {
+  nativeEarlyResponses.set(id, response)
+  const waiter = nativeResponseWaiters.get(id)
+  if (waiter) {
+    nativeResponseWaiters.delete(id)
+    waiter.resolve(response)
+  }
+}
 globalThis.__DEEPSTAY_CAPACITOR__ = {
   platform: 'android',
   available: true,
@@ -191,16 +235,67 @@ globalThis.__DEEPSTAY_CAPACITOR__ = {
       const { url } = request
       nativeRequestUrls.push(url)
       nativeRequests.push(request)
+      if (request.streamBody) {
+        assert.equal(request.body, null)
+        nativeBodyChunks.set(request.id, [])
+        return { uploading: true }
+      }
       if (nativeFailureCode) {
         throw Object.assign(new Error(`raw failure containing ${url} and ${configured.apiKey}`), { code: nativeFailureCode })
       }
       return { status: 200, contentType: request.accept }
     },
+    writeBodyChunk: async ({ id, data }) => {
+      if (nativeWriteGate && nativeWriteGate.afterChunks > 0) {
+        nativeWriteGate.afterChunks -= 1
+      } else if (nativeWriteGate) {
+        const gate = nativeWriteGate
+        nativeWriteGate = undefined
+        gate.started()
+        await gate.release
+        if (closedNativeRequests.has(id)) {
+          throw Object.assign(new Error('Provider request closed'), { code: 'PROVIDER_CLOSED' })
+        }
+        if (nativeEarlyResponses.has(id)) {
+          return { continueUpload: false }
+        }
+      }
+      const bytes = Buffer.from(data, 'base64')
+      assert.ok(bytes.length > 0 && bytes.length <= 24 * 1024)
+      nativeBodyChunks.get(id).push(bytes)
+      return { continueUpload: true }
+    },
+    finishBody: async ({ id }) => {
+      finishedNativeBodies.add(id)
+      const waiter = nativeResponseWaiters.get(id)
+      if (waiter) {
+        nativeResponseWaiters.delete(id)
+        waiter.resolve({ status: 200, contentType: 'text/event-stream' })
+      }
+      return { continueUpload: true }
+    },
+    awaitResponse: ({ id }) => {
+      awaitedNativeBodies.add(id)
+      if (nativeEarlyResponses.has(id)) {
+        return Promise.resolve(nativeEarlyResponses.get(id))
+      }
+      if (finishedNativeBodies.has(id)) {
+        return Promise.resolve({ status: 200, contentType: 'text/event-stream' })
+      }
+      return new Promise((resolve, reject) => nativeResponseWaiters.set(id, { resolve, reject }))
+    },
     read: async () => {
       const chunk = nativeResponseChunks.shift()
       return chunk === undefined ? {} : { data: Buffer.from(chunk).toString('base64') }
     },
-    close: async () => {},
+    close: async ({ id }) => {
+      closedNativeRequests.add(id)
+      const waiter = nativeResponseWaiters.get(id)
+      if (waiter) {
+        nativeResponseWaiters.delete(id)
+        waiter.reject(Object.assign(new Error('Provider request closed'), { code: 'PROVIDER_CLOSED' }))
+      }
+    },
   },
 }
 for (const [code, key, kind, diagnostic] of providerErrors) {
@@ -218,7 +313,7 @@ checks.push('Android native DNS, TLS, timeout, busy, closed, URL and network fai
 
 nativeFailureCode = undefined
 const androidHttpConnection = { baseUrl: 'http://gateway.example.test/proxy/v1', protocol: 'openai' }
-const { supportsAndroidProviderTransport } = await import(new URL('services/api/androidTransport.ts', sourceRoot))
+const { supportsAndroidProviderTransport, requestAndroidProvider } = await import(new URL('services/api/androidTransport.ts', sourceRoot))
 const networkCallsBeforeHttp = networkCalls
 const nativeCallsBeforeHttp = nativeRequestUrls.length
 const androidHttpError = error => error instanceof ApiError && error.localMessage?.key === 'apiHttpPrivateOnly'
@@ -241,6 +336,71 @@ assert.equal(nativeRequests[nativeRequests.length - 1].url, privateChatUrl)
 assert.ok(privateEvents.some(event => event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text === '局域网模型已连接'))
 assert.equal(networkCalls, networkCallsBeforeHttp)
 assert.equal(nativeRequestUrls.length, nativeCallsBeforeHttp + 2)
+const largeNativeBody = `${'a'.repeat(24 * 1024 - 1)}😀${'食'.repeat(45_000)}`
+const largeNativeResponse = await requestAndroidProvider(privateChatUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer fixture-private-key', Accept: 'text/event-stream' },
+  body: largeNativeBody,
+})
+await largeNativeResponse.body.cancel()
+const largeNativeRequest = nativeRequests[nativeRequests.length - 1]
+assert.equal(largeNativeRequest.streamBody, true)
+assert.equal(largeNativeRequest.bodyLength, Buffer.byteLength(largeNativeBody, 'utf8'))
+assert.equal(Buffer.concat(nativeBodyChunks.get(largeNativeRequest.id)).toString('utf8'), largeNativeBody)
+assert.ok(nativeBodyChunks.get(largeNativeRequest.id).length > 5)
+let releaseEarlyResponseWrite
+let markEarlyResponseWriteStarted
+const earlyResponseWriteStarted = new Promise(resolve => { markEarlyResponseWriteStarted = resolve })
+nativeWriteGate = {
+  afterChunks: 1,
+  started: markEarlyResponseWriteStarted,
+  release: new Promise(resolve => { releaseEarlyResponseWrite = resolve }),
+}
+nativeResponseChunks = [JSON.stringify({ error: { message: 'request exceeds provider context limit' } })]
+const pendingEarlyResponse = requestAndroidProvider(privateChatUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer fixture-private-key', Accept: 'text/event-stream' },
+  body: largeNativeBody,
+})
+await earlyResponseWriteStarted
+const earlyRejectedRequest = nativeRequests[nativeRequests.length - 1]
+deliverNativeResponse(earlyRejectedRequest.id, { status: 413, contentType: 'application/json' })
+releaseEarlyResponseWrite()
+const earlyRejectedResponse = await pendingEarlyResponse
+assert.equal(earlyRejectedResponse.status, 413)
+assert.deepEqual(JSON.parse(await earlyRejectedResponse.text()), { error: { message: 'request exceeds provider context limit' } })
+assert.equal(finishedNativeBodies.has(earlyRejectedRequest.id), false)
+assert.equal(awaitedNativeBodies.has(earlyRejectedRequest.id), true)
+assert.equal(closedNativeRequests.has(earlyRejectedRequest.id), true)
+assert.ok(nativeBodyChunks.get(earlyRejectedRequest.id).length > 0)
+assert.ok(nativeBodyChunks.get(earlyRejectedRequest.id).length < Math.ceil(earlyRejectedRequest.bodyLength / (24 * 1024)))
+let releaseNativeWrite
+let markNativeWriteStarted
+const nativeWriteStarted = new Promise(resolve => { markNativeWriteStarted = resolve })
+const abortController = new AbortController()
+nativeWriteGate = {
+  afterChunks: 1,
+  started: markNativeWriteStarted,
+  release: new Promise(resolve => { releaseNativeWrite = resolve }),
+}
+const pendingNativeUpload = requestAndroidProvider(privateChatUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer fixture-private-key', Accept: 'text/event-stream' },
+  body: largeNativeBody,
+  signal: abortController.signal,
+})
+await nativeWriteStarted
+const abortedNativeRequest = nativeRequests[nativeRequests.length - 1]
+abortController.abort()
+releaseNativeWrite()
+await assert.rejects(pendingNativeUpload, error => error?.name === 'AbortError')
+assert.equal(finishedNativeBodies.has(abortedNativeRequest.id), false)
+assert.equal(awaitedNativeBodies.has(abortedNativeRequest.id), true)
+assert.equal(closedNativeRequests.has(abortedNativeRequest.id), true)
+assert.ok(nativeBodyChunks.get(abortedNativeRequest.id).length > 0)
+assert.ok(nativeBodyChunks.get(abortedNativeRequest.id).length < Math.ceil(abortedNativeRequest.bodyLength / (24 * 1024)))
+checks.push('Android native transport sends large Unicode JSON in bounded UTF-8 chunks, preserves exact bytes across a surrogate-pair boundary, and finishes before awaiting response')
+checks.push('Aborting an Android large-body upload closes the native request, skips finish/response waits and reports AbortError')
 checks.push('Android routes private HTTP IP model discovery and streaming chat through native OkHttp; public HTTP remains blocked before any network request')
 const audioFixture = new Blob([Uint8Array.from([82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69])], { type: 'audio/wav' })
 const expectedAudioBase64 = Buffer.from(await audioFixture.arrayBuffer()).toString('base64')
@@ -344,6 +504,16 @@ try {
   await assert.rejects(timed, error => error instanceof ApiError && error.localMessage?.key === 'apiModelsTimeout')
   assert.equal(useDiagnosticLog.getState().entries.slice(-1)[0].detail, 'timeout')
   assert.equal(timers.size, 0)
+  responder = (_url, init) => new Promise((_resolve, reject) => {
+    if (init.signal.aborted) reject(new DOMException('Aborted', 'AbortError'))
+    else init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true })
+  })
+  const pendingReasoningMetadata = fetchOfficialModelReasoningLevels('deepseek-fixture-key', 'https://api.deepseek.com')
+  const reasoningTimeout = [...timers.values()].find(timer => timer.delay === 10_000)
+  assert.ok(reasoningTimeout, 'Optional reasoning metadata request must have a bounded timeout')
+  reasoningTimeout.callback()
+  assert.equal(await pendingReasoningMetadata, null)
+  assert.equal(timers.size, 0)
   const entriesBeforeCancellation = useDiagnosticLog.getState().entries.length
   const caller = new AbortController()
   const pending = fetchModels(configured.apiKey, configured.apiBaseUrl, caller.signal)
@@ -391,6 +561,33 @@ const renderEvents = events => {
   for (const [index, event] of events.entries()) reply = applyEvent(reply, event, 1000 + index, indexes)
   return reply
 }
+let reasoningRequestBody
+responder = (_url, init) => {
+  reasoningRequestBody = JSON.parse(init.body)
+  return streamedResponse([{ choices: [{ delta: { content: '档位已接收' }, finish_reason: 'stop' }] }, '[DONE]'])
+}
+await collect(streamMessage(configured.apiKey, { ...body, reasoningEffort: 'xhigh' }, new AbortController().signal))
+assert.equal(reasoningRequestBody.reasoning_effort, 'xhigh')
+assert.equal('thinking' in reasoningRequestBody, false)
+await collect(streamMessage(configured.apiKey, body, new AbortController().signal))
+assert.equal('reasoning_effort' in reasoningRequestBody, false)
+await collect(streamMessage(configured.apiKey, { ...body, thinking: { type: 'disabled' }, reasoningEffort: 'none' }, new AbortController().signal))
+assert.equal(reasoningRequestBody.reasoning_effort, 'none')
+assert.equal('thinking' in reasoningRequestBody, false)
+responder = (_url, init) => {
+  reasoningRequestBody = JSON.parse(init.body)
+  return streamedResponse([
+    { type: 'message_start', message: { id: 'provider-reasoning' } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' },
+  ])
+}
+await collect(streamMessage(configured.apiKey, { ...body, reasoningEffort: 'high' }, new AbortController().signal, {
+  baseUrl: configured.apiBaseUrl, protocol: 'deepseek',
+}))
+assert.equal(reasoningRequestBody.output_config.effort, 'high')
+assert.equal('reasoningEffort' in reasoningRequestBody, false)
+checks.push('OpenAI-compatible reasoning effort is opt-in and maps to reasoning_effort; none disables thinking, while DeepSeek Messages maps the selected level to output_config.effort')
 let requestBody
 responder = (url, init) => {
   assert.equal(url, 'https://gateway.example.test/proxy/v1/chat/completions')
@@ -427,13 +624,43 @@ assert.equal(requestBody.messages.some(message => message.content === '用户补
 assert.equal(requestBody.messages[requestBody.messages.length - 1].content, '当前问题')
 checks.push('Selected custom model and key reach only its OpenAI endpoint; chunked reasoning_content and content become complete existing reply blocks, preserve history and reminder text, consume trailing usage and finish once')
 
+responder = () => streamedResponse([
+  { choices: [{ delta: { content: '空工具元数据应保留正常回复', tool_calls: [] }, finish_reason: null }] },
+  { choices: [{ delta: { function_call: {} }, finish_reason: null }] },
+  { choices: [{ delta: {}, finish_reason: 'stop' }] },
+  '[DONE]',
+])
+const emptyToolMetadata = renderEvents(await collect(streamMessage(configured.apiKey, body, new AbortController().signal)))
+assert.equal(getReplyText(emptyToolMetadata), '空工具元数据应保留正常回复')
+assert.equal(emptyToolMetadata.stopReason, 'end_turn')
+
+responder = () => streamedResponse([
+  { choices: [{ delta: { content: '先生成的完整回复' }, finish_reason: null }] },
+  { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'lookup', arguments: '{}' } }] }, finish_reason: null }] },
+  { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+  '[DONE]',
+])
+const textBeforeToolCall = renderEvents(await collect(streamMessage(configured.apiKey, body, new AbortController().signal)))
+assert.equal(getReplyText(textBeforeToolCall), '先生成的完整回复')
+assert.equal(textBeforeToolCall.stopReason, 'end_turn')
+
+responder = () => streamedResponse([
+  { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'lookup', arguments: '{}' } }] }, finish_reason: null }] },
+  { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+  '[DONE]',
+])
+await assert.rejects(collect(streamMessage(configured.apiKey, body, new AbortController().signal)), error =>
+  error instanceof ApiError && error.kind === 'protocol' && error.message === 'Tool calls are unavailable for this text-only connection')
+checks.push('OpenAI-compatible streams ignore empty tool metadata and preserve generated text when an unrequested tool call follows, while tool-only replies still fail')
+
 responder = (_url, init) => {
-  const { thinking, stream_options } = JSON.parse(init.body)
+  const { thinking, stream_options, reasoning_effort } = JSON.parse(init.body)
   assert.equal(thinking.type, 'enabled')
+  assert.equal(reasoning_effort, 'max')
   assert.equal(stream_options.include_usage, true)
   return streamedResponse([{ id: 'official-openai', choices: [{ delta: { content: '官方兼容响应' }, finish_reason: 'length' }] }, '[DONE]'])
 }
-const official = renderEvents(await collect(streamMessage('official-fixture-key', { ...body, model: 'deepseek-chat' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com', protocol: 'openai' })))
+const official = renderEvents(await collect(streamMessage('official-fixture-key', { ...body, model: 'deepseek-chat', reasoningEffort: 'max' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com', protocol: 'openai' })))
 assert.equal(getReplyText(official), '官方兼容响应')
 assert.equal(official.stopReason, 'max_tokens')
 assert.equal(getUsageTotal(official.usage), undefined)
@@ -585,7 +812,9 @@ checks.push('Third-party OpenAI and Anthropic-compatible requests serialize loca
 responder = (url, init) => {
   assert.equal(url, 'https://api.deepseek.com/anthropic/v1/messages')
   assert.equal(new Headers(init.headers).get('x-api-key'), 'deepseek-fixture-key')
-  assert.equal(JSON.parse(init.body).model, 'deepseek-v4-pro')
+  const requestBody = JSON.parse(init.body)
+  assert.equal(requestBody.model, 'deepseek-v4-pro')
+  assert.equal(requestBody.output_config.effort, 'high')
   return streamedResponse([
     { type: 'message_start', message: { id: 'deepseek-test', model: 'deepseek-v4-pro', usage: { input_tokens: 12, cache_read_input_tokens: 6, cache_creation_input_tokens: 2, output_tokens: 1 } } },
     { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
@@ -595,7 +824,7 @@ responder = (url, init) => {
     { type: 'message_stop' },
   ])
 }
-const originalEvents = await collect(streamMessage('deepseek-fixture-key', { ...body, model: 'deepseek-v4-pro' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }))
+const originalEvents = await collect(streamMessage('deepseek-fixture-key', { ...body, model: 'deepseek-v4-pro', reasoningEffort: 'high' }, new AbortController().signal, { baseUrl: 'https://api.deepseek.com/v1', protocol: 'deepseek' }))
 const original = renderEvents(originalEvents)
 assert.equal(getReplyText(original), '原协议完整回答')
 assert.equal(original.stopReason, 'end_turn')

@@ -59,6 +59,96 @@ public class LocalFilesPlugin extends Plugin {
         });
     }
 
+    private OutputStream exportStream;
+    private String exportId;
+
+    @PluginMethod
+    public void beginSave(PluginCall call) {
+        if (call.getString("name") == null || exportStream != null) {
+            call.reject("Missing name or export already active");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/zip")
+            .putExtra(Intent.EXTRA_TITLE, call.getString("name"));
+        startActivityForResult(call, intent, "beginSaveResult");
+    }
+
+    @ActivityCallback
+    private void beginSaveResult(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+            call.resolve(new JSObject().put("cancelled", true));
+            return;
+        }
+        execute(() -> {
+            try {
+                exportStream = getContext().getContentResolver().openOutputStream(result.getData().getData(), "wt");
+                if (exportStream == null) throw new java.io.IOException("Cannot open destination");
+                exportId = java.util.UUID.randomUUID().toString();
+                call.resolve(new JSObject().put("id", exportId).put("cancelled", false));
+            } catch (Exception error) {
+                closeExport();
+                call.reject("Unable to open export file", error);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void appendSave(PluginCall call) {
+        String data = call.getString("data");
+        if (data == null || data.length() > 350000) {
+            call.reject("Invalid export chunk");
+            return;
+        }
+        execute(() -> {
+            try {
+                if (exportStream == null || !exportId.equals(call.getString("id"))) {
+                    throw new java.io.IOException("Export is not active");
+                }
+                exportStream.write(Base64.decode(data, Base64.NO_WRAP));
+                call.resolve();
+            } catch (Exception error) {
+                closeExport();
+                call.reject("Unable to write export file", error);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void finishSave(PluginCall call) {
+        execute(() -> {
+            if (exportStream == null || !exportId.equals(call.getString("id"))) {
+                call.reject("Export is not active");
+                return;
+            }
+            try {
+                exportStream.close();
+                exportStream = null;
+                exportId = null;
+                call.resolve();
+            } catch (Exception error) {
+                closeExport();
+                call.reject("Unable to finish export file", error);
+            }
+        });
+    }
+
+    private void closeExport() {
+        if (exportStream != null) {
+            try { exportStream.close(); } catch (Exception ignored) { }
+        }
+        exportStream = null;
+        exportId = null;
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        closeExport();
+        super.handleOnDestroy();
+    }
+
     @PluginMethod
     public void save(PluginCall call) {
         if (call.getString("data") == null || call.getString("name") == null) {

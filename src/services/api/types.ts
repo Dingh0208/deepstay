@@ -195,10 +195,15 @@ export type CreateMessageRequest = {
   system: string
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
+  /** Optional reasoning level selected for this model; each provider maps it to its native field. */
+  reasoningEffort?: ReasoningEffort
   tools: (DeepseekWebSearchTool | DeepseekReadUrlTool | AnthropicWebSearchTool)[]
   safety_check: { level: 'high' }
   title?: { enabled: boolean }
 }
+
+export const reasoningEffortLevels = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const
+export type ReasoningEffort = typeof reasoningEffortLevels[number]
 
 // ---------- 响应：流式事件 ----------
 

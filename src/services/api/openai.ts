@@ -107,6 +107,9 @@ export async function* streamOpenAiMessage(
     messages: toMessages(body),
     stream: true,
     ...(officialDeepSeek ? { thinking: body.thinking } : {}),
+    ...(body.reasoningEffort !== undefined
+      ? { reasoning_effort: body.reasoningEffort }
+      : {}),
   }
   const send = (includeUsage: boolean) => request(endpoint, {
     method: 'POST',
@@ -141,6 +144,8 @@ export async function* streamOpenAiMessage(
   let index = -1
   let channel: 'text' | 'thinking' | null = null
   let stopReason: StopReason | undefined
+  let hasText = false
+  let sawToolCalls = false
   let usage: MessageUsage | undefined
   let usageFields: Record<string, unknown> = {}
   let done = false
@@ -206,8 +211,16 @@ export async function* streamOpenAiMessage(
       continue
     }
     const delta = isRecord(choice.delta) ? choice.delta : {}
-    if (delta.tool_calls || delta.function_call) {
-      throw new ApiError('protocol', 'Tool calls are unavailable for this text-only connection')
+    const hasToolCalls = Array.isArray(delta.tool_calls)
+      ? delta.tool_calls.length > 0
+      : isRecord(delta.tool_calls)
+        ? Object.keys(delta.tool_calls).length > 0
+        : Boolean(delta.tool_calls)
+    const hasFunctionCall = isRecord(delta.function_call)
+      ? Object.keys(delta.function_call).length > 0
+      : Boolean(delta.function_call)
+    if (hasToolCalls || hasFunctionCall) {
+      sawToolCalls = true
     }
     for (const [kind, text] of [
       ['thinking', delta.reasoning_content],
@@ -231,6 +244,9 @@ export async function* streamOpenAiMessage(
               : { type: 'thinking', thinking: '', signature: '' },
         }
       }
+      if (kind === 'text') {
+        hasText = true
+      }
       yield {
         type: 'content_block_delta',
         index,
@@ -242,7 +258,11 @@ export async function* streamOpenAiMessage(
     }
     if (choice.finish_reason !== null && choice.finish_reason !== undefined) {
       if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call') {
-        throw new ApiError('protocol', 'Tool calls are unavailable for this text-only connection')
+        sawToolCalls = true
+        if (hasText) {
+          stopReason = 'end_turn'
+        }
+        continue
       }
       stopReason =
         choice.finish_reason === 'length'
@@ -257,6 +277,9 @@ export async function* streamOpenAiMessage(
   }
   if (!done && !stopReason) {
     throw new ApiError('interrupted', { key: 'replyInterrupted' })
+  }
+  if (sawToolCalls && !hasText) {
+    throw new ApiError('protocol', 'Tool calls are unavailable for this text-only connection')
   }
   if (!started) {
     throw new ApiError('protocol', 'Empty OpenAI event stream')

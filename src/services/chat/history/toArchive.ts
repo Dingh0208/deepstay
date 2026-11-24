@@ -207,18 +207,23 @@ const numberMessages = (messages: Message[]) => {
   const byId = new Map(messages.map((message) => [message.id, message]))
   const ids = new Map<string, number>()
   const ordered: Message[] = []
-  const visit = (message: Message, depth: number) => {
-    if (ids.has(message.id)) {
-      return
+  for (const message of messages) {
+    const chain: Message[] = []
+    const visiting = new Set<string>()
+    let current: Message | undefined = message
+    while (current && !ids.has(current.id)) {
+      if (visiting.has(current.id)) {
+        fail('backupInvalidBranches')
+      }
+      visiting.add(current.id)
+      chain.push(current)
+      const parentId: string | null | undefined = current.parentId
+      current = parentId ? byId.get(parentId) ?? fail('backupInvalidBranches') : undefined
     }
-    if (message.parentId) {
-      const parent = byId.get(message.parentId)
-      // 父节点缺失或成环时数据已损坏。
-      visit(parent && depth < messages.length ? parent : fail('backupInvalidBranches'), depth + 1)
+    for (const ancestor of chain.reverse()) {
+      ids.set(ancestor.id, ordered.push(ancestor))
     }
-    ids.set(message.id, ordered.push(message))
   }
-  messages.forEach((message) => visit(message, 0))
   return { ordered, ids, byId }
 }
 

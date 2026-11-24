@@ -11,7 +11,7 @@ import { adaptDeepSeekRequest } from './modelCapabilities.js'
 import { ApiError, isErrorBody, readMessageEventStream, recordApiFailure, request, streamError, toProviderApiError } from './http.js'
 import { recordDiagnostic } from '../diagnostics/log.js'
 export { ApiError, request, type ApiErrorKind } from './http.js'
-import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent } from './types.js'
+import type { CreateMessageRequest, FileObject, FilePurpose, MessageStreamEvent, ReasoningEffort } from './types.js'
 
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
 export const API_ORIGIN = __API_ORIGIN__
@@ -105,6 +105,73 @@ export const fetchModels = async (
     }
     recordApiFailure('models', failure)
     throw failure
+  } finally {
+    clearTimeout(timeout)
+    signal?.removeEventListener('abort', abort)
+  }
+}
+
+export const fetchOfficialModelReasoningLevels = async (
+  apiKey: string,
+  baseUrl: string,
+  signal?: AbortSignal
+): Promise<Record<string, { supportedLevels: ReasoningEffort[]; defaultLevel?: ReasoningEffort }> | null> => {
+  let url: URL
+  try {
+    url = new URL(baseUrl)
+  } catch {
+    return null
+  }
+  if (url.hostname !== 'api.deepseek.com') {
+    return null
+  }
+  url.pathname = `${url.pathname
+    .replace(/\/(?:anthropic\/v1|anthropic|v\d+(?:\.\d+)?)$/, '')
+    .replace(/\/+$/, '')}/models`
+  url.search = ''
+  url.hash = ''
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  signal?.addEventListener('abort', abort, { once: true })
+  if (signal?.aborted) {
+    controller.abort()
+  }
+  const timeout = setTimeout(abort, 10_000)
+  try {
+    const response = await request(url.href, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+      credentials: 'omit',
+      signal: controller.signal,
+    }, false)
+    const value: unknown = await response.json().catch(() => null)
+    if (typeof value !== 'object' || value === null || !('data' in value) || !Array.isArray(value.data)) {
+      return null
+    }
+    const allowed = new Set<string>(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+    return Object.fromEntries(value.data.flatMap((item: unknown) => {
+      if (!item || typeof item !== 'object' || !('id' in item) || typeof item.id !== 'string' || !('effort' in item)) {
+        return []
+      }
+      const effort = item.effort
+      if (!effort || typeof effort !== 'object' || !('supported_levels' in effort) || !Array.isArray(effort.supported_levels)) {
+        return []
+      }
+      const supportedLevels = [...new Set(effort.supported_levels.filter((level): level is ReasoningEffort =>
+        typeof level === 'string' && allowed.has(level) && level !== 'none'
+      ))]
+      if (supportedLevels.length === 0) {
+        return []
+      }
+      const defaultLevel = 'default_level' in effort && typeof effort.default_level === 'string' && supportedLevels.includes(effort.default_level as ReasoningEffort)
+        ? effort.default_level as ReasoningEffort : undefined
+      return [[item.id, { supportedLevels, ...(defaultLevel ? { defaultLevel } : {}) }]]
+    }))
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error
+    }
+    return null
   } finally {
     clearTimeout(timeout)
     signal?.removeEventListener('abort', abort)
@@ -213,7 +280,16 @@ async function* streamProviderMessage(
       'Content-Type': 'application/json',
       Accept: 'text/event-stream',
     },
-    body: JSON.stringify({ ...adaptRequestForConnection(body, connection), stream: true }),
+    body: JSON.stringify((() => {
+      const { reasoningEffort, ...requestBody } = adaptRequestForConnection(body, connection)
+      return {
+        ...requestBody,
+        ...(body.thinking?.type === 'enabled' && reasoningEffort !== undefined
+          ? { output_config: { effort: reasoningEffort } }
+          : {}),
+        stream: true,
+      }
+    })()),
     credentials: 'omit',
     signal,
   }, false)

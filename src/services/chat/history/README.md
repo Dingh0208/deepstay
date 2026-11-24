@@ -4,13 +4,13 @@ chat-demo 使用 `export_format_version: 3` 的历史会话 ZIP，导出文件�
 
 ## 归档结构
 
-导出按以下顺序写入：
+导出按以下顺序写入；逐会话处理，避免持有全部图片原件：
 
 ```text
 manifest.json                                      格式版本，必须是首个条目
-chat_sessions/{session_id}.json                    全部会话 JSON（含消息树）
-chat_session_index.json                            会话索引
-chat_sessions/{session_id}_files/{file_id}_{file_name}  全部图片原件
+chat_sessions/{session_id}.json                    会话 JSON（含消息树）
+chat_sessions/{session_id}_files/{file_id}_{file_name}  该会话本地图片（交错写入）
+chat_session_index.json                            最后的会话索引
 ```
 
 导入也支持“会话 JSON → 该会话图片”交错排列、索引在末尾的顺序。`user.json` 可位于 manifest 与会话之间，导入时跳过；本项目不导出账号信息。图片按 `FILE.export_path` 匹配。
@@ -60,4 +60,4 @@ chat_sessions/{session_id}_files/{file_id}_{file_name}  全部图片原件
 | [zipReader.ts](./zipReader.ts)、[zipWriter.ts](./zipWriter.ts)                 | ZIP 读写及路径、大小、CRC 校验 |
 | [../backup.ts](../backup.ts)                                                   | 导入导出入口与串行队列         |
 
-支持单卷 ZIP32 的 STORE / DEFLATE，导出使用 STORE。ZIP64、加密、分卷及非 UTF-8 的非 ASCII 文件名不支持；条目名统一按 NFC 比较。不另设业务文件大小上限；80 MiB 图片归档已通过串行读取、暂存和原子新增回归。更大的文件仍受 ZIP32 容量、设备内存、IndexedDB 配额和浏览器资源限制；导出会生成完整下载 Blob。
+支持单卷 ZIP32 的 STORE / DEFLATE，导出使用 STORE。ZIP64、加密、分卷及非 UTF-8 的非 ASCII 文件名不支持；条目名统一按 NFC 比较。不另设业务文件大小上限；80 MiB 图片归档已通过串行读取、暂存和原子新增回归。更大的文件仍受 ZIP32 容量、设备内存、IndexedDB 配额和浏览器资源限制。网页导出生成完整下载 Blob；Android 先选择保存位置，再逐块写入目标文件，不把完整 ZIP 转为 Base64 通过原生桥传递。导出按会话数显示进度；保存位置选择取消后不启动归档。

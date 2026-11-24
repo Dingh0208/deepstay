@@ -87,6 +87,8 @@ export type AssistantMessage = MessageBranch & {
   model: ChatModel | null
   /** 请求时是否开启深度思考 */
   thinking?: boolean
+  /** 本轮显式选择的推理强度；重新生成和续写沿用这份快照。 */
+  reasoningEffort?: import('../api/types.js').ReasoningEffort
   /** 请求时是否声明 deepseek_web_search；仅支持扩展的模型声明阅读链接工具。 */
   search?: boolean
   /** 本轮请求的系统信息快照；各回答版本独立保存，续写沿用。历史消息中缺省的快照保持为空。 */

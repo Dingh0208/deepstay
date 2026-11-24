@@ -12,8 +12,10 @@ const mocks = new Map([
   ['react', 'export const memo=fn=>fn; export const useCallback=fn=>fn; export const useEffect=()=>{}; export const useLayoutEffect=()=>{}; export const useMemo=fn=>fn(); export const useRef=value=>({current:value}); export const useState=value=>[globalThis.__inputState??value,update=>{globalThis.__inputState=typeof update==="function"?update(globalThis.__inputState):update}];'],
   ['react/jsx-runtime', 'export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx; export const Fragment=Symbol.for("react.fragment");'],
   ['../base/icons.js', ['IconCloseOutline16', 'IconGlobeLanguageOutline14', 'IconMicOutline16', 'IconPaperclipOutline16', 'IconPlusOutline16', 'IconSendOutline16', 'IconStopFill16', 'IconThinkOutline14'].map(name => `export const ${name}=()=>null;`).join('')],
-  ['../../services/settings.js', 'export const applyModelPreset=id=>{globalThis.__appliedModelPreset=id}; export const setModel=model=>{globalThis.__settings.model=model}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
+  ['../../services/settings.js', 'export const applyModelPreset=id=>{globalThis.__appliedModelPreset=id}; export const getModelReasoningProfile=()=>({supportedLevels:[]}); export const setModel=model=>{globalThis.__settings.model=model}; export const setModelReasoningEffort=()=>{}; export const setModelReasoningProfile=(route,model,profile)=>globalThis.__reasoningProfiles.push({route,model,profile}); export const setModelVisibleReasoningLevels=()=>{}; export const setSearch=()=>{}; export const setThinking=()=>{}; export const useSettings=Object.assign(select=>select(globalThis.__settings),{getState:()=>globalThis.__settings});'],
+  ['../../services/api/client.js', 'export const fetchOfficialModelReasoningLevels=(key,url)=>globalThis.__reasoningMetadataQuery(key,url);'],
   ['../../services/api/connection.js', 'export const supportsDeepSeekExtras=connection=>connection.protocol==="deepseek"&&connection.baseUrl.replace(/\\/(?:anthropic(?:\\/v1)?|v1)(?:\\/messages)?$/,"")==="https://api.deepseek.com";'],
+  ['../../services/api/types.js', 'export const reasoningEffortLevels=["none","minimal","low","medium","high","xhigh","max","ultra"];'],
   ['../../services/api/generation.js', 'export const DEFAULT_CONTEXT_WINDOW=1000000;'],
   ['../../services/chat/latestReminder.js', 'export const createLatestReminder=()=>"fixture reminder";'],
   ['./useContextPrediction.js', 'export const useContextPrediction=(options,paused)=>{globalThis.__estimated.push({...options,paused});return {estimate:paused?undefined:{system:5,tools:options.tools.length,messages:200},estimating:false}};'],
@@ -38,6 +40,7 @@ const mocks = new Map([
   ['./VoiceButton.js', 'export const VoiceButton=()=>null;'],
   ['./Spectrum.js', 'export const Spectrum=()=>null;'],
   ['./ComposerMetrics.js', 'export const ComposerMetrics=()=>null;'],
+  ['./ReasoningEffortDialog.js', 'export const ReasoningEffortDialog=()=>null;'],
   ['../../services/speech/voiceCall.js', 'export const startVoiceCall=(...args)=>{globalThis.__voiceCall.push(args)};'],
   ['../../i18n/index.js', 'export const useTranslate=()=>key=>key;'],
   ['./ChatInput.module.css', 'export default {};'],
@@ -84,6 +87,12 @@ try {
   globalThis.__voiceCall = []
   globalThis.__voiceInputToggled = 0
   globalThis.__validated = []
+  globalThis.__reasoningProfiles = []
+  globalThis.__reasoningMetadataCalls = []
+  globalThis.__reasoningMetadataQuery = async (key, url) => {
+    globalThis.__reasoningMetadataCalls.push({ key, url })
+    return null
+  }
   globalThis.__validationError = null
   const checks = []
   for (const mobile of [false, true]) {
@@ -177,6 +186,29 @@ try {
   checks.push('Office/PDF uploads wait for explicit confirmation, cancel without uploading, default to text parsing, preserve mixed batches, allow opt-in layout parsing, and reject invalid batches first')
   const modelPicker = find(tree, node => node.type?.name === 'Select' && node.props.ariaLabel === 'apiModel')
   assert.deepEqual(modelPicker.props.options.map(item => item.value), ['deepseek-flash', 'deepseek-v4-pro'])
+  globalThis.__reasoningMetadataQuery = async (key, url) => {
+    globalThis.__reasoningMetadataCalls.push({ key, url })
+    return { 'deepseek-flash': { supportedLevels: ['low', 'high'], defaultLevel: 'high' } }
+  }
+  modelPicker.props.onLongPress()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(globalThis.__reasoningMetadataCalls.at(-1), { key: 'fixture', url: 'https://api.deepseek.com' })
+  assert.deepEqual(globalThis.__reasoningProfiles.at(-1), {
+    route: { apiBaseUrl: 'https://api.deepseek.com', apiProtocol: 'deepseek', model: 'deepseek-flash' },
+    model: 'deepseek-flash',
+    profile: { supportedLevels: ['low', 'high'], defaultLevel: 'high' },
+  }, 'An existing official configuration loads the selected model profile on demand')
+  globalThis.__inputState = null
+  const metadataCallCount = globalThis.__reasoningMetadataCalls.length
+  globalThis.__settings.apiBaseUrl = 'https://relay.example.test/v1'
+  globalThis.__settings.apiProtocol = 'openai'
+  tree = Input({ sessionId: 'current-chat' })
+  find(tree, node => node.type?.name === 'Select' && node.props.ariaLabel === 'apiModel').props.onLongPress()
+  assert.equal(globalThis.__reasoningMetadataCalls.length, metadataCallCount, 'Custom providers never use the official DeepSeek metadata endpoint')
+  globalThis.__inputState = null
+  globalThis.__settings.apiBaseUrl = 'https://api.deepseek.com'
+  globalThis.__settings.apiProtocol = 'deepseek'
+  checks.push('Long-pressing an official model loads its missing reasoning metadata on demand; custom routes do not call the DeepSeek metadata endpoint')
   const connection = { url: globalThis.__settings.apiBaseUrl, protocol: globalThis.__settings.apiProtocol, key: globalThis.__settings.apiKey }
   globalThis.__chat.streaming['current-chat'] = { model: 'deepseek-flash' }
   modelPicker.props.onChange('deepseek-v4-pro')

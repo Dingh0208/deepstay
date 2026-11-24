@@ -9,11 +9,16 @@ type ProviderHttp = {
     authorization: string | null
     accept: string | null
     body?: string | null
+    bodyLength?: number | null
+    streamBody?: boolean
     audioModel?: string | null
     audioFileName?: string | null
     audioContentType?: string | null
     audioBase64?: string | null
-  }): Promise<{ status: number; contentType?: string }>
+  }): Promise<{ status?: number; contentType?: string; uploading?: boolean }>
+  writeBodyChunk(options: { id: string; data: string }): Promise<{ continueUpload?: boolean }>
+  finishBody(options: { id: string }): Promise<{ continueUpload?: boolean }>
+  awaitResponse(options: { id: string }): Promise<{ status: number; contentType?: string }>
   read(options: { id: string }): Promise<{ data?: string }>
   close(options: { id: string }): Promise<void>
 }
@@ -93,6 +98,61 @@ export const supportsAndroidProviderTransport = (url: string): boolean => {
   }
 }
 
+const NATIVE_BODY_CHUNK_BYTES = 24 * 1024
+const NATIVE_STREAM_BODY_THRESHOLD = 128 * 1024
+
+const utf8ByteLength = (value: string) => {
+  let length = 0
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index)
+    if (code < 0x80) {
+      length += 1
+    } else if (code < 0x800) {
+      length += 2
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length &&
+        value.charCodeAt(index + 1) >= 0xdc00 && value.charCodeAt(index + 1) <= 0xdfff) {
+      length += 4
+      index += 1
+    } else {
+      length += 3
+    }
+  }
+  return length
+}
+
+async function* encodeUtf8BodyChunks(value: string): AsyncGenerator<string> {
+  const encoder = new TextEncoder()
+  let offset = 0
+  while (offset < value.length) {
+    let end = offset
+    let byteLength = 0
+    while (end < value.length) {
+      const code = value.charCodeAt(end)
+      let codeBytes = code < 0x80 ? 1 : code < 0x800 ? 2 : 3
+      let codeUnits = 1
+      if (code >= 0xd800 && code <= 0xdbff && end + 1 < value.length) {
+        const next = value.charCodeAt(end + 1)
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          codeBytes = 4
+          codeUnits = 2
+        }
+      }
+      if (byteLength + codeBytes > NATIVE_BODY_CHUNK_BYTES && end > offset) {
+        break
+      }
+      byteLength += codeBytes
+      end += codeUnits
+    }
+    const bytes = encoder.encode(value.slice(offset, end))
+    let binary = ''
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000))
+    }
+    yield btoa(binary)
+    offset = end
+  }
+}
+
 const encodeAudioForm = async (body: FormData) => {
   const entries = [...body.entries()]
   if (entries.length !== 2 || entries[0][0] !== 'model' || entries[0][1] !== 'whisper-1' ||
@@ -151,12 +211,16 @@ export const requestAndroidProvider = async (
   }
   signal?.addEventListener('abort', onAbort, { once: true })
   try {
-    const { status, contentType } = await new Promise<Awaited<ReturnType<ProviderHttp['open']>>>((resolve, reject) => {
+    const requestBody = typeof body === 'string' ? body : null
+    const streamBody = requestBody !== null && utf8ByteLength(requestBody) >= NATIVE_STREAM_BODY_THRESHOLD
+    const opened = await new Promise<Awaited<ReturnType<ProviderHttp['open']>>>((resolve, reject) => {
       fail = reject
       void providerHttp
         .open({
           id, url, method, authorization: input.get('Authorization'), accept: input.get('Accept'),
-          body: typeof body === 'string' ? body : null,
+          body: streamBody ? null : requestBody,
+          bodyLength: streamBody ? utf8ByteLength(requestBody) : null,
+          streamBody,
           audioModel: encodedAudio?.model ?? null,
           audioFileName: encodedAudio?.fileName ?? null,
           audioContentType: encodedAudio?.contentType ?? null,
@@ -164,6 +228,76 @@ export const requestAndroidProvider = async (
         })
         .then(resolve, reject)
     })
+    let responseInfo: { status: number; contentType?: string } | undefined
+    if (opened.uploading) {
+      if (requestBody === null) {
+        throw new TypeError('Missing streamed provider request body')
+      }
+      const responseReady = providerHttp.awaitResponse({ id }).then(
+        (response) => ({ response }),
+        (error: unknown) => ({ error })
+      )
+      const earlyResponseReady = responseReady.then((result) => {
+        if ('error' in result || result.response.status < 200 || result.response.status >= 300) {
+          return result
+        }
+        return new Promise<never>(() => {})
+      })
+      const readResponse = async () => {
+        const result = await responseReady
+        if ('error' in result) {
+          throw result.error
+        }
+        return result.response
+      }
+      for await (const data of encodeUtf8BodyChunks(requestBody)) {
+        if (signal?.aborted) {
+          throw abortReason()
+        }
+        const result = await Promise.race([
+          providerHttp.writeBodyChunk({ id, data }).then((write) => ({ write })),
+          earlyResponseReady.then((response) => ({ response })),
+        ])
+        if ('response' in result) {
+          responseInfo = await readResponse()
+          break
+        }
+        if (signal?.aborted) {
+          throw abortReason()
+        }
+        if (result.write.continueUpload === false) {
+          responseInfo = await readResponse()
+          break
+        }
+      }
+      if (responseInfo === undefined) {
+        if (signal?.aborted) {
+          throw abortReason()
+        }
+        const finish = await Promise.race([
+          providerHttp.finishBody({ id }).then((value) => ({ value })),
+          earlyResponseReady.then((response) => ({ response })),
+        ])
+        if ('response' in finish) {
+          responseInfo = await readResponse()
+        } else if (finish.value.continueUpload === false) {
+          responseInfo = await readResponse()
+        } else {
+          if (signal?.aborted) {
+            throw abortReason()
+          }
+          responseInfo = await readResponse()
+        }
+      }
+    } else if (opened.status !== undefined) {
+      responseInfo = { status: opened.status, contentType: opened.contentType }
+    } else {
+      throw new TypeError('Invalid provider response')
+    }
+    if (!responseInfo) {
+      throw new TypeError('Invalid provider response')
+    }
+    const { status, contentType } = responseInfo
     if (signal?.aborted) {
       throw abortReason()
     }
@@ -204,6 +338,9 @@ export const requestAndroidProvider = async (
     }, { highWaterMark: 0 }), init)
   } catch (error) {
     close()
+    if (signal?.aborted) {
+      throw abortReason()
+    }
     throw normalizeAndroidProviderError(error) ?? error
   }
 }

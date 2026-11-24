@@ -13,6 +13,7 @@ import {
 } from '../base/icons.js'
 import {
   BackupError,
+  backupFileName,
   clearHistory,
   exportHistory,
   importHistory,
@@ -666,29 +667,44 @@ const ExportHistory = ({ disabled }: { disabled: boolean }) => {
   const t = useTranslate()
   const empty = useChatStore((state) => state.sessions.length === 0)
   const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState(0)
   const [status, setStatus] = useState<Status>(null)
 
   const onExport = async () => {
     setBusy(true)
     setStatus(null)
+    setProgress(0)
     try {
-      const { name, blob } = await exportHistory()
       if (Capacitor.getPlatform() === 'android') {
-        const data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => resolve(String(reader.result).split(',')[1])
-          reader.onerror = () => reject(reader.error)
-          reader.readAsDataURL(blob)
-        })
         const files = registerPlugin<{
-          save(options: { name: string; data: string; mimeType: string }): Promise<{ cancelled: boolean }>
+          beginSave(options: { name: string }): Promise<{ cancelled: boolean; id: string }>
+          appendSave(options: { id: string; data: string }): Promise<void>
+          finishSave(options: { id: string }): Promise<void>
         }>('LocalFiles')
-        const { cancelled } = await files.save({ name, data, mimeType: 'application/zip' })
-        if (!cancelled) {
-          recordDiagnostic({ area: 'history', operation: 'export', outcome: 'ok' })
+        const target = await files.beginSave({ name: backupFileName(new Date()) })
+        if (target.cancelled) {
+          return
         }
+        try {
+          await exportHistory(setProgress, async (chunk) => {
+            for (let offset = 0; offset < chunk.length; offset += 192 * 1024) {
+              const bytes = chunk.subarray(offset, offset + 192 * 1024)
+              let binary = ''
+              for (let i = 0; i < bytes.length; i += 8192) {
+                binary += String.fromCharCode(...bytes.subarray(i, i + 8192))
+              }
+              await files.appendSave({ id: target.id, data: btoa(binary) })
+            }
+          })
+          await files.finishSave({ id: target.id })
+        } catch (error) {
+          await files.finishSave({ id: target.id }).catch(() => {})
+          throw error
+        }
+        recordDiagnostic({ area: 'history', operation: 'export', outcome: 'ok' })
         return
       }
+      const { name, blob } = await exportHistory(setProgress)
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
@@ -705,22 +721,30 @@ const ExportHistory = ({ disabled }: { disabled: boolean }) => {
   }
 
   return (
-    <SettingCell
-      label={t('exportAllLabel')}
-      description={t('historyExportDescription')}
-      status={status}
-      action={
-        <Button
-          variant="outlined"
-          size="m"
-          className={styles.cellButton}
-          disabled={disabled || busy || empty}
-          onClick={() => void onExport()}
-        >
-          <IconDownloadOutline16 />
-          {t('exportAllDownload')}
-        </Button>
-      }
-    />
+    <>
+      <SettingCell
+        label={t('exportAllLabel')}
+        description={t('historyExportDescription')}
+        status={status}
+        action={
+          <Button
+            variant="outlined"
+            size="m"
+            className={styles.cellButton}
+            disabled={disabled || busy || empty}
+            onClick={() => void onExport()}
+          >
+            <IconDownloadOutline16 />
+            {busy ? `${t('historyExporting')} ${progress}%` : t('exportAllDownload')}
+          </Button>
+        }
+      />
+      {busy ? (
+        <div className={styles.importProgress}>
+          <progress aria-label={t('historyExporting')} value={progress} max={100} />
+          <span>{progress}%</span>
+        </div>
+      ) : null}
+    </>
   )
 }

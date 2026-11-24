@@ -11,9 +11,9 @@ const mockUrl = text => 'data:text/javascript;base64,' + Buffer.from(text).toStr
 const mocks = new Map([
   ['react', 'export const useState=(...args)=>globalThis.__hooks.useState(...args); export const useRef=(...args)=>globalThis.__hooks.useRef(...args);'],
   ['react/jsx-runtime', 'export const Fragment=Symbol.for("fragment"); export const jsx=(type,props,key)=>({type,props,key}); export const jsxs=jsx;'],
-  ['@capacitor/core', 'export const Capacitor={}; export const registerPlugin=()=>({});'],
+  ['@capacitor/core', 'export const Capacitor={getPlatform:()=>globalThis.__exportPlatform}; export const registerPlugin=()=>globalThis.__exportNative;'],
   ['../base/icons.js', ['IconDarkOutline16', 'IconDataOutline16', 'IconDownloadOutline16', 'IconFollowsystemOutline16', 'IconLightOutline16', 'IconSettingsOutline16', 'IconUploadOutline14', 'IconWarningOutline16'].map(name => `export const ${name}=()=>null;`).join('')],
-  ['../../services/chat/backup.js', 'export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=async()=>{}; export const importHistory=(...args)=>globalThis.__importHistory(...args); export const previewHistory=(...args)=>globalThis.__previewHistory(...args);'],
+  ['../../services/chat/backup.js', 'export const backupFileName=()=>"history.zip"; export class BackupError extends Error{}; export const clearHistory=async()=>{}; export const exportHistory=(...args)=>globalThis.__exportHistory(...args); export const importHistory=(...args)=>globalThis.__importHistory(...args); export const previewHistory=(...args)=>globalThis.__previewHistory(...args);'],
   ['../../app/viewport.js', 'export const useIsMobile=()=>true;'],
   ['../../services/chat/store.js', 'export const useChatStore=selector=>selector(globalThis.__chatState);'],
   ['../../services/settings.js', 'export const isChineseBrowser=()=>false; export const setLocale=()=>{}; export const setThemePreference=()=>{}; export const setTtsVoice=()=>{}; export const setVoiceCallBargeIn=()=>{}; export const setVoiceCallPause=()=>{}; export const setVoiceCallSpeakerPreference=()=>{}; export const setChatFont=()=>{}; export const setChatFontSize=()=>{}; export const bundledChatFonts=[]; export const getChatFontFamily=()=>"system-ui"; export const useSettings=selector=>selector({locale:"zh-CN"});'],
@@ -42,7 +42,7 @@ const hooks = registerHooks({
   },
   load(url, context, nextLoad) {
     if (url === source.href) {
-      const input = readFileSync(source, 'utf8') + '\nexport { useHistoryImport, ImportHistory, ImportConfirm, SettingsContent };'
+      const input = readFileSync(source, 'utf8') + '\nexport { useHistoryImport, ImportHistory, ImportConfirm, SettingsContent, ExportHistory };'
       return { format: 'module', source: transformSync(input, JSON.stringify({ jsc: {
         target: 'es2022', parser: { syntax: 'typescript', tsx: true }, transform: { react: { runtime: 'automatic' } },
       }, module: { type: 'es6' } })).code, shortCircuit: true }
@@ -90,7 +90,7 @@ try {
     reportProgress = onProgress
     return new Promise((resolve, reject) => { resolveImport = resolve; rejectImport = reject })
   }
-  const { useHistoryImport, ImportHistory, ImportConfirm, SettingsContent } = await import(source)
+  const { useHistoryImport, ImportHistory, ImportConfirm, SettingsContent, ExportHistory } = await import(source)
   const renderHook = runner(useHistoryImport)
   const renderImport = runner(ImportHistory)
   let current = renderHook()
@@ -196,6 +196,58 @@ try {
   assert.equal(globalThis.__closed, 1)
   checks.push('Settings cannot close or start export/import during a serial import or explicit history replacement')
   assert.ok(zh.historyImported && en.historyImported)
+
+  globalThis.__chatState = { sessions: [{ id: 'export-fixture' }] }
+  globalThis.__exportPlatform = 'android'
+  const nativeChunks = []
+  let finishCalls = 0, cancel = false, failWrite = false, exportCalls = 0
+  globalThis.__exportNative = {
+    beginSave: async () => ({ cancelled: cancel, id: 'native-target' }),
+    appendSave: async ({ id, data }) => {
+      assert.equal(id, 'native-target')
+      assert.ok(data.length <= 262144, 'No bridge call carries the entire archive')
+      if (failWrite) throw Error('disk full')
+      nativeChunks.push(Buffer.from(data, 'base64'))
+    },
+    finishSave: async () => { finishCalls++ },
+  }
+  const exportBytes = Uint8Array.from({ length: 900000 }, (_, i) => i % 256)
+  let releaseExport
+  globalThis.__exportHistory = async (progress, writeChunk) => {
+    exportCalls++
+    progress(42)
+    await new Promise(resolve => { releaseExport = resolve })
+    await writeChunk(exportBytes)
+    progress(100)
+    return { name: 'history.zip', blob: new Blob() }
+  }
+  const renderExport = runner(ExportHistory)
+  const exportButton = tree => find(tree, node => node.type?.name === 'SettingCell').props.action
+  exportButton(renderExport({ disabled: false })).props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const exporting = renderExport({ disabled: false })
+  assert.equal(find(exporting, node => node.type === 'progress').props.value, 42)
+  assert.equal(exportButton(exporting).props.disabled, true)
+  releaseExport()
+  for (let i = 0; i < 20 && exportButton(renderExport({ disabled: false })).props.disabled; i++) await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(Buffer.concat(nativeChunks), Buffer.from(exportBytes))
+  assert.equal(finishCalls, 1)
+  assert.equal(find(renderExport({ disabled: false }), node => node.type === 'progress'), null)
+  cancel = true
+  exportButton(renderExport({ disabled: false })).props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(exportCalls, 1, 'Picker cancellation does not read or generate any archive')
+  cancel = false
+  failWrite = true
+  exportButton(renderExport({ disabled: false })).props.onClick()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  releaseExport()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const failedExport = renderExport({ disabled: false })
+  assert.equal(exportButton(failedExport).props.disabled, false)
+  assert.ok(find(failedExport, node => node.type?.name === 'SettingCell').props.status)
+  assert.equal(finishCalls, 2, 'Failed writes close the native output before releasing the button')
+  checks.push('Android export shows progress, splits a 900 KB ZIP chunk into bounded bridge calls with exact byte fidelity, closes the output on failure and skips archive generation when the picker is cancelled')
 
   const evidence = { passed: true, runtime: process.version, checks,
     scope: 'Actual SettingsDialog TSX, import hook, button and modal callbacks with deterministic React hooks and deferred import I/O; complements the real ZIP/IndexedDB regression, not a handset screenshot.' }

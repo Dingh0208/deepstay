@@ -108,3 +108,10 @@ export const prepareImageUpload = async (blob: Blob, forcePng = false): Promise<
     URL.revokeObjectURL(url)
   }
 }
+
+/** Conservative request budget: encoded bytes and decoded RGBA pixels both count. */
+export const estimateImageRequestBytes = async (blob: Blob): Promise<number> => {
+  const size = imageSize(await blob.slice(0, 128 * 1024).arrayBuffer())
+  return Math.max(blob.size, size && size.width > 0 && size.height > 0
+    ? Math.min(1, MAX_IMAGE_SIDE / Math.max(size.width, size.height)) ** 2 * size.width * size.height * 4 : blob.size)
+}

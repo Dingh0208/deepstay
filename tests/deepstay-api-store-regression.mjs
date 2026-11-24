@@ -363,6 +363,56 @@ const noImageError = (await db.loadSession(pureText)).messages.at(-1).error
 assert.equal(noImageError.localMessage.key, 'replyImageErrorWithoutAttachment')
 checks.push('A provider image rejection on an actual text-only request does not accuse users of attaching an image or secretly repeat the same request')
 
+// A provider may count decoded/server-side image bytes differently from local metadata.
+const totalImagesId = 'aggregate-image-limit'
+await openImageHistory(totalImagesId, [{ content: '历史照片说明', files: [goodImage] }])
+let totalImageRequests = 0
+let lastTotalBody
+globalThis.fetch = async (_url, init) => {
+  totalImageRequests++
+  lastTotalBody = JSON.parse(init.body)
+  if (totalImageRequests === 1) return Response.json({ error: { message: 'messages: Total image size exceeds the limit:max 200 MB per request, got 209 MB' } }, { status: 400 })
+  assert.ok(lastTotalBody.messages.every(message => typeof message.content === 'string' || message.content.every(block => block.type !== 'image')))
+  return officialReply(lastTotalBody)
+}
+drafts.setDraftText(totalImagesId, '继续')
+assert.equal(store.sendMessage(totalImagesId), true)
+await waitIdle()
+assert.equal(totalImageRequests, 2)
+assert.ok(lastTotalBody.messages.some(message => typeof message.content === 'string' && message.content.includes('历史照片说明')))
+assert.equal((await db.loadSession(totalImagesId)).messages[0].files[0].serverId, goodImage.serverId)
+assert.equal((await db.loadSession(totalImagesId)).messages.at(-1).status, 'done')
+checks.push('An aggregate image-size rejection retries at most once without historical image payloads and preserves the historical photo, text and final answer')
+
+const savedOfficialConnection = settings.useSettings.getState()
+settings.setApiConnection(changedB)
+const relayPhoto = image('relay-history-photo')
+await openImageHistory('relay-total-image-limit', [{ content: '第三方历史照片', files: [relayPhoto] }])
+const relayPng = new Uint8Array(24)
+const relayView = new DataView(relayPng.buffer)
+relayView.setUint32(0, 0x89504e47); relayView.setUint32(4, 0x0d0a1a0a)
+relayView.setUint32(16, 32); relayView.setUint32(20, 32)
+await db.saveFiles([{ id: relayPhoto.id, blob: new Blob([relayPng], { type: 'image/png' }) }])
+let relayTotalRequests = 0
+globalThis.fetch = async (_url, init) => {
+  relayTotalRequests++
+  const body = JSON.parse(init.body)
+  if (relayTotalRequests === 1) {
+    assert.ok(body.messages.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'image_url')))
+    return Response.json({ error: { message: 'messages: Total image size exceeds the limit:max 200 MB per request, got 209 MB' } }, { status: 400 })
+  }
+  assert.ok(body.messages.every(message => !Array.isArray(message.content) || message.content.every(block => block.type !== 'image_url')))
+  return new Response('data: ' + JSON.stringify({ id: 'relay-retry', choices: [{ index: 0, delta: { content: '第三方继续成功' }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } })
+}
+drafts.setDraftText('relay-total-image-limit', '继续')
+assert.equal(store.sendMessage('relay-total-image-limit'), true)
+await waitIdle()
+assert.equal(relayTotalRequests, 2)
+assert.equal((await db.loadSession('relay-total-image-limit')).messages.at(-1).status, 'done')
+assert.equal((await db.loadFile(relayPhoto.id)).size, 24)
+settings.setApiConnection(savedOfficialConnection)
+checks.push('A third-party OpenAI-compatible inline image request also recovers from the aggregate limit once, retaining the local original and final streamed answer')
+
 const { exportArchive } = await import(new URL('services/chat/history/exportArchive.ts', sourceRoot))
 const { importHistory } = await import(new URL('services/chat/backup.ts', sourceRoot))
 const importedImageSource = 'imported-image-source'

@@ -159,6 +159,13 @@ export const getImageSizeError = (
   return match ? { messageIndex: Number(match[1] ?? match[2]), blockIndex: Number(match[3] ?? match[4]) } : null
 }
 
+/** Aggregate image limits apply to the entire request, including historical images. */
+export const isTotalImageSizeError = (error: unknown): boolean =>
+  error instanceof ApiError &&
+  (error.kind === 'stream' || (error.kind === 'http' && [400, 413, 422].includes(error.status ?? 0)) ||
+    (error.kind === 'protocol' && error.status === 200)) &&
+  /(?:total|combined) image size exceeds (?:the )?limit/i.test(error.message)
+
 /** 上传失败里能识别出具体原因的情况；其余统一按「上传失败」处理 */
 export type UploadErrorCode = 'fileCountLimit' | 'storageLimit' | 'parseFailed'
 

@@ -212,21 +212,7 @@ let nativeFailureCode
 const nativeRequestUrls = []
 const nativeRequests = []
 let nativeResponseChunks = []
-const nativeBodyChunks = new Map()
-const finishedNativeBodies = new Set()
-const awaitedNativeBodies = new Set()
 const closedNativeRequests = new Set()
-const nativeResponseWaiters = new Map()
-const nativeEarlyResponses = new Map()
-let nativeWriteGate
-const deliverNativeResponse = (id, response) => {
-  nativeEarlyResponses.set(id, response)
-  const waiter = nativeResponseWaiters.get(id)
-  if (waiter) {
-    nativeResponseWaiters.delete(id)
-    waiter.resolve(response)
-  }
-}
 globalThis.__DEEPSTAY_CAPACITOR__ = {
   platform: 'android',
   available: true,
@@ -235,67 +221,16 @@ globalThis.__DEEPSTAY_CAPACITOR__ = {
       const { url } = request
       nativeRequestUrls.push(url)
       nativeRequests.push(request)
-      if (request.streamBody) {
-        assert.equal(request.body, null)
-        nativeBodyChunks.set(request.id, [])
-        return { uploading: true }
-      }
       if (nativeFailureCode) {
         throw Object.assign(new Error(`raw failure containing ${url} and ${configured.apiKey}`), { code: nativeFailureCode })
       }
       return { status: 200, contentType: request.accept }
     },
-    writeBodyChunk: async ({ id, data }) => {
-      if (nativeWriteGate && nativeWriteGate.afterChunks > 0) {
-        nativeWriteGate.afterChunks -= 1
-      } else if (nativeWriteGate) {
-        const gate = nativeWriteGate
-        nativeWriteGate = undefined
-        gate.started()
-        await gate.release
-        if (closedNativeRequests.has(id)) {
-          throw Object.assign(new Error('Provider request closed'), { code: 'PROVIDER_CLOSED' })
-        }
-        if (nativeEarlyResponses.has(id)) {
-          return { continueUpload: false }
-        }
-      }
-      const bytes = Buffer.from(data, 'base64')
-      assert.ok(bytes.length > 0 && bytes.length <= 24 * 1024)
-      nativeBodyChunks.get(id).push(bytes)
-      return { continueUpload: true }
-    },
-    finishBody: async ({ id }) => {
-      finishedNativeBodies.add(id)
-      const waiter = nativeResponseWaiters.get(id)
-      if (waiter) {
-        nativeResponseWaiters.delete(id)
-        waiter.resolve({ status: 200, contentType: 'text/event-stream' })
-      }
-      return { continueUpload: true }
-    },
-    awaitResponse: ({ id }) => {
-      awaitedNativeBodies.add(id)
-      if (nativeEarlyResponses.has(id)) {
-        return Promise.resolve(nativeEarlyResponses.get(id))
-      }
-      if (finishedNativeBodies.has(id)) {
-        return Promise.resolve({ status: 200, contentType: 'text/event-stream' })
-      }
-      return new Promise((resolve, reject) => nativeResponseWaiters.set(id, { resolve, reject }))
-    },
     read: async () => {
       const chunk = nativeResponseChunks.shift()
       return chunk === undefined ? {} : { data: Buffer.from(chunk).toString('base64') }
     },
-    close: async ({ id }) => {
-      closedNativeRequests.add(id)
-      const waiter = nativeResponseWaiters.get(id)
-      if (waiter) {
-        nativeResponseWaiters.delete(id)
-        waiter.reject(Object.assign(new Error('Provider request closed'), { code: 'PROVIDER_CLOSED' }))
-      }
-    },
+    close: async ({ id }) => { closedNativeRequests.add(id) },
   },
 }
 for (const [code, key, kind, diagnostic] of providerErrors) {
@@ -342,65 +277,12 @@ const largeNativeResponse = await requestAndroidProvider(privateChatUrl, {
   headers: { Authorization: 'Bearer fixture-private-key', Accept: 'text/event-stream' },
   body: largeNativeBody,
 })
-await largeNativeResponse.body.cancel()
 const largeNativeRequest = nativeRequests[nativeRequests.length - 1]
-assert.equal(largeNativeRequest.streamBody, true)
-assert.equal(largeNativeRequest.bodyLength, Buffer.byteLength(largeNativeBody, 'utf8'))
-assert.equal(Buffer.concat(nativeBodyChunks.get(largeNativeRequest.id)).toString('utf8'), largeNativeBody)
-assert.ok(nativeBodyChunks.get(largeNativeRequest.id).length > 5)
-let releaseEarlyResponseWrite
-let markEarlyResponseWriteStarted
-const earlyResponseWriteStarted = new Promise(resolve => { markEarlyResponseWriteStarted = resolve })
-nativeWriteGate = {
-  afterChunks: 1,
-  started: markEarlyResponseWriteStarted,
-  release: new Promise(resolve => { releaseEarlyResponseWrite = resolve }),
-}
-nativeResponseChunks = [JSON.stringify({ error: { message: 'request exceeds provider context limit' } })]
-const pendingEarlyResponse = requestAndroidProvider(privateChatUrl, {
-  method: 'POST',
-  headers: { Authorization: 'Bearer fixture-private-key', Accept: 'text/event-stream' },
-  body: largeNativeBody,
-})
-await earlyResponseWriteStarted
-const earlyRejectedRequest = nativeRequests[nativeRequests.length - 1]
-deliverNativeResponse(earlyRejectedRequest.id, { status: 413, contentType: 'application/json' })
-releaseEarlyResponseWrite()
-const earlyRejectedResponse = await pendingEarlyResponse
-assert.equal(earlyRejectedResponse.status, 413)
-assert.deepEqual(JSON.parse(await earlyRejectedResponse.text()), { error: { message: 'request exceeds provider context limit' } })
-assert.equal(finishedNativeBodies.has(earlyRejectedRequest.id), false)
-assert.equal(awaitedNativeBodies.has(earlyRejectedRequest.id), true)
-assert.equal(closedNativeRequests.has(earlyRejectedRequest.id), true)
-assert.ok(nativeBodyChunks.get(earlyRejectedRequest.id).length > 0)
-assert.ok(nativeBodyChunks.get(earlyRejectedRequest.id).length < Math.ceil(earlyRejectedRequest.bodyLength / (24 * 1024)))
-let releaseNativeWrite
-let markNativeWriteStarted
-const nativeWriteStarted = new Promise(resolve => { markNativeWriteStarted = resolve })
-const abortController = new AbortController()
-nativeWriteGate = {
-  afterChunks: 1,
-  started: markNativeWriteStarted,
-  release: new Promise(resolve => { releaseNativeWrite = resolve }),
-}
-const pendingNativeUpload = requestAndroidProvider(privateChatUrl, {
-  method: 'POST',
-  headers: { Authorization: 'Bearer fixture-private-key', Accept: 'text/event-stream' },
-  body: largeNativeBody,
-  signal: abortController.signal,
-})
-await nativeWriteStarted
-const abortedNativeRequest = nativeRequests[nativeRequests.length - 1]
-abortController.abort()
-releaseNativeWrite()
-await assert.rejects(pendingNativeUpload, error => error?.name === 'AbortError')
-assert.equal(finishedNativeBodies.has(abortedNativeRequest.id), false)
-assert.equal(awaitedNativeBodies.has(abortedNativeRequest.id), true)
-assert.equal(closedNativeRequests.has(abortedNativeRequest.id), true)
-assert.ok(nativeBodyChunks.get(abortedNativeRequest.id).length > 0)
-assert.ok(nativeBodyChunks.get(abortedNativeRequest.id).length < Math.ceil(abortedNativeRequest.bodyLength / (24 * 1024)))
-checks.push('Android native transport sends large Unicode JSON in bounded UTF-8 chunks, preserves exact bytes across a surrogate-pair boundary, and finishes before awaiting response')
-checks.push('Aborting an Android large-body upload closes the native request, skips finish/response waits and reports AbortError')
+assert.equal(largeNativeRequest.body, largeNativeBody)
+assert.equal(largeNativeRequest.streamBody, undefined)
+assert.equal(largeNativeRequest.bodyLength, undefined)
+await largeNativeResponse.body.cancel()
+checks.push('Android third-party requests retain the v0.1.20 single-payload native bridge path for large Unicode bodies')
 checks.push('Android routes private HTTP IP model discovery and streaming chat through native OkHttp; public HTTP remains blocked before any network request')
 const audioFixture = new Blob([Uint8Array.from([82, 73, 70, 70, 4, 0, 0, 0, 87, 65, 86, 69])], { type: 'audio/wav' })
 const expectedAudioBase64 = Buffer.from(await audioFixture.arrayBuffer()).toString('base64')

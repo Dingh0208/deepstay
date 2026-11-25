@@ -3,13 +3,6 @@ package xyz.infralyx.deepstay;
 import static org.junit.Assert.*;
 
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -18,12 +11,6 @@ import okio.Buffer;
 import org.junit.Test;
 
 public class ProviderHttpPluginTest {
-    @Test
-    public void readsIntegerAndLongBodyLengthsForLargeProviderRequests() {
-        assertEquals(Long.valueOf(131072), ProviderHttpPlugin.readBodyLength(Integer.valueOf(131072), null));
-        assertEquals(Long.valueOf(2147483648L), ProviderHttpPlugin.readBodyLength(null, Long.valueOf(2147483648L)));
-    }
-
     @Test
     public void cleartextIsLimitedToLoopbackAndPrivateNetworkHosts() {
         for (String host : new String[] {
@@ -77,78 +64,6 @@ public class ProviderHttpPluginTest {
         for (String path : new String[] { "/proxy%2fprivate/models", "/proxy%5cprivate/models", "/proxy/%2e%2e/models", "/proxy/%252e%252e/models", "/proxy/../models", "/other" }) {
             assertFalse(path, ProviderHttpPlugin.supportsProviderPath(URI.create("https://relay.example.test" + path)));
         }
-    }
-
-    @Test
-    public void streamedRequestBodyWritesExactUtf8BytesFromBoundedChunks() throws Exception {
-        String expected = "a".repeat(24 * 1024 - 1) + "😀" + "食".repeat(45_000);
-        byte[] utf8 = expected.getBytes(StandardCharsets.UTF_8);
-        BlockingQueue<ProviderHttpPlugin.BodyChunk> chunks = new ArrayBlockingQueue<>(2);
-        AtomicBoolean bodyWritten = new AtomicBoolean(false);
-        RequestBody body = ProviderHttpPlugin.createChunkedRequestBody(utf8.length, chunks, bodyWritten);
-        assertEquals(utf8.length, body.contentLength());
-        assertTrue(body.isOneShot());
-
-        AtomicReference<Throwable> producerFailure = new AtomicReference<>();
-        Thread writer = new Thread(() -> {
-            try {
-                for (int offset = 0; offset < utf8.length;) {
-                    int end = Math.min(offset + 24 * 1024, utf8.length);
-                    chunks.put(ProviderHttpPlugin.BodyChunk.data(java.util.Arrays.copyOfRange(utf8, offset, end)));
-                    offset = end;
-                }
-                chunks.put(ProviderHttpPlugin.BodyChunk.end());
-            } catch (InterruptedException error) {
-                producerFailure.set(error);
-                Thread.currentThread().interrupt();
-            }
-        });
-        writer.start();
-        Buffer output = new Buffer();
-        body.writeTo(output);
-        writer.join(2_000);
-        assertFalse("request body producer should exit", writer.isAlive());
-        assertNull(producerFailure.get());
-        assertTrue(bodyWritten.get());
-        assertArrayEquals(utf8, output.readByteArray());
-    }
-
-    @Test
-    public void streamedRequestBodyStopsWhenEarlyHttpResponseArrives() throws Exception {
-        BlockingQueue<ProviderHttpPlugin.BodyChunk> chunks = new ArrayBlockingQueue<>(2);
-        AtomicBoolean bodyWritten = new AtomicBoolean(false);
-        RequestBody body = ProviderHttpPlugin.createChunkedRequestBody(10, chunks, bodyWritten);
-        Call call = new OkHttpClient().newCall(new Request.Builder().url("https://relay.example.test/v1/chat/completions").build());
-        ProviderHttpPlugin.RequestState state = new ProviderHttpPlugin.RequestState(call, 10, chunks, bodyWritten);
-        CountDownLatch started = new CountDownLatch(1);
-        AtomicReference<java.io.IOException> failure = new AtomicReference<>();
-        Thread writer = new Thread(() -> {
-            started.countDown();
-            try {
-                body.writeTo(new Buffer());
-            } catch (java.io.IOException error) {
-                failure.set(error);
-            }
-        });
-        writer.start();
-        assertTrue(started.await(2, TimeUnit.SECONDS));
-        state.bodyFinishRequested = true; // finishBody started, but its end marker has not been queued yet.
-        assertTrue(state.stopForEarlyHttpResponse());
-        writer.join(2_000);
-        assertFalse("closed request body writer should exit", writer.isAlive());
-        assertEquals("Provider returned an HTTP error before upload completed", failure.get().getMessage());
-        assertTrue(state.earlyHttpResponse);
-        assertFalse(bodyWritten.get());
-        assertTrue(chunks.isEmpty());
-    }
-
-    @Test
-    public void streamedRequestBodyRejectsIncompleteByteCount() throws Exception {
-        BlockingQueue<ProviderHttpPlugin.BodyChunk> chunks = new ArrayBlockingQueue<>(2);
-        chunks.add(ProviderHttpPlugin.BodyChunk.data(new byte[] { 1, 2 }));
-        chunks.add(ProviderHttpPlugin.BodyChunk.end());
-        RequestBody body = ProviderHttpPlugin.createChunkedRequestBody(3, chunks, new AtomicBoolean(false));
-        assertThrows(java.io.IOException.class, () -> body.writeTo(new Buffer()));
     }
 
     @Test

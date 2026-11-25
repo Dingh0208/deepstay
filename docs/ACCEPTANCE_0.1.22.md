@@ -1,6 +1,6 @@
 # 0.1.22 紧急修复验收
 
-日期：2026-11-24（北京时间）。版本：0.1.22 / Android versionCode 23。
+日期：2026-11-25（北京时间）。版本：0.1.22 / Android versionCode 23。
 
 ## 故障与修复
 
@@ -17,4 +17,7 @@
 
 ## 发布验证
 
-标签 CI、GitHub Release、国内更新清单以及完整 APK 下载校验待完成后补记。
+- [GitHub Actions 45432513066](https://github.com/Dingh0208/deepstay/actions/runs/45432513066) 的 build 与 publish 任务全部成功，包括 Android release 单测、签名 APK 身份校验和国内上传。
+- [v0.1.22 Release](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.22) 于北京时间 2026-11-25 00:27 发布，标签指向 `9501271d2a98133392db7c9ae819fb5ce9b96106`，含 APK、清单与 SHA-256 校验和。
+- [国内更新清单](https://ds.herohao.top/updates/latest.json) 已切换到 `0.1.22 / versionCode 23`。已完整下载 APK：20,335,943 字节；本机计算 SHA-256 为 `acfbe02291f3a6a6b7462e090c172cc5495ad6ff4bb657364546b0482de2daa9`，与国内清单及 GitHub APK asset digest 一致。
+- 回归测试使用合成请求，不调用真实第三方 API 或用户 Key；没有实体手机联网验收。

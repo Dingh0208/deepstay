@@ -38,6 +38,7 @@ import {
   estimateRequestTokens,
   prepareContextMemory,
   type CompactionFailure,
+  type CompactionSkipReason,
 } from './contextMemory.js'
 import { fitRequestHistory, getRetryInputBudget } from './contextLimit.js'
 import { memoryText } from './memoryRecords.js'
@@ -825,10 +826,16 @@ const deleteMessageData = async (id: string, messageIds: readonly string[]): Pro
   }
 }
 
+const notNeededStatus = (reason?: CompactionSkipReason) =>
+  reason === 'tooShort' ? 'notNeededTooShort'
+    : reason === 'requiredSystemTooLarge' ? 'notNeededSystemTooLarge'
+    : reason === 'nothingExtracted' ? 'notNeededNothingExtracted'
+    : 'notNeeded'
+
 /** Local command: compact the selected branch without creating a chat turn. */
 export const compactSession = async (
   sessionId: string | null
-): Promise<'saved' | 'failed' | 'failedConnection' | 'failedContextLimit' | 'failedProvider' | 'failedTimeout' | 'failedResponse' | 'failedStorage' | 'notNeeded' | 'cancelled'> => {
+): Promise<'saved' | 'failed' | 'failedConnection' | 'failedContextLimit' | 'failedProvider' | 'failedTimeout' | 'failedResponse' | 'failedStorage' | 'notNeeded' | 'notNeededTooShort' | 'notNeededSystemTooLarge' | 'notNeededNothingExtracted' | 'cancelled'> => {
   if (sessionId === null) {return 'notNeeded'}
   const session = getSession(sessionId)
   const settings = useSettings.getState()
@@ -885,7 +892,9 @@ export const compactSession = async (
     if (context.compactionFailure) {
       return manualCompactionFailure(context.compactionFailure)
     }
-    return context.compaction === 'failed' ? 'failedResponse' : context.compaction ?? 'notNeeded'
+    if (context.compaction === 'failed') {return 'failedResponse'}
+    if (context.compaction === 'notNeeded') {return notNeededStatus(context.compactionSkipReason)}
+    return context.compaction ?? 'notNeeded'
   } catch (error) {
     if (signal.aborted) {
       return 'cancelled'

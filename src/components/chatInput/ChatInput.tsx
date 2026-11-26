@@ -311,6 +311,15 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
       if (result === 'notNeeded') {
         showToast({ key: 'contextMemoryNotNeeded' })
       }
+      if (result === 'notNeededTooShort') {
+        showToast({ key: 'contextMemoryNotNeededTooShort' })
+      }
+      if (result === 'notNeededSystemTooLarge') {
+        showToast({ key: 'contextMemoryNotNeededSystemTooLarge' })
+      }
+      if (result === 'notNeededNothingExtracted') {
+        showToast({ key: 'contextMemoryNotNeededNothingExtracted' })
+      }
       if (result === 'failed') {
         showToast({ key: 'contextMemoryManualFailed', type: 'error' })
       }

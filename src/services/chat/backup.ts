@@ -13,6 +13,21 @@ export const previewHistory = async (file: File) => {
   return previewArchive(file)
 }
 
+/** 下载远端导出包并交接为 File；不占用备份队列，确认导入时才入队。 */
+export const downloadRemoteHistory = async (
+  url: string,
+  onProgress?: (percent: number) => void,
+  signal?: AbortSignal
+): Promise<File> => {
+  const { downloadArchive } = await import('./history/remoteArchive.js')
+  return downloadArchive(url, {
+    signal,
+    onProgress: ({ received, total }) => {
+      onProgress?.(total ? Math.min(99, Math.floor((received / total) * 100)) : 0)
+    },
+  })
+}
+
 // 导入、导出与全部删除串行处理，避免读取归档时数据被清空或两个导入事务交错。
 let backupQueue: Promise<unknown> = Promise.resolve()
 

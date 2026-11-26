@@ -544,8 +544,13 @@ export const getStagedImportTargets = async (): Promise<Set<string>> => {
 }
 
 /** Atomically add missing source messages/files; failures leave every existing chat unchanged. */
-export const commitStaging = async (replace = false): Promise<SessionSummary[]> => {
+export const commitStaging = async (
+  replace = false,
+  /** 新导入会话的本地 ID 列表；仅当该会话的归档带置顶时返回，事务成功后回调。 */
+  onImported?: (ids: readonly string[]) => void
+): Promise<SessionSummary[]> => {
   const summaries: SessionSummary[] = []
+  const importedPinned: string[] = []
   const tx = (await getDB()).transaction(
     ['sessions', 'sessionSummaries', 'files', 'sessionsStaging', 'filesStaging',
       'memoryRecords', 'memorySegments', 'memoryState'],
@@ -626,6 +631,10 @@ export const commitStaging = async (replace = false): Promise<SessionSummary[]> 
             })
             summaries.push(toSessionSummary(summary))
           }
+          // 首次导入的会话才按归档恢复置顶；既有会话保留本机选择。
+          if (!original && source.importSource?.pinned) {
+            importedPinned.push(session.id)
+          }
         }
         if (replace) {
           for (let cursor = await tx.objectStore('filesStaging').openCursor(); cursor; cursor = await cursor.continue()) {
@@ -641,6 +650,9 @@ export const commitStaging = async (replace = false): Promise<SessionSummary[]> 
     })(),
     tx.done,
   ])
+  if (importedPinned.length && onImported) {
+    onImported(importedPinned)
+  }
   return summaries
 }
 

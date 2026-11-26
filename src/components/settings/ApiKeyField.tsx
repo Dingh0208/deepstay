@@ -2,8 +2,8 @@ import clsx from 'clsx'
 import { useState } from 'react'
 import { useChatStore } from '../../services/chat/store.js'
 import { useTranslate } from '../../i18n/index.js'
-import { deleteModelPreset, saveModelPreset, useSettings } from '../../services/settings.js'
-import { normalizeApiBaseUrl } from '../../services/api/connection.js'
+import { DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL, deleteModelPreset, saveModelPreset, useSettings } from '../../services/settings.js'
+import { normalizeApiBaseUrl, supportsDeepSeekExtras } from '../../services/api/connection.js'
 import { Button } from '../base/Button.js'
 import { Select } from '../base/Select.js'
 import { ApiBalanceQueryButton } from './ApiBalanceSetting.js'
@@ -17,11 +17,14 @@ export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEdi
   const t = useTranslate()
   const [customModel, setCustomModel] = useState(false)
   const presets = useSettings((state) => state.modelPresets)
-  const currentPreset = presets.find((preset) => preset.apiKey === editor.value &&
-    preset.apiBaseUrl === editor.baseUrl && preset.apiProtocol === editor.protocol && preset.model === editor.model)
+  const activeModelPresetId = useSettings((state) => state.activeModelPresetId)
+  const matchesEditor = (preset: typeof presets[number]) => preset.apiKey === editor.value &&
+    preset.apiBaseUrl === editor.baseUrl && preset.apiProtocol === editor.protocol && preset.model === editor.model
+  const currentPreset = presets.find((preset) => preset.id === activeModelPresetId && matchesEditor(preset)) ??
+    presets.find(matchesEditor)
   const [presetId, setPresetId] = useState(currentPreset?.id ?? '')
   const [presetName, setPresetName] = useState(currentPreset?.name ?? '')
-  const [presetNotice, setPresetNotice] = useState<'modelPresetSaved' | 'modelPresetNameRequired' | 'modelPresetInvalid' | null>(null)
+  const [presetNotice, setPresetNotice] = useState<'modelPresetSaved' | 'modelPresetNameRequired' | 'modelPresetInvalid' | 'searchApiCountInvalid' | null>(null)
   const streaming = useChatStore((state) => Object.keys(state.streaming).length > 0)
   const choices = [...new Set([editor.model, ...editor.models].filter(Boolean))]
   const disabled = editor.busy !== null
@@ -51,6 +54,11 @@ export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEdi
       setPresetNotice('modelPresetInvalid')
       return
     }
+    if (!supportsDeepSeekExtras({ baseUrl: editor.baseUrl, protocol: editor.protocol }) &&
+        (!Number.isInteger(editor.searchApiCount) || editor.searchApiCount < 1 || editor.searchApiCount > 50)) {
+      setPresetNotice('searchApiCountInvalid')
+      return
+    }
     try {
       const id = saveModelPreset({
         name: presetName,
@@ -59,6 +67,13 @@ export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEdi
         apiProtocol: editor.protocol,
         model: editor.model,
         models: editor.models,
+        ...(!supportsDeepSeekExtras({ baseUrl: editor.baseUrl, protocol: editor.protocol }) ? {
+          searchApi: {
+            apiKey: editor.searchApiKey,
+            baseUrl: editor.searchApiBaseUrl || DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL,
+            count: editor.searchApiCount,
+          },
+        } : {}),
       }, presetId || undefined)
       setPresetId(id)
       setPresetName(presetName.trim())
@@ -119,6 +134,32 @@ export const ApiKeyField = ({ editor }: { editor: ReturnType<typeof useApiKeyEdi
             options={[{ value: 'deepseek', label: t('apiProtocolDeepSeek') }, { value: 'openai', label: t('apiProtocolOpenAI') }]}
             onChange={editor.setProtocol} />
         </div>
+        {!supportsDeepSeekExtras({ baseUrl: editor.baseUrl, protocol: editor.protocol }) ? <>
+          <div className={apiStyles.searchTitle}>{t('searchApiTitle')}</div>
+          <div className={apiStyles.searchDescription}>{t('searchApiDescription')}</div>
+          <label className={apiStyles.fieldRow}>
+            <span className={styles.label}>{t('searchApiBaseUrl')}</span>
+            <div className={styles.apiKeyInput}>
+              <input type="url" disabled={disabled} autoCapitalize="none" autoComplete="off" spellCheck={false}
+                value={editor.searchApiBaseUrl} onChange={(event) => editor.setSearchApiBaseUrl(event.target.value)} />
+            </div>
+          </label>
+          <label className={apiStyles.fieldRow}>
+            <span className={styles.label}>{t('searchApiKey')}</span>
+            <div className={styles.apiKeyInput}>
+              <input type="password" disabled={disabled} autoComplete="off" autoCapitalize="none" spellCheck={false}
+                value={editor.searchApiKey} onChange={(event) => editor.setSearchApiKey(event.target.value)} />
+            </div>
+          </label>
+          <label className={apiStyles.fieldRow}>
+            <span className={styles.label}>{t('searchApiCount')}</span>
+            <div className={styles.apiKeyInput}>
+              <input type="number" disabled={disabled} min={1} max={50} step={1}
+                value={Number.isFinite(editor.searchApiCount) ? editor.searchApiCount : ''}
+                onChange={(event) => editor.setSearchApiCount(event.target.value === '' ? Number.NaN : Number(event.target.value))} />
+            </div>
+          </label>
+        </> : null}
         <label className={apiStyles.fieldRow}>
           <span className={styles.label}>API Key</span>
           <div className={styles.apiKeyInput}>

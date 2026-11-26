@@ -22,9 +22,8 @@
 
 .footer .jumpToLatest {
   position: absolute;
-  left: 50%;
+  right: 12px;
   bottom: calc(100% + 8px);
-  transform: translateX(-50%);
   border: 1px solid var(--dsw-alias-border-l2);
   background: var(--dsw-alias-button-elevated-fill);
   box-shadow: 0 2px 6px var(--dsw-alias-border-l2);

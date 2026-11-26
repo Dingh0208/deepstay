@@ -82,24 +82,72 @@ const failureKey = (error: unknown): TranslationKey => {
 }
 
 /** 浏览器环境没有原生下载能力，只能依赖目标站点的跨域许可。 */
-const downloadInBrowser = async (url: URL): Promise<File> => {
+const downloadInBrowser = async (url: URL, options: ArchiveDownloadOptions): Promise<File> => {
   let response: Response
   try {
-    response = await fetch(url.toString())
+    response = await fetch(url.toString(), { signal: options.signal })
   } catch {
     return fail('historyImportLinkFailed')
   }
   if (!response.ok) {
     fail(response.status === 403 ? 'historyImportLinkExpired' : 'historyImportLinkFailed')
   }
-  const blob = await response.blob()
-  if (blob.size === 0) {
-    fail('historyImportLinkFailed')
-  }
-  if (blob.size > MAX_ARCHIVE_BYTES) {
+  const contentLengthHeader = response.headers.get('content-length')
+  const contentLength = contentLengthHeader === null ? Number.NaN : Number(contentLengthHeader)
+  const total = Number.isSafeInteger(contentLength) && contentLength >= 0 ? contentLength : null
+  if (total !== null && total > MAX_ARCHIVE_BYTES) {
+    await response.body?.cancel().catch(() => {})
     fail('historyImportLinkTooLarge')
   }
-  return new File([blob], archiveName(url), { type: 'application/zip' })
+  if (!response.body) {
+    const blob = await response.blob()
+    if (blob.size === 0) {
+      fail('historyImportLinkFailed')
+    }
+    if (blob.size > MAX_ARCHIVE_BYTES) {
+      fail('historyImportLinkTooLarge')
+    }
+    return new File([blob], archiveName(url), { type: 'application/zip' })
+  }
+
+  const reader = response.body.getReader()
+  const cancel = () => { void reader.cancel().catch(() => {}) }
+  options.signal?.addEventListener('abort', cancel, { once: true })
+  const chunks: Uint8Array<ArrayBuffer>[] = []
+  let received = 0
+  try {
+    for (;;) {
+      if (options.signal?.aborted) {
+        fail('historyImportLinkFailed')
+      }
+      const { done, value } = await reader.read()
+      if (options.signal?.aborted) {
+        fail('historyImportLinkFailed')
+      }
+      if (done) {
+        break
+      }
+      received += value.byteLength
+      if (received > MAX_ARCHIVE_BYTES) {
+        cancel()
+        fail('historyImportLinkTooLarge')
+      }
+      chunks.push(Uint8Array.from(value))
+      options.onProgress?.({ received, total })
+    }
+  } catch (error) {
+    if (error instanceof BackupError) {
+      throw error
+    }
+    return fail('historyImportLinkFailed')
+  } finally {
+    options.signal?.removeEventListener('abort', cancel)
+    reader.releaseLock()
+  }
+  if (received === 0) {
+    fail('historyImportLinkFailed')
+  }
+  return new File([new Blob(chunks)], archiveName(url), { type: 'application/zip' })
 }
 
 /**
@@ -112,7 +160,7 @@ export const downloadArchive = async (
 ): Promise<File> => {
   const url = parseArchiveUrl(input)
   if (Capacitor.getPlatform() !== 'android') {
-    return downloadInBrowser(url)
+    return downloadInBrowser(url, options)
   }
   const id = `archive-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
   const plugin = archivePlugin()

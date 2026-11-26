@@ -19,10 +19,11 @@ import {
 } from '../api/errors.js'
 import { cancelUpload, describeUploadError, getUploadPurpose, uploadAttachment, useUploads } from '../attachments.js'
 import { encodeLocalImage, extractLocalAttachmentText, LocalAttachmentError, type LocalAttachmentContent } from '../localAttachments.js'
-import { clearFavoriteMessages, clearPinnedSessions, getModelReasoningProfile, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
+import { clearFavoriteMessages, clearPinnedSessions, getActiveSearchApi, getModelReasoningProfile, removeFavoriteMessages, setPinnedSession, useSettings } from '../settings.js'
 import { appendBranch, getRoundMessageIds, getVisibleMessages, normalizeSession, removeBranchMessages, replaceSessionReply, selectVersion } from './branches.js'
 import * as db from './db.js'
 import { limitRequestImages } from './requestImages.js'
+import { formatDeepSeekSearchContext, searchDeepSeekWeb } from '../api/webSearch.js'
 import {
   clearAllDrafts,
   clearDraft,
@@ -78,12 +79,26 @@ const FILE_RETRY_BASE_DELAY = 1000
 // Reuse a confirmed input budget on the same API configuration during this app session.
 let learnedContextLimit: { route: string; key: string; budget: number } | undefined
 
+const contextRouteKey = (
+  connection: ApiConnection,
+  model: string,
+  thinking: boolean,
+  search: boolean,
+  settings = useSettings.getState()
+) => {
+  const extras = supportsDeepSeekExtras(connection)
+  const searchApi = getActiveSearchApi(settings)
+  const customSearch = !extras && searchApi?.apiKey.trim() ? searchApi : undefined
+  const searchEnabled = search && (extras || Boolean(customSearch))
+  return JSON.stringify([connection.baseUrl, connection.protocol, model, thinking, searchEnabled,
+    customSearch?.baseUrl, customSearch?.count])
+}
+
 /** Read-only budget for the next request, including a provider-confirmed limit on this route. */
 export const getEffectiveContextInputBudget = (): number => {
   const { apiKey, model, thinking, search, generation } = useSettings.getState()
   const connection = getApiConnection()
-  const serverSearch = supportsDeepSeekExtras(connection) && search
-  const route = JSON.stringify([connection.baseUrl, connection.protocol, model, thinking, serverSearch])
+  const route = contextRouteKey(connection, model, thinking, search)
   const window = generation.contextTokens ?? DEFAULT_CONTEXT_WINDOW
   const budget = generation.contextTokens ?? DEFAULT_REQUEST_INPUT_BUDGET
   return learnedContextLimit?.route === route && learnedContextLimit.key === apiKey
@@ -333,7 +348,10 @@ export const bindChatPersistence = () => {
 /** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
 const createReply = (snapshot?: Pick<AssistantMessage, 'thinking' | 'reasoningEffort'>): AssistantMessage => {
   const { thinking, search, model, apiProtocol } = useSettings.getState()
-  const { apiBaseUrl } = useSettings.getState()
+  const settings = useSettings.getState()
+  const { apiBaseUrl } = settings
+  const connection = getApiConnection()
+  const searchApi = getActiveSearchApi(settings)
   const replyThinking = snapshot?.thinking ?? thinking
   const reasoningEffort = snapshot
     ? snapshot.reasoningEffort
@@ -345,7 +363,7 @@ const createReply = (snapshot?: Pick<AssistantMessage, 'thinking' | 'reasoningEf
     model,
     thinking: replyThinking,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    search: supportsDeepSeekExtras() && search,
+    search: (supportsDeepSeekExtras(connection) || Boolean(searchApi?.apiKey.trim())) && search,
     prefix: apiProtocol === 'deepseek',
     status: 'pending',
     blocks: [],
@@ -885,8 +903,7 @@ export const compactSession = async (
       onCommit: (update) => db.commitMemoryUpdate(snapshot.state, update, valid),
       onInputLimit: (limit) => {
         const budget = Math.floor(limit * 0.85)
-        const route = JSON.stringify([connection.baseUrl, connection.protocol, settings.model,
-          settings.thinking, supportsDeepSeekExtras(connection) && settings.search])
+        const route = contextRouteKey(connection, settings.model, settings.thinking, settings.search, settings)
         learnedContextLimit = { route, key: settings.apiKey ?? '', budget }
       },
       onProgress: (progress) => set((state) => ({
@@ -1490,7 +1507,10 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const generation = settings.generation
   const sourceSession = getSession(sessionId)
   const baseSystem = characterSystemPrompt(generation.system ?? SYSTEM_PROMPT, sourceSession?.character)
-  const contextRoute = JSON.stringify([connection.baseUrl, connection.protocol, model, initial.thinking, initial.search])
+  const searchApi = getActiveSearchApi(settings)
+  const extras = supportsDeepSeekExtras(connection)
+  const customSearch = !extras && searchApi?.apiKey.trim() ? searchApi : undefined
+  const contextRoute = contextRouteKey(connection, model, initial.thinking ?? false, initial.search ?? false, settings)
   let inputBudget = learnedContextLimit?.route === contextRoute && learnedContextLimit.key === apiKey
     ? learnedContextLimit.budget
     : undefined
@@ -1501,7 +1521,6 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   let retriedContextLimit = false
   let attachmentRetries = 0
   const repairedImageIds = new Set<string>()
-  const extras = supportsDeepSeekExtras(connection)
   const serverExtras = extras
   const imageRoute = JSON.stringify([connection.baseUrl, connection.protocol, model])
   if (extras && (rejectedHistoryImages?.route !== imageRoute || rejectedHistoryImages.key !== apiKey)) {
@@ -1535,6 +1554,9 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
   const excludedHistoryImageIds = new Set<string>()
   let retriedWithoutHistoryImages = false
   let omitHistoryImages = false
+  let customSearchPrepared = false
+  let customSearchContext = ''
+  let customSearchUnavailable = false
   const initialSave = pendingSaves.get(sessionId)
   if (settings.contextMemoryEnabled) {
     contextPreparations.add(sessionId)
@@ -1735,10 +1757,31 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           false,
           prepared.localFiles
         )
+        if (initial.search && customSearch && !customSearchPrepared) {
+          customSearchPrepared = true
+          const query = prepared.question.content.trim()
+          if (query) {
+            try {
+              customSearchContext = formatDeepSeekSearchContext(
+                await searchDeepSeekWeb(customSearch, query, controller.signal)
+              )
+            } catch {
+              if (controller.signal.aborted) {
+                throw controller.signal.reason
+              }
+              customSearchUnavailable = true
+            }
+          } else {
+            customSearchContext = '本条消息没有可搜索的文字。请勿编造搜索结果或来源。'
+          }
+        }
         let body: CreateMessageRequest = {
           model,
           ...generationParameters(generation, connection, initial.thinking ?? false),
-          system: [baseSystem, systemMemory].filter(Boolean).join('\n\n'),
+          system: [baseSystem, systemMemory, customSearchContext,
+            customSearchUnavailable
+              ? '本轮联网搜索服务暂不可用。请如实告知用户未能搜索，不要伪称已搜索，也不要编造来源。'
+              : ''].filter(Boolean).join('\n\n'),
           messages,
           thinking: { type: initial.thinking && initial.reasoningEffort !== 'none' ? 'enabled' : 'disabled' },
           ...(initial.thinking && initial.reasoningEffort ? { reasoningEffort: initial.reasoningEffort } : {}),

@@ -465,7 +465,7 @@ export const MessageList = ({
         {(!atBottom || end < messages.length) && (
           <IconButton
             icon={<IconChevronDownOutline14 />}
-            size="xl"
+            size="m"
             tone="primary"
             tooltip={t('jumpToLatest')}
             className={styles.jumpToLatest}

@@ -8,7 +8,7 @@ const root = new URL('../src/', import.meta.url)
 const capacitorStub = `data:text/javascript;base64,${Buffer.from(
   [
     'export const Capacitor = {',
-    "  getPlatform: () => 'android',",
+    "  getPlatform: () => globalThis.__platform ?? 'android',",
     "  convertFileSrc: (path) => 'https://localhost/_capacitor_file_' + path,",
     '}',
     'export const registerPlugin = () => globalThis.__archivePlugin',
@@ -49,6 +49,7 @@ const { downloadArchive, archiveName } = await import(new URL('services/chat/his
 
 const calls = []
 const listeners = []
+globalThis.__platform = 'android'
 
 /** 每次用例前重置替身，调用顺序在 calls 中可查。 */
 const usePlugin = (overrides = {}) => {
@@ -139,6 +140,45 @@ assert.ok(
   calls.some(([name, url]) => name === 'fetch' && String(url).startsWith('https://localhost/_capacitor_file_')),
   'archive must be read back over the local loopback'
 )
+
+// 浏览器流式读取应逐块报告进度，并把取消信号传给远端请求。
+globalThis.__platform = 'web'
+const webProgress = []
+globalThis.fetch = async (_url, init) => {
+  calls.push(['webFetch', init.signal])
+  return new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new Uint8Array([1, 2]))
+    controller.enqueue(new Uint8Array([3, 4]))
+    controller.close()
+  } }), { headers: { 'Content-Length': '4' } })
+}
+const webFile = await downloadArchive(LINK, { onProgress: (value) => webProgress.push(value) })
+assert.equal(webFile.size, 4)
+assert.deepEqual(webProgress, [{ received: 2, total: 4 }, { received: 4, total: 4 }])
+
+// 超限优先根据 Content-Length 拒绝，不向导入流程报告正文进度。
+let oversizedBodyCancelled = false
+globalThis.fetch = async () => new Response(new ReadableStream({
+  cancel() { oversizedBodyCancelled = true },
+}), { headers: { 'Content-Length': String(200 * 1024 * 1024 + 1) } })
+const oversizedProgress = []
+await expectKey(() => downloadArchive(LINK, { onProgress: value => oversizedProgress.push(value) }), 'historyImportLinkTooLarge')
+assert.deepEqual(oversizedProgress, [])
+assert.equal(oversizedBodyCancelled, true)
+
+// 流式取消会停止正文读取并返回可处理的取消失败。
+let webStreamCancelled = false
+globalThis.fetch = async (_url, init) => {
+  assert.ok(init.signal instanceof AbortSignal)
+  return new Response(new ReadableStream({ cancel() { webStreamCancelled = true } }))
+}
+const webController = new AbortController()
+const webPending = downloadArchive(LINK, { signal: webController.signal })
+await new Promise((resolve) => setTimeout(resolve, 0))
+webController.abort()
+await expectKey(() => webPending, 'historyImportLinkFailed')
+assert.equal(webStreamCancelled, true)
+globalThis.__platform = 'android'
 
 // 4) 失败码映射
 usePlugin({ downloadArchive: async () => Promise.reject(Object.assign(new Error('denied'), { code: 'ARCHIVE_EXPIRED' })) })

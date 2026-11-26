@@ -105,8 +105,11 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
   const models = useSettings((state) => state.models)
   const modelReasoningProfiles = useSettings((state) => state.modelReasoningProfiles)
   const modelPresets = useSettings((state) => state.modelPresets)
-  const activeModelPreset = modelPresets.find((preset) => preset.apiKey === apiKey &&
-    preset.apiBaseUrl === apiBaseUrl && preset.apiProtocol === apiProtocol && preset.model === model)
+  const activeModelPresetId = useSettings((state) => state.activeModelPresetId)
+  const matchesRoute = (preset: typeof modelPresets[number]) => preset.apiKey === apiKey &&
+    preset.apiBaseUrl === apiBaseUrl && preset.apiProtocol === apiProtocol && preset.model === model
+  const activeModelPreset = modelPresets.find((preset) => preset.id === activeModelPresetId && matchesRoute(preset)) ??
+    modelPresets.find(matchesRoute)
   const modelPresetOptions = useMemo(() => modelPresets.map((preset) => ({ value: preset.id, label: preset.name })), [modelPresets])
   const modelOptions = useMemo(() => [...new Set([...models, model])]
     .filter(Boolean).map((value) => ({ value, label: value })), [model, models])
@@ -126,9 +129,9 @@ const Input = ({ sessionId, latestReply, editing }: InputProps) => {
   const locale = useSettings((state) => state.locale)
   const extras = supportsDeepSeekExtras({ baseUrl: apiBaseUrl, protocol: apiProtocol })
   const voiceRecognitionSupported = extras || apiProtocol === 'openai'
-  const searchAvailable = extras
+  const searchAvailable = extras || Boolean(activeModelPreset?.searchApi?.apiKey.trim())
   const connection = useMemo(() => ({ baseUrl: apiBaseUrl, protocol: apiProtocol }), [apiBaseUrl, apiProtocol])
-  const tools = useMemo(() => searchAvailable ? serverTools(search, model) : [], [searchAvailable, search, model])
+  const tools = useMemo(() => extras ? serverTools(search, model) : [], [extras, search, model])
   const today = new Date().toDateString()
   const latestReminder = useMemo(() => createLatestReminder({ locale }, new Date(today)), [locale, today])
   const uploadTasks = useUploads((state) => state.tasks)

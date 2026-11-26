@@ -281,6 +281,8 @@
 }
 
 .modelSelect {
+  width: min(220px, 100%);
+  flex: 0 1 220px;
   height: 30px;
   min-width: 0;
   max-width: 100%;
@@ -290,11 +292,13 @@
 }
 
 .presetSelect {
-  flex: 0 1 48%;
+  width: calc(50% - 4px);
+  flex: 1 1 calc(50% - 4px);
 }
 
 .modelSelectWithPreset {
-  flex: 0 1 48%;
+  width: calc(50% - 4px);
+  flex: 1 1 calc(50% - 4px);
 }
 
 .functionRow {

@@ -58,9 +58,9 @@
 
 .caveat {
   width: 100%;
-  padding: 6px 0;
-  font-size: 0.6875rem;
-  line-height: 1rem;
+  padding: 1px 0;
+  font-size: 0.625rem;
+  line-height: 0.75rem;
   text-align: center;
   color: var(--dsw-alias-label-tertiary);
   user-select: none;
@@ -72,6 +72,6 @@
   }
 
   .caveat {
-    padding: 2px 0;
+    padding: 1px 0;
   }
 }

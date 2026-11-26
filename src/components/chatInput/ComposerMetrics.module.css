@@ -3,19 +3,19 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 4px;
   box-sizing: border-box;
   width: 100%;
-  padding-inline: 8px 0;
+  padding: 0 0 0 8px;
   color: var(--dsw-alias-label-secondary);
   font-size: 0.75rem;
-  line-height: 1rem;
+  line-height: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
 .contextButton {
-  min-height: 34px;
-  padding: 0 8px;
+  min-height: 22px;
+  padding: 0 4px;
   border: none;
   border-radius: 8px;
   background: transparent;
@@ -89,7 +89,7 @@
 
 @media not all and (min-width: 768px) {
   .contextButton {
-    min-height: 32px;
-    min-width: 44px;
+    min-height: 22px;
+    min-width: 0;
   }
 }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ApiError, fetchModels, fetchOfficialModelReasoningLevels } from '../../services/api/client.js'
 import { DEEPSEEK_OFFICIAL_API_URL, InsecurePublicApiUrlError, normalizeApiBaseUrl } from '../../services/api/connection.js'
 import { classifyApiError } from '../../services/api/errors.js'
-import { setApiConnection, setModelReasoningProfile, useSettings, type ApiProtocol, type ModelPreset } from '../../services/settings.js'
+import { DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL, getActiveModelPreset, setApiConnection, setModelReasoningProfile, useSettings, type ApiProtocol, type ModelPreset } from '../../services/settings.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 
@@ -10,6 +10,7 @@ import { useTranslate, type TranslationKey } from '../../i18n/index.js'
 export const useApiKeyForm = () => {
   const t = useTranslate()
   const saved = useSettings.getState()
+  const savedPreset = getActiveModelPreset(saved)
   const [value, setValue] = useState(saved.apiKey ?? '')
   const [baseUrl, setBaseUrl] = useState(
     saved.apiProtocol === 'deepseek' ? DEEPSEEK_OFFICIAL_API_URL : saved.apiBaseUrl
@@ -17,6 +18,9 @@ export const useApiKeyForm = () => {
   const [protocol, setProtocol] = useState<ApiProtocol>(saved.apiProtocol)
   const [model, setModel] = useState(saved.model)
   const [models, setModels] = useState(saved.models)
+  const [searchApiKey, setSearchApiKey] = useState(savedPreset?.searchApi?.apiKey ?? '')
+  const [searchApiBaseUrl, setSearchApiBaseUrl] = useState(savedPreset?.searchApi?.baseUrl ?? DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL)
+  const [searchApiCount, setSearchApiCount] = useState(savedPreset?.searchApi?.count ?? 10)
   const [busy, setBusy] = useState<'test' | 'models' | null>(null)
   const [status, setStatus] = useState<{ key: TranslationKey; error?: boolean } | null>(null)
   const [failure, setFailure] = useState<unknown>(null)
@@ -113,6 +117,9 @@ export const useApiKeyForm = () => {
     setProtocol(preset.apiProtocol)
     setModel(preset.model)
     setModels(preset.models)
+    setSearchApiKey(preset.searchApi?.apiKey ?? '')
+    setSearchApiBaseUrl(preset.searchApi?.baseUrl ?? DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL)
+    setSearchApiCount(preset.searchApi?.count ?? 10)
   })
 
   const error = failure === null ? null
@@ -124,6 +131,9 @@ export const useApiKeyForm = () => {
         })
   return {
     value, setValue: (next: string) => changeConnection(() => setValue(next)),
+    searchApiKey, setSearchApiKey,
+    searchApiBaseUrl, setSearchApiBaseUrl,
+    searchApiCount, setSearchApiCount,
     baseUrl, setBaseUrl: (next: string) => changeConnection(() => setBaseUrl(next)),
     protocol, setProtocol: (next: ApiProtocol) => changeConnection(() => {
       setProtocol(next)

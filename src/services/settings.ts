@@ -10,6 +10,7 @@ export type Locale = 'zh-CN' | 'en-US'
 export type ThemePreference = 'light' | 'dark' | 'system'
 export type ApiProtocol = 'deepseek' | 'openai'
 export type VoiceCallPause = 'short' | 'normal' | 'patient'
+export const DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL = 'https://api.deepseek.com/v1/tools'
 export const bundledChatFonts = [
   { value: 'noto-sans-sc', label: 'Noto Sans SC' },
   { value: 'noto-serif-sc', label: 'Noto Serif SC' },
@@ -65,6 +66,7 @@ type Settings = {
   models: string[]
   modelReasoningProfiles: Record<string, ModelReasoningProfile>
   modelPresets: ModelPreset[]
+  activeModelPresetId: string | null
   locale: Locale
   themePreference: ThemePreference
   chatFont: ChatFont
@@ -100,6 +102,11 @@ export type ModelPreset = {
   apiProtocol: ApiProtocol
   model: string
   models: string[]
+  searchApi?: {
+    apiKey: string
+    baseUrl: string
+    count: number
+  }
 }
 
 export type FavoriteMessage = { sessionId: string; messageId: string }
@@ -113,6 +120,7 @@ const KEYS = {
   models: 'deepstay:models',
   modelReasoningProfiles: 'deepstay:model-reasoning-profiles',
   modelPresets: 'deepstay:model-presets',
+  activeModelPresetId: 'deepstay:active-model-preset-id',
   locale: 'chat-demo:locale',
   themePreference: 'chat-demo:theme-preference',
   chatFont: 'deepstay:chat-font',
@@ -219,12 +227,35 @@ const readModelPresets = (): ModelPreset[] => {
       const models = Array.isArray(preset.models)
         ? [...new Set(preset.models.filter((item): item is string => typeof item === 'string' && !!item.trim()))]
         : []
+      const searchApi = preset.searchApi && typeof preset.searchApi === 'object'
+        ? preset.searchApi as Record<string, unknown>
+        : undefined
+      let parsedSearchApi: ModelPreset['searchApi']
+      if (searchApi) {
+        const searchBaseUrl = typeof searchApi.baseUrl === 'string' && searchApi.baseUrl.trim()
+          ? searchApi.baseUrl
+          : DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL
+        let normalizedSearchBaseUrl = searchBaseUrl
+        try {
+          normalizedSearchBaseUrl = normalizeApiBaseUrl(searchBaseUrl)
+        } catch {
+          // Preserve invalid values so users can correct them in the settings form.
+        }
+        parsedSearchApi = {
+          apiKey: typeof searchApi.apiKey === 'string' ? searchApi.apiKey.trim() : '',
+          baseUrl: normalizedSearchBaseUrl,
+          count: typeof searchApi.count === 'number' && Number.isInteger(searchApi.count)
+            ? Math.max(1, Math.min(50, searchApi.count))
+            : 10,
+        }
+      }
       if (typeof preset.id !== 'string' || !preset.id || !name || !apiKey || !baseUrl ||
           (apiProtocol !== 'deepseek' && apiProtocol !== 'openai') || !model) {
         return []
       }
       try {
-        return [{ id: preset.id, name, apiKey, apiBaseUrl: normalizeApiBaseUrl(baseUrl), apiProtocol, model, models }]
+        return [{ id: preset.id, name, apiKey, apiBaseUrl: normalizeApiBaseUrl(baseUrl), apiProtocol, model, models,
+          ...(parsedSearchApi ? { searchApi: parsedSearchApi } : {}) }]
       } catch {
         return []
       }
@@ -329,6 +360,8 @@ const initialRoute: ModelRoute = {
   apiProtocol: read(KEYS.apiProtocol) === 'openai' ? 'openai' : 'deepseek',
   model: read(KEYS.model) || 'deepseek-flash',
 }
+const initialModelPresets = readModelPresets()
+const storedActiveModelPresetId = read(KEYS.activeModelPresetId)
 const savedGeneration = initialGeneration()
 if (savedGeneration.contextTokens !== undefined) {
   const key = contextWindowKey(initialRoute)
@@ -362,7 +395,10 @@ export const useSettings = create<Settings>(() => ({
   ...initialRoute,
   models: readStringList(KEYS.models),
   modelReasoningProfiles: readModelReasoningProfiles(),
-  modelPresets: readModelPresets(),
+  modelPresets: initialModelPresets,
+  activeModelPresetId: initialModelPresets.some((preset) => preset.id === storedActiveModelPresetId)
+    ? storedActiveModelPresetId
+    : null,
   locale: initialLocale(),
   themePreference: initialThemePreference(),
   chatFont: initialChatFont(),
@@ -383,6 +419,26 @@ export const useSettings = create<Settings>(() => ({
   pinnedSessionIds: [...new Set(readStringList(KEYS.pinnedSessionIds))],
   favoriteMessages: readFavoriteMessages(),
 }))
+
+const presetMatchesRoute = (
+  preset: ModelPreset,
+  route: Pick<Settings, 'apiKey' | 'apiBaseUrl' | 'apiProtocol' | 'model'>
+) => preset.apiKey === route.apiKey && preset.apiBaseUrl === route.apiBaseUrl &&
+  preset.apiProtocol === route.apiProtocol && preset.model === route.model
+
+export const getActiveModelPreset = (
+  state: Settings = useSettings.getState()
+): ModelPreset | undefined => {
+  const active = state.modelPresets.find((preset) => preset.id === state.activeModelPresetId)
+  if (active && presetMatchesRoute(active, state)) {
+    return active
+  }
+  return state.modelPresets.find((preset) => presetMatchesRoute(preset, state))
+}
+
+export const getActiveSearchApi = (
+  state: Settings = useSettings.getState()
+): ModelPreset['searchApi'] => getActiveModelPreset(state)?.searchApi
 
 export const setLocale = (locale: Locale) => {
   write(KEYS.locale, locale)
@@ -420,7 +476,14 @@ export const setApiConnection = (connection: Pick<Settings, 'apiKey' | 'apiBaseU
   write(KEYS.apiProtocol, connection.apiProtocol)
   write(KEYS.model, connection.model)
   write(KEYS.models, JSON.stringify(connection.models))
-  useSettings.setState({ ...connection, generation: generationForRoute(useSettings.getState().generation, connection) })
+  const current = useSettings.getState()
+  const route = { ...current, ...connection }
+  const matchingPreset = current.modelPresets.find((preset) =>
+    preset.id === current.activeModelPresetId && presetMatchesRoute(preset, route)
+  ) ?? current.modelPresets.find((preset) => presetMatchesRoute(preset, route))
+  write(KEYS.activeModelPresetId, matchingPreset?.id ?? null)
+  useSettings.setState({ ...connection, activeModelPresetId: matchingPreset?.id ?? null,
+    generation: generationForRoute(current.generation, connection) })
 }
 
 export const getModelReasoningProfile = (
@@ -485,6 +548,9 @@ export const setModelVisibleReasoningLevels = (route: ModelRoute, model: string,
 
 export const saveModelPreset = (value: Omit<ModelPreset, 'id'>, id?: string) => {
   const existing = useSettings.getState().modelPresets
+  if (value.searchApi && (!Number.isInteger(value.searchApi.count) || value.searchApi.count < 1 || value.searchApi.count > 50)) {
+    throw new Error('Search result count must be between 1 and 50')
+  }
   const presetId = id && existing.some((preset) => preset.id === id)
     ? id
     : typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -498,6 +564,11 @@ export const saveModelPreset = (value: Omit<ModelPreset, 'id'>, id?: string) => 
     apiBaseUrl: normalizeApiBaseUrl(value.apiBaseUrl),
     model: value.model.trim(),
     models: [...new Set(value.models.filter(Boolean))],
+    ...(value.searchApi ? { searchApi: {
+      apiKey: value.searchApi.apiKey.trim(),
+      baseUrl: normalizeApiBaseUrl(value.searchApi.baseUrl || DEFAULT_DEEPSEEK_SEARCH_API_BASE_URL),
+      count: value.searchApi.count,
+    } } : {}),
   }
   saveModelPresets([preset, ...existing.filter((entry) => entry.id !== presetId)])
   return presetId
@@ -507,6 +578,10 @@ export const deleteModelPreset = (id: string) => {
   const presets = useSettings.getState().modelPresets
   if (presets.some((preset) => preset.id === id)) {
     saveModelPresets(presets.filter((preset) => preset.id !== id))
+    if (useSettings.getState().activeModelPresetId === id) {
+      write(KEYS.activeModelPresetId, null)
+      useSettings.setState({ activeModelPresetId: null })
+    }
   }
 }
 
@@ -522,13 +597,21 @@ export const applyModelPreset = (id: string) => {
     model: preset.model,
     models: preset.models,
   })
+  write(KEYS.activeModelPresetId, id)
+  useSettings.setState({ activeModelPresetId: id })
   return true
 }
 
 export const setModel = (model: string) => {
   write(KEYS.model, model)
   const current = useSettings.getState()
-  useSettings.setState({ model, generation: generationForRoute(current.generation, { ...current, model }) })
+  const route = { ...current, model }
+  const matchingPreset = current.modelPresets.find((preset) =>
+    preset.id === current.activeModelPresetId && presetMatchesRoute(preset, route)
+  ) ?? current.modelPresets.find((preset) => presetMatchesRoute(preset, route))
+  write(KEYS.activeModelPresetId, matchingPreset?.id ?? null)
+  useSettings.setState({ model, activeModelPresetId: matchingPreset?.id ?? null,
+    generation: generationForRoute(current.generation, route) })
 }
 
 export const setThinkingCollapsed = (thinkingCollapsed: boolean) => {

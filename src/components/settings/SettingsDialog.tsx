@@ -15,6 +15,7 @@ import {
   BackupError,
   backupFileName,
   clearHistory,
+  downloadRemoteHistory,
   exportHistory,
   importHistory,
   previewHistory,
@@ -182,6 +183,7 @@ const SettingsContent = () => {
         </div>
       </Modal>
       {historyImport.file ? <ImportConfirm historyImport={historyImport} /> : null}
+      {historyImport.linkOpen ? <LinkImport historyImport={historyImport} /> : null}
       {historyDelete.opened ? <DeleteAllConfirm historyDelete={historyDelete} /> : null}
     </>
   )
@@ -428,6 +430,66 @@ const ImportConfirm = ({
   )
 }
 
+/** 链接导入只负责取回文件，预览与合并沿用同一套流程。 */
+const LinkImport = ({
+  historyImport,
+}: {
+  historyImport: ReturnType<typeof useHistoryImport>
+}) => {
+  const t = useTranslate()
+  const [value, setValue] = useState('')
+  const downloading = historyImport.linkProgress !== null
+  const valid = /^https:\/\/\S+$/i.test(value.trim())
+  return (
+    <Modal
+      title={t('historyImportLinkTitle')}
+      className={styles.importConfirm}
+      closable
+      onClose={historyImport.closeLink}
+      footer={
+        <>
+          <Button
+            variant="outlined"
+            size="m"
+            onClick={downloading ? historyImport.cancelLink : historyImport.closeLink}
+          >
+            {t('cancel')}
+          </Button>
+          <Button
+            variant="outlined"
+            size="m"
+            disabled={!valid || downloading}
+            onClick={() => void historyImport.downloadLink(value)}
+          >
+            {t('historyImportLinkAction')}
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.importConfirmText}>{t('historyImportLinkDescription')}</div>
+      <div className={styles.linkForm}>
+        <input
+          type="url"
+          inputMode="url"
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          placeholder={t('historyImportLinkPlaceholder')}
+          disabled={downloading}
+          onChange={(event) => setValue(event.target.value)}
+        />
+      </div>
+      <div className={clsx(styles.description, styles.linkNote)}>{t('historyImportLinkNote')}</div>
+      {downloading ? (
+        <div className={clsx(styles.importProgress, styles.linkProgress)} role="status">
+          <progress value={historyImport.linkProgress ?? 0} max={100} />
+          <span>{t('historyImportLinkDownloading', { percent: historyImport.linkProgress ?? 0 })}</span>
+        </div>
+      ) : null}
+    </Modal>
+  )
+}
+
 const themeOptions: { value: ThemePreference; label: TranslationKey; icon: ReactNode }[] = [
   {
     value: 'light',
@@ -533,6 +595,9 @@ const useHistoryImport = () => {
   const [progress, setProgress] = useState(0)
   const importing = useRef(false)
   const previewVersion = useRef(0)
+  const [linkOpen, setLinkOpen] = useState(false)
+  const [linkProgress, setLinkProgress] = useState<number | null>(null)
+  const linkAbort = useRef<AbortController | null>(null)
 
   const cancel = () => {
     previewVersion.current++
@@ -590,9 +655,54 @@ const useHistoryImport = () => {
     }
   }
 
+  const openLink = () => {
+    setStatus(null)
+    setLinkOpen(true)
+  }
+
+  const closeLink = () => {
+    if (linkProgress === null) {
+      setLinkOpen(false)
+    }
+  }
+
+  /** 下载完成后进入同一套预览确认；失败时用错误自带的 key 直接展示。 */
+  const downloadLink = async (raw: string) => {
+    if (linkProgress !== null) {
+      return
+    }
+    const controller = new AbortController()
+    linkAbort.current = controller
+    setStatus(null)
+    setLinkProgress(0)
+    try {
+      const next = await downloadRemoteHistory(raw, setLinkProgress, controller.signal)
+      setLinkProgress(null)
+      setLinkOpen(false)
+      await select(next)
+    } catch (error) {
+      setLinkProgress(null)
+      if (!controller.signal.aborted) {
+        setStatus(
+          error instanceof BackupError
+            ? { key: error.key, error: true }
+            : errorStatus('historyImportLinkFailed', error)
+        )
+      }
+    } finally {
+      linkAbort.current = null
+    }
+  }
+
+  /** 取消只中断下载，不动已选中或已预览的内容。 */
+  const cancelLink = () => {
+    linkAbort.current?.abort()
+  }
+
   return {
-    file, preview, selected, previewing, busy: busy || previewing, importing: busy,
+    file, preview, selected, previewing, busy: busy || previewing || linkProgress !== null, importing: busy,
     progress, status, select, cancel, confirm,
+    linkOpen, linkProgress, openLink, closeLink, downloadLink, cancelLink,
     toggle: (id: string) => setSelected((previous) => {
       const next = new Set(previous)
       if (next.has(id)) {
@@ -635,6 +745,15 @@ const ImportHistory = ({
             >
               <IconUploadOutline14 />
               {t(historyImport.busy ? 'historyImporting' : 'upload')}
+            </Button>
+            <Button
+              variant="outlined"
+              size="m"
+              className={styles.cellButton}
+              disabled={disabled}
+              onClick={historyImport.openLink}
+            >
+              {t('historyImportLink')}
             </Button>
             <input
               ref={inputRef}

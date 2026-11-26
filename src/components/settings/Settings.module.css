@@ -199,6 +199,33 @@
   }
 }
 
+.linkForm {
+  margin-top: 12px;
+
+  input {
+    box-sizing: border-box;
+    width: 100%;
+    padding: 6px 10px;
+    border: 1px solid var(--dsw-alias-border-l2);
+    border-radius: 8px;
+    background: var(--dsw-specific-login-input);
+    color: inherit;
+    font: inherit;
+
+    &:disabled {
+      opacity: 0.6;
+    }
+  }
+}
+
+.linkNote {
+  margin-top: 8px;
+}
+
+.linkProgress {
+  margin-top: 12px;
+}
+
 .uploadButton {
   padding: 0 13px;
 }

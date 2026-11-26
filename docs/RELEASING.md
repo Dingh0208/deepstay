@@ -1,6 +1,6 @@
 # deepstay Android 发布
 
-当前准备发布 v0.1.24（Android versionCode 25）；本地检查和发布验收结果以实际记录为准。上一个已验收的公开版本为 [v0.1.23](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.23)，详见 [验收记录](ACCEPTANCE_0.1.23.md)。未执行实体手机第三方 API 联网验收。本轮 DSH Go 适用逻辑共 7 项，已按 v0.1.14、v0.1.15、v0.1.16 三批发布，详见 [适配清单](DSH_GO_PORTING_PLAN.md)。
+当前公开版本为 [v0.1.24](https://github.com/Dingh0208/deepstay/releases/tag/v0.1.24)（Android versionCode 25）；Android release 单测、APK 身份与正式签名、国内完整下载及 GitHub 附件校验均通过，详见 [验收记录](ACCEPTANCE_0.1.24.md)。未执行实体手机第三方 API 联网验收。本轮 DSH Go 适用逻辑共 7 项，已按 v0.1.14、v0.1.15、v0.1.16 三批发布，详见 [适配清单](DSH_GO_PORTING_PLAN.md)。
 
 `v0.1.12` 在用户追加人物需求后取消发布，其标签保留，原附件与搜索改动一并纳入 v0.1.13。公开源码仓库：[Dingh0208/deepstay](https://github.com/Dingh0208/deepstay)。应用支持用户自行添加 DeepSeek 或 OpenAI 兼容接口的 API Key，不依赖 Sub2API 后端。更新内容见 [CHANGELOG.md](../CHANGELOG.md)。
 

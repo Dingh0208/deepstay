@@ -288,6 +288,18 @@ export const toLocalSession = (file: SessionFile): LocalSession => {
     createdAt: time(file.inserted_at),
     updatedAt: time(file.updated_at),
     ...(file.deepstay_character ? { character: { ...file.deepstay_character } } : {}),
+    // 置顶随归档走：先挂到来源标记上，提交后再映射成本地会话 ID。
+    ...(file.pinned
+      ? {
+          importSource: {
+            id: file.id,
+            createdAt: time(file.inserted_at),
+            messageIds: {},
+            fileIds: {},
+            pinned: true as const,
+          },
+        }
+      : {}),
     ...buildTree(file),
   }
   const images = new Map<string, string>()

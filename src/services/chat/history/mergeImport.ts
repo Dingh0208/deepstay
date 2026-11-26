@@ -126,8 +126,16 @@ export const mergeImport = (source: Session, original?: Session, matched = new M
       : incoming.rootMessageId ? messageIds.get(incoming.rootMessageId) : null,
     linearMessagePath: undefined,
     updatedAt: added ? Math.max(local?.updatedAt ?? 0, source.updatedAt) : local?.updatedAt ?? source.updatedAt,
-    importSource: !sameSource ? local?.importSource : { id: source.id, createdAt: source.createdAt,
-      messageIds: Object.fromEntries(messageIds), fileIds: Object.fromEntries(fileIds) },
+    importSource: !sameSource
+      ? local?.importSource
+      : {
+          id: source.id,
+          createdAt: source.createdAt,
+          messageIds: Object.fromEntries(messageIds),
+          fileIds: Object.fromEntries(fileIds),
+          // 只有首次导入按归档恢复置顶；既有会话保留本机选择。
+          ...(!local && source.importSource?.pinned ? { pinned: true as const } : {}),
+        },
   }
   return { session, added, fileIds }
 }

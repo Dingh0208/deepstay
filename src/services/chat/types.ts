@@ -151,6 +151,8 @@ export type Session = {
     createdAt: number
     messageIds: Record<string, string>
     fileIds: Record<string, string>
+    /** 归档里的置顶标记；仅首次导入的会话用于恢复，既有会话保留本机选择。 */
+    pinned?: boolean
   }
   contextMemory?: ContextMemory
   /** 创建会话时复制的人物设定，预设库的编辑或删除不改变此快照。 */

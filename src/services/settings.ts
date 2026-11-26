@@ -611,6 +611,15 @@ export const setPinnedSession = (id: string, pinned: boolean) => {
 
 export const clearPinnedSessions = () => savePinnedSessions([])
 
+/** 导入恢复置顶：只追加新 ID 到最前，不改动既有顺序与本机选择。 */
+export const addPinnedSessions = (ids: readonly string[]) => {
+  if (ids.length === 0) {
+    return
+  }
+  const previous = useSettings.getState().pinnedSessionIds
+  savePinnedSessions([...ids.filter((id) => !previous.includes(id)), ...previous])
+}
+
 const saveFavoriteMessages = (favoriteMessages: FavoriteMessage[]) => {
   write(KEYS.favoriteMessages, favoriteMessages.length ? JSON.stringify(favoriteMessages) : null)
   useSettings.setState({ favoriteMessages })

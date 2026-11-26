@@ -240,6 +240,32 @@ try {
   assert.deepEqual(await snapshot(), beforeDamage)
   assert.deepEqual(await db.loadSession(original.id), beforePreview[0])
   checks.push('Invalid preview or import does not overwrite or remove any prior local conversation')
+
+  const settings = await import(new URL('services/settings.ts', src))
+  const pinnedSourceA = session(3000, 'Pinned A')
+  const pinnedSourceB = session(3001, 'Plain B')
+  settings.setPinnedSession(pinnedSourceA.id, true)
+  const pinnedFile = await archive([pinnedSourceA, pinnedSourceB])
+  const pinnedById = Object.fromEntries((await backup.previewHistory(pinnedFile)).map(item => [item.id, item.pinned]))
+  assert.equal(pinnedById[pinnedSourceA.id], true)
+  assert.equal(pinnedById[pinnedSourceB.id], false)
+  checks.push('Export writes the real pinned state into both the session files and the archive index')
+
+  assert.equal(await backup.importHistory(pinnedFile), 2)
+  const state = store.useChatStore.getState()
+  const importedA = state.sessions.find(item => item.title === 'Pinned A')
+  const importedB = state.sessions.find(item => item.title === 'Plain B')
+  assert.ok(importedA && importedB)
+  assert.notEqual(importedA.id, pinnedSourceA.id, 'Imported chats always receive fresh local IDs')
+  const pinnedNow = settings.useSettings.getState().pinnedSessionIds
+  assert.ok(pinnedNow.includes(importedA.id), 'A pinned archive chat is pinned again under its fresh local ID')
+  assert.equal(pinnedNow.includes(importedB.id), false)
+  checks.push('Importing an official-shaped archive restores pinned chats under their new local IDs')
+
+  settings.setPinnedSession(importedA.id, false)
+  assert.equal(await backup.importHistory(pinnedFile), 0)
+  assert.equal(settings.useSettings.getState().pinnedSessionIds.includes(importedA.id), false)
+  checks.push('Re-importing an unchanged archive never re-pins a chat the user unpinned locally')
   const evidence = { passed: true, runtime: process.version, checks,
     previewIO: { imageEntries: 510, oneImageReads: oneImagePreview.reads.length, manyImageReads: manyImagePreview.reads.length,
       manyImageBytesRead: manyImagePreview.reads.reduce((sum, size) => sum + size, 0), archiveBytes: manyImagePreview.size },

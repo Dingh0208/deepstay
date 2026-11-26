@@ -6,6 +6,7 @@ import type { CreateMessageRequest } from '../api/types.js'
 import { DEFAULT_CONTEXT_WINDOW, generationParameters } from '../api/generation.js'
 import { supportsDeepSeekTitles, usesAnthropicWebSearch } from '../api/modelCapabilities.js'
 import { getApiConnection, supportsDeepSeekExtras, type ApiConnection } from '../api/connection.js'
+import { addPinnedSessions } from '../settings.js'
 import {
   extractFileIds,
   classifyApiError,
@@ -549,7 +550,8 @@ export const appendStagedHistory = async (): Promise<number> => {
     if ((await Promise.all([...targets].map((id) => pendingSaves.get(id)))).some((saved) => saved === false)) {
       throw new Error('Unsaved local history must be saved before merging an import')
     }
-    const summaries = await db.commitStaging()
+    const importedPinned: string[] = []
+    const summaries = await db.commitStaging(false, (ids) => importedPinned.push(...ids))
     const affected = new Set(summaries.map((summary) => summary.id))
     const activeId = sortSessions(summaries)[0]?.id
     set((state) => ({
@@ -557,6 +559,8 @@ export const appendStagedHistory = async (): Promise<number> => {
       sessionCache: Object.fromEntries(Object.entries(state.sessionCache).filter(([id]) => !affected.has(id))),
       ...(activeId ? { activeId } : {}),
     }))
+    // 首次导入的会话按归档恢复置顶；已有会话保留本机选择。
+    addPinnedSessions(importedPinned)
     if (activeId) {
       await ensureSessionLoaded(activeId)
     }
